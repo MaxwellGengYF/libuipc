@@ -9,7 +9,7 @@
 #include <filesystem>
 #include <fstream>
 
-TEST_CASE("affine_body_external_wrench_test", "[abd][external_wrench]")
+TEST_CASE("affine_body_external_wrench", "[abd][external_wrench]")
 {
     using namespace uipc;
     using namespace uipc::core;
@@ -38,7 +38,7 @@ TEST_CASE("affine_body_external_wrench_test", "[abd][external_wrench]")
     Scene scene{config};
     {
         // Create constitutions
-        AffineBodyConstitution    abd;
+        AffineBodyConstitution   abd;
         AffineBodyExternalWrench ext_wrench;
         scene.constitution_tabular().insert(abd);
         scene.constitution_tabular().insert(ext_wrench);
@@ -49,12 +49,12 @@ TEST_CASE("affine_body_external_wrench_test", "[abd][external_wrench]")
 
         // Load cube mesh
         Matrix4x4 pre_trans = Matrix4x4::Identity();
-        pre_trans(0, 0) = 0.2;
-        pre_trans(1, 1) = 0.2;
-        pre_trans(2, 2) = 0.2;
+        pre_trans(0, 0)     = 0.2;
+        pre_trans(1, 1)     = 0.2;
+        pre_trans(2, 2)     = 0.2;
 
         SimplicialComplexIO io{pre_trans};
-        auto                cube = io.read(fmt::format("{}/cube.msh", tetmesh_dir));
+        auto cube = io.read(fmt::format("{}/cube.msh", tetmesh_dir));
 
         // Process surface
         label_surface(cube);
@@ -76,10 +76,10 @@ TEST_CASE("affine_body_external_wrench_test", "[abd][external_wrench]")
         default_element.apply_to(cube_processed);
 
         // Set transform - position at y=0.5
-        auto trans_view = view(cube_processed.transforms());
-        Transform t = Transform::Identity();
-        t.translation() = Vector3(0, 0.5, 0);
-        trans_view[0] = t.matrix();
+        auto      trans_view = view(cube_processed.transforms());
+        Transform t          = Transform::Identity();
+        t.translation()      = Vector3(0, 0.5, 0);
+        trans_view[0]        = t.matrix();
 
         object->geometries().create(cube_processed);
 
@@ -91,17 +91,15 @@ TEST_CASE("affine_body_external_wrench_test", "[abd][external_wrench]")
                 Float time = info.dt() * info.frame();
 
                 // Rotation parameters
-                Float orbit_speed = 0.2f;  // rad/s
-                Float spin_speed = 0.1f;   // rad/s
-                Float force_magnitude = 0.1f;  // N
+                Float spin_speed      = 0.5f;  // rad/s
+                Float force_magnitude = 1.0f;  // N
 
-                // Calculate orbital force direction (in XZ plane)
-                Float orbit_angle = orbit_speed * time;
-                Vector3 force_direction(std::cos(orbit_angle), 0.0f, std::sin(orbit_angle));
+                // Calculate orbital force direction (in Y axis)
+                Vector3 force_direction = Vector3::UnitY();
                 Vector3 force_3d = force_direction * force_magnitude;
 
                 // Calculate shape velocity derivative for spinning (rotation around Y axis)
-                Float omega_y = spin_speed * 0.1f;
+                Float    omega_y = spin_speed * 0.1f;
                 Vector12 wrench;
                 wrench.segment<3>(0) = force_3d;  // Linear force
                 wrench.segment<9>(3).setZero();
@@ -112,11 +110,13 @@ TEST_CASE("affine_body_external_wrench_test", "[abd][external_wrench]")
                 for(auto& geo_slot : info.geo_slots())
                 {
                     auto& geo = geo_slot->geometry();
-                    auto* sc = geo.as<SimplicialComplex>();
-                    if(!sc) continue;
+                    auto* sc  = geo.as<SimplicialComplex>();
+                    if(!sc)
+                        continue;
 
                     auto wrench_attr = sc->instances().find<Vector12>("external_wrench");
-                    if(!wrench_attr) continue;
+                    if(!wrench_attr)
+                        continue;
 
                     auto wrench_view = view(*wrench_attr);
                     for(auto& w : wrench_view)
@@ -130,7 +130,7 @@ TEST_CASE("affine_body_external_wrench_test", "[abd][external_wrench]")
     SceneIO sio{scene};
     sio.write_surface(fmt::format("{}scene_surface{}.obj", this_output_path, 0));
 
-    while(world.frame() < 100)
+    while(world.frame() < 500)
     {
         world.advance();
         world.retrieve();

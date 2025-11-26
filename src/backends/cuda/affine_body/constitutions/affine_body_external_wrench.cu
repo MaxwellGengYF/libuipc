@@ -19,7 +19,9 @@ class AffineBodyExternalWrench final : public AffineBodyExtraConstitution
     muda::DeviceBuffer<Vector12> wrenches;
     muda::DeviceBuffer<IndexT>   body_ids;
 
-    virtual void do_build(AffineBodyExtraConstitution::BuildInfo& info) override {}
+    virtual void do_build(AffineBodyExtraConstitution::BuildInfo& info) override
+    {
+    }
 
     U64 get_uid() const noexcept override { return ConstitutionUID; }
 
@@ -138,7 +140,7 @@ class AffineBodyExternalWrench final : public AffineBodyExtraConstitution
                        // Atomic add to accumulate gradient
                        muda::eigen::atomic_add(gradients(body_id), G);
 
-                       // Hessian: d²E/dq² = 0 (constant wrench, no second derivative)
+                       // Hessian: ddEddq = 0 (constant wrench, no second derivative)
                        // No need to write zero hessian
                    });
     }
