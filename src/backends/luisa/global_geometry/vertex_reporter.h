@@ -1,0 +1,55 @@
+#pragma once
+#include <sim_system.h>
+#include <global_geometry/global_vertex_manager.h>
+
+namespace uipc::backend::luisa
+{
+class VertexReporter : public SimSystem
+{
+  public:
+    using SimSystem::SimSystem;
+
+    using VertexCountInfo        = GlobalVertexManager::VertexCountInfo;
+    using VertexAttributeInfo    = GlobalVertexManager::VertexAttributeInfo;
+    using VertexDisplacementInfo = GlobalVertexManager::VertexDisplacementInfo;
+
+    class BuildInfo
+    {
+      public:
+    };
+
+
+    luisa::ulong uid() const noexcept;
+    luisa::uint  vertex_offset() const noexcept { return m_vertex_offset; }
+    luisa::uint  vertex_count() const noexcept { return m_vertex_count; }
+
+  protected:
+    virtual void do_build(BuildInfo& info) = 0;
+    /**
+     * @brief Report the number of vertices managed by this reporter
+     * 
+     * Called only once in initialization phase.
+     */
+    virtual void do_report_count(VertexCountInfo& vertex_count_info) = 0;
+    /**
+     * @brief Report the attributes of vertices managed by this reporter
+     * 
+     * Called every time before simulation step, including initialization phase.
+     * 
+     */
+    virtual void do_report_attributes(VertexAttributeInfo& vertex_attribute_info) = 0;
+    virtual void do_report_displacements(VertexDisplacementInfo& vertex_displacement_info) = 0;
+    virtual luisa::ulong get_uid() const noexcept = 0;
+
+  private:
+    friend class GlobalVertexManager;
+    virtual void do_build() final override;
+    void         report_count(VertexCountInfo& vertex_count_info);
+    void         report_attributes(VertexAttributeInfo& vertex_attribute_info);
+    void report_displacements(VertexDisplacementInfo& vertex_displacement_info);
+
+    luisa::ulong m_index         = ~0ull;
+    luisa::uint  m_vertex_offset = -1;
+    luisa::uint  m_vertex_count  = -1;
+};
+}  // namespace uipc::backend::luisa
