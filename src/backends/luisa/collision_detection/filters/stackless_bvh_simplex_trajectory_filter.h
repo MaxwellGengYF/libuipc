@@ -4,7 +4,6 @@
 #include <global_geometry/global_simplicial_surface_manager.h>
 #include <contact_system/global_contact_manager.h>
 #include <collision_detection/stackless_bvh.h>
-#include <collision_detection/atomic_counting_lbvh.h>
 #include <collision_detection/simplex_trajectory_filter.h>
 
 namespace uipc::backend::luisa
@@ -17,9 +16,9 @@ class StacklessBVHSimplexTrajectoryFilter final : public SimplexTrajectoryFilter
     class Impl
     {
       public:
-        void detect(DetectInfo& info);
-        void filter_active(FilterActiveInfo& info);
-        void filter_toi(FilterTOIInfo& info);
+        void detect(DetectInfo& info, WorldVisitor& world);
+        void filter_active(FilterActiveInfo& info, WorldVisitor& world);
+        void filter_toi(FilterTOIInfo& info, WorldVisitor& world);
 
         /****************************************************
         *                   Broad Phase
@@ -32,23 +31,20 @@ class StacklessBVHSimplexTrajectoryFilter final : public SimplexTrajectoryFilter
 
         using ThisBVH = StacklessBVH;
 
+        // Use unique_ptr for lazy initialization (StacklessBVH requires Device& in constructor)
+        std::unique_ptr<ThisBVH> lbvh_CodimP;
+        std::unique_ptr<ThisBVH> lbvh_E;
+        std::unique_ptr<ThisBVH> lbvh_T;
+
         // CodimP count always less or equal to AllP count.
-        ThisBVH              lbvh_CodimP;
-        ThisBVH::QueryBuffer candidate_AllP_CodimP_pairs;
+        ThisBVH::QueryBuffer candidate_AllP_CodimP_pairs{nullptr};
 
         // Used to detect CodimP-AllE, and AllE-AllE pairs.
-        ThisBVH              lbvh_E;
-        ThisBVH::QueryBuffer candidate_CodimP_AllE_pairs;
-        ThisBVH::QueryBuffer candidate_AllE_AllE_pairs;
+        ThisBVH::QueryBuffer candidate_CodimP_AllE_pairs{nullptr};
+        ThisBVH::QueryBuffer candidate_AllE_AllE_pairs{nullptr};
 
         // Used to detect AllP-AllT pairs.
-        ThisBVH              lbvh_T;
-        ThisBVH::QueryBuffer candidate_AllP_AllT_pairs;
-
-        Buffer<IndexT> selected_PT_count;
-        Buffer<IndexT> selected_EE_count;
-        Buffer<IndexT> selected_PE_count;
-        Buffer<IndexT> selected_PP_count;
+        ThisBVH::QueryBuffer candidate_AllP_AllT_pairs{nullptr};
 
         Buffer<Vector4i> temp_PTs;
         Buffer<Vector4i> temp_EEs;

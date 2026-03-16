@@ -3,6 +3,7 @@
 #include <energy_component_flags.h>
 #include <global_geometry/global_vertex_manager.h>
 #include <dytopo_effect_system/dytopo_classify_info.h>
+#include <algorithm/matrix_converter.h>
 #include <luisa/runtime/buffer.h>
 #include <utils/offset_count_collection.h>
 
@@ -17,12 +18,14 @@ class DyTopoEffectReceiver;
  * @brief View of a sparse vector in doublet format (index, value pairs)
  * 
  * Equivalent to muda::DoubletVectorView<T, N>
+ * 
+ * NOTE: Uses int indices and Eigen::Matrix values to be compatible with MatrixConverter
  */
 template<typename T, int N>
 struct DoubletVectorView
 {
-    luisa::compute::BufferView<const luisa::uint> indices;
-    luisa::compute::BufferView<const luisa::Vector<T, N>> values;
+    luisa::compute::BufferView<const int> indices;
+    luisa::compute::BufferView<const Eigen::Matrix<T, N, 1>> values;
     SizeT count = 0;
     SizeT capacity = 0;
 };
@@ -33,10 +36,19 @@ struct DoubletVectorView
 template<typename T, int N>
 struct MutableDoubletVectorView
 {
-    luisa::compute::BufferView<luisa::uint> indices;
-    luisa::compute::BufferView<luisa::Vector<T, N>> values;
+    luisa::compute::BufferView<int> indices;
+    luisa::compute::BufferView<Eigen::Matrix<T, N, 1>> values;
     SizeT count = 0;
     SizeT capacity = 0;
+
+    MutableDoubletVectorView subview(SizeT offset, SizeT subcount) const noexcept
+    {
+        return MutableDoubletVectorView{
+            indices.subview(offset, subcount),
+            values.subview(offset, subcount),
+            subcount,
+            subcount};
+    }
 };
 
 /**
@@ -44,13 +56,15 @@ struct MutableDoubletVectorView
  * 
  * Equivalent to muda::TripletMatrixView<T, N>
  * For block matrices, N is the dimension of the block (e.g., 3 for 3x3 blocks)
+ * 
+ * NOTE: Uses int indices and Eigen::Matrix values to be compatible with MatrixConverter
  */
 template<typename T, int N>
 struct TripletMatrixView
 {
-    luisa::compute::BufferView<const luisa::uint> row_indices;
-    luisa::compute::BufferView<const luisa::uint> col_indices;
-    luisa::compute::BufferView<const luisa::Matrix<T, N, N>> values;
+    luisa::compute::BufferView<const int> row_indices;
+    luisa::compute::BufferView<const int> col_indices;
+    luisa::compute::BufferView<const Eigen::Matrix<T, N, N>> values;
     SizeT count = 0;
     SizeT capacity = 0;
 };
@@ -61,11 +75,42 @@ struct TripletMatrixView
 template<typename T, int N>
 struct MutableTripletMatrixView
 {
-    luisa::compute::BufferView<luisa::uint> row_indices;
-    luisa::compute::BufferView<luisa::uint> col_indices;
-    luisa::compute::BufferView<luisa::Matrix<T, N, N>> values;
+    luisa::compute::BufferView<int> row_indices;
+    luisa::compute::BufferView<int> col_indices;
+    luisa::compute::BufferView<Eigen::Matrix<T, N, N>> values;
     SizeT count = 0;
     SizeT capacity = 0;
+    // Submatrix offset (for global matrix indexing)
+    int2 submatrix_offset = {0, 0};
+
+    MutableTripletMatrixView subview(SizeT offset, SizeT subcount) const noexcept
+    {
+        return MutableTripletMatrixView{
+            row_indices.subview(offset, subcount),
+            col_indices.subview(offset, subcount),
+            values.subview(offset, subcount),
+            subcount,
+            subcount,
+            submatrix_offset};
+    }
+
+    /**
+     * @brief Create a submatrix view with offset applied to indices
+     * 
+     * This is used when a subsystem writes to a portion of the global matrix.
+     * The offset is added to all row and column indices when writing.
+     * 
+     * @param offset The (row, col) offset in the global matrix
+     * @param size The (row_count, col_count) of the submatrix
+     * @return A new view with the offset stored
+     */
+    MutableTripletMatrixView submatrix(int2 offset, int2 size) const noexcept
+    {
+        (void)size;  // Size is for validation/debugging only
+        MutableTripletMatrixView result = *this;
+        result.submatrix_offset = offset;
+        return result;
+    }
 };
 
 // Type aliases for 3D (common case)
@@ -78,13 +123,15 @@ using MutableTripletMatrix3 = MutableTripletMatrixView<Float, 3>;
  * @brief Block COO matrix view
  * 
  * Equivalent to muda::BCOOMatrixView
+ * 
+ * NOTE: Uses int indices and Eigen::Matrix values to be compatible with MatrixConverter
  */
 template<typename T, int N>
 struct BCOOMatrixView
 {
-    luisa::compute::BufferView<const luisa::uint> block_row_indices;
-    luisa::compute::BufferView<const luisa::uint> block_col_indices;
-    luisa::compute::BufferView<const luisa::Matrix<T, N, N>> block_values;
+    luisa::compute::BufferView<const int> block_row_indices;
+    luisa::compute::BufferView<const int> block_col_indices;
+    luisa::compute::BufferView<const Eigen::Matrix<T, N, N>> block_values;
     SizeT block_count = 0;
 };
 
@@ -94,20 +141,22 @@ struct BCOOMatrixView
 template<typename T, int N>
 struct CBCOOMatrixView
 {
-    luisa::compute::BufferView<const luisa::uint> block_row_indices;
-    luisa::compute::BufferView<const luisa::uint> block_col_indices;
-    luisa::compute::BufferView<const luisa::Matrix<T, N, N>> block_values;
+    luisa::compute::BufferView<const int> block_row_indices;
+    luisa::compute::BufferView<const int> block_col_indices;
+    luisa::compute::BufferView<const Eigen::Matrix<T, N, N>> block_values;
     SizeT block_count = 0;
 };
 
 /**
  * @brief Block COO vector view
+ * 
+ * NOTE: Uses int indices and Eigen::Matrix values to be compatible with MatrixConverter
  */
 template<typename T, int N>
 struct BCOOVectorView
 {
-    luisa::compute::BufferView<const luisa::uint> block_indices;
-    luisa::compute::BufferView<const luisa::Vector<T, N>> block_values;
+    luisa::compute::BufferView<const int> block_indices;
+    luisa::compute::BufferView<const Eigen::Matrix<T, N, 1>> block_values;
     SizeT block_count = 0;
 };
 
@@ -117,8 +166,8 @@ struct BCOOVectorView
 template<typename T, int N>
 struct CBCOOVectorView
 {
-    luisa::compute::BufferView<const luisa::uint> block_indices;
-    luisa::compute::BufferView<const luisa::Vector<T, N>> block_values;
+    luisa::compute::BufferView<const int> block_indices;
+    luisa::compute::BufferView<const Eigen::Matrix<T, N, 1>> block_values;
     SizeT block_count = 0;
 };
 
@@ -242,14 +291,18 @@ class GlobalDyTopoEffectManager final : public SimSystem
      * @brief Container for triplet format sparse matrix data (device buffers)
      * 
      * Equivalent to muda::DeviceTripletMatrix<Float, 3>
+     * 
+     * NOTE: Uses int indices and Eigen::Matrix values to be compatible with MatrixConverter
      */
     struct DeviceTripletMatrix3
     {
-        luisa::compute::Buffer<luisa::uint> row_indices;
-        luisa::compute::Buffer<luisa::uint> col_indices;
-        luisa::compute::Buffer<Matrix3x3> values;
+        luisa::compute::Buffer<int> row_indices;
+        luisa::compute::Buffer<int> col_indices;
+        luisa::compute::Buffer<Eigen::Matrix<Float, 3, 3>> values;
         SizeT count = 0;
         SizeT capacity = 0;
+        SizeT block_rows = 0;
+        SizeT block_cols = 0;
 
         MutableTripletMatrix3 view() noexcept
         {
@@ -272,19 +325,31 @@ class GlobalDyTopoEffectManager final : public SimSystem
         }
 
         void clear() noexcept { count = 0; }
+
+        SizeT triplet_count() const noexcept { return count; }
+        SizeT triplet_capacity() const noexcept { return capacity; }
+        
+        void reshape(SizeT rows, SizeT cols) noexcept
+        {
+            block_rows = rows;
+            block_cols = cols;
+        }
     };
 
     /**
      * @brief Container for doublet format sparse vector data (device buffers)
      * 
      * Equivalent to muda::DeviceDoubletVector<Float, 3>
+     * 
+     * NOTE: Uses int indices and Eigen::Matrix values to be compatible with MatrixConverter
      */
     struct DeviceDoubletVector3
     {
-        luisa::compute::Buffer<luisa::uint> indices;
-        luisa::compute::Buffer<Vector3> values;
+        luisa::compute::Buffer<int> indices;
+        luisa::compute::Buffer<Eigen::Matrix<Float, 3, 1>> values;
         SizeT count = 0;
         SizeT capacity = 0;
+        SizeT segment_count = 0;
 
         MutableDoubletVector3 view() noexcept
         {
@@ -305,20 +370,32 @@ class GlobalDyTopoEffectManager final : public SimSystem
         }
 
         void clear() noexcept { count = 0; }
+
+        SizeT doublet_count() const noexcept { return count; }
+        SizeT doublet_capacity() const noexcept { return capacity; }
+        
+        void reshape(SizeT segments) noexcept
+        {
+            segment_count = segments;
+        }
     };
 
     /**
      * @brief Container for block COO format sparse matrix data (device buffers)
      * 
      * Equivalent to muda::DeviceBCOOMatrix<Float, 3>
+     * 
+     * NOTE: Uses int indices and Eigen::Matrix values to be compatible with MatrixConverter
      */
     struct DeviceBCOOMatrix3
     {
-        luisa::compute::Buffer<luisa::uint> block_row_indices;
-        luisa::compute::Buffer<luisa::uint> block_col_indices;
-        luisa::compute::Buffer<Matrix3x3> block_values;
+        luisa::compute::Buffer<int> block_row_indices;
+        luisa::compute::Buffer<int> block_col_indices;
+        luisa::compute::Buffer<Eigen::Matrix<Float, 3, 3>> block_values;
         SizeT block_count = 0;
         SizeT block_capacity = 0;
+        SizeT block_rows = 0;
+        SizeT block_cols = 0;
 
         BCOOMatrix3 view() noexcept
         {
@@ -339,19 +416,30 @@ class GlobalDyTopoEffectManager final : public SimSystem
         }
 
         void clear() noexcept { block_count = 0; }
+
+        SizeT triplet_count() const noexcept { return block_count; }
+        
+        void reshape(SizeT rows, SizeT cols) noexcept
+        {
+            block_rows = rows;
+            block_cols = cols;
+        }
     };
 
     /**
      * @brief Container for block COO format sparse vector data (device buffers)
      * 
      * Equivalent to muda::DeviceBCOOVector<Float, 3>
+     * 
+     * NOTE: Uses int indices and Eigen::Matrix values to be compatible with MatrixConverter
      */
     struct DeviceBCOOVector3
     {
-        luisa::compute::Buffer<luisa::uint> block_indices;
-        luisa::compute::Buffer<Vector3> block_values;
+        luisa::compute::Buffer<int> block_indices;
+        luisa::compute::Buffer<Eigen::Matrix<Float, 3, 1>> block_values;
         SizeT block_count = 0;
         SizeT block_capacity = 0;
+        SizeT segment_count = 0;
 
         BCOOVector3 view() noexcept
         {
@@ -370,6 +458,13 @@ class GlobalDyTopoEffectManager final : public SimSystem
         }
 
         void clear() noexcept { block_count = 0; }
+
+        SizeT doublet_count() const noexcept { return block_count; }
+        
+        void reshape(SizeT segments) noexcept
+        {
+            segment_count = segments;
+        }
     };
 
     class Impl
@@ -398,12 +493,14 @@ class GlobalDyTopoEffectManager final : public SimSystem
         OffsetCountCollection<IndexT> reporter_gradient_offsets_counts;
         OffsetCountCollection<IndexT> reporter_hessian_offsets_counts;
 
-        DeviceTripletMatrix3 collected_dytopo_effect_hessian;
-        DeviceDoubletVector3 collected_dytopo_effect_gradient;
+        // Use algorithm/matrix_converter types for internal storage
+        // These are compatible with MatrixConverter<Float, 3>
+        DeviceTripletMatrix<Float, 3> collected_dytopo_effect_hessian;
+        DeviceDoubletVector<Float, 3> collected_dytopo_effect_gradient;
 
-        // MatrixConverter<Float, 3>        matrix_converter;
-        DeviceBCOOMatrix3 sorted_dytopo_effect_hessian;
-        DeviceBCOOVector3 sorted_dytopo_effect_gradient;
+        MatrixConverter<Float, 3>        matrix_converter;
+        DeviceBCOOMatrix<Float, 3> sorted_dytopo_effect_hessian;
+        DeviceBCOOVector<Float, 3> sorted_dytopo_effect_gradient;
 
         /***********************************************************************
         *                               Receiver                               *
@@ -415,11 +512,11 @@ class GlobalDyTopoEffectManager final : public SimSystem
         luisa::compute::Buffer<IndexT> selected_hessian;
         luisa::compute::Buffer<IndexT> selected_hessian_offsets;
 
-        luisa::vector<DeviceTripletMatrix3> classified_dytopo_effect_hessians;
-        luisa::vector<DeviceDoubletVector3> classified_dytopo_effect_gradients;
+        luisa::vector<DeviceTripletMatrix<Float, 3>> classified_dytopo_effect_hessians;
+        luisa::vector<DeviceDoubletVector<Float, 3>> classified_dytopo_effect_gradients;
 
-        void loose_resize_entries(DeviceTripletMatrix3& m, SizeT size);
-        void loose_resize_entries(DeviceDoubletVector3& v, SizeT size);
+        void loose_resize_entries(DeviceTripletMatrix<Float, 3>& m, SizeT size);
+        void loose_resize_entries(DeviceDoubletVector<Float, 3>& v, SizeT size);
         
         template <typename T>
         void loose_resize(luisa::compute::Buffer<T>& buffer, SizeT size)

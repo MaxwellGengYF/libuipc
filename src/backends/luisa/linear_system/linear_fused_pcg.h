@@ -23,6 +23,9 @@ class LinearFusedPCG : public IterativeSolver
                     luisa::compute::BufferView<const Float> b,
                     SizeT                                   max_iter);
 
+    void check_init_rz_nan_inf(Float rz);
+    void check_iter_rz_nan_inf(Float rz, SizeT k);
+
     // Device buffers for PCG vectors (using LuisaCompute Buffer instead of muda DeviceDenseVector)
     luisa::compute::Buffer<Float> r;
     luisa::compute::Buffer<Float> z;
@@ -33,6 +36,7 @@ class LinearFusedPCG : public IterativeSolver
     luisa::compute::Buffer<Float> d_rz;
     luisa::compute::Buffer<Float> d_pAp;
     luisa::compute::Buffer<Float> d_rz_new;
+    luisa::compute::Buffer<int>   d_converged;  // Convergence flag
 
     Float max_iter_ratio  = 2.0;
     Float global_tol_rate = 1e-4;

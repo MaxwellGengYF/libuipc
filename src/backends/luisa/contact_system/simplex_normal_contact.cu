@@ -1,0 +1,828 @@
+#include <contact_system/simplex_normal_contact.h>
+#include <utils/distance.h>
+#include <utils/codim_thickness.h>
+
+namespace uipc::backend::luisa
+{
+void SimplexNormalContact::do_build(ContactReporter::BuildInfo& info)
+{
+    m_impl.global_trajectory_filter = require<GlobalTrajectoryFilter>();
+    m_impl.global_contact_manager   = require<GlobalContactManager>();
+    m_impl.global_vertex_manager    = require<GlobalVertexManager>();
+    auto dt_attr = world().scene().config().find<Float>("dt");
+    m_impl.dt    = dt_attr->view()[0];
+
+    BuildInfo this_info;
+    do_build(this_info);
+
+    on_init_scene(
+        [this]
+        {
+            m_impl.simplex_trajectory_filter =
+                m_impl.global_trajectory_filter->find<SimplexTrajectoryFilter>();
+        });
+}
+
+void SimplexNormalContact::do_report_energy_extent(GlobalContactManager::EnergyExtentInfo& info)
+{
+    auto& filter = m_impl.simplex_trajectory_filter;
+
+    m_impl.PT_count = filter->PTs().size();
+    m_impl.EE_count = filter->EEs().size();
+    m_impl.PE_count = filter->PEs().size();
+    m_impl.PP_count = filter->PPs().size();
+
+    info.energy_count(m_impl.PT_count + m_impl.EE_count + m_impl.PE_count
+                      + m_impl.PP_count);
+}
+
+void SimplexNormalContact::do_compute_energy(GlobalContactManager::EnergyInfo& info)
+{
+    EnergyInfo this_info{&m_impl};
+
+    auto energies = info.energies();
+
+    SizeT offset = 0;
+
+    this_info.m_PT_energies = energies.subview(offset, m_impl.PT_count);
+    m_impl.PT_energies      = this_info.m_PT_energies;
+    offset += m_impl.PT_count;
+
+    this_info.m_EE_energies = energies.subview(offset, m_impl.EE_count);
+    m_impl.EE_energies      = this_info.m_EE_energies;
+    offset += m_impl.EE_count;
+
+    this_info.m_PE_energies = energies.subview(offset, m_impl.PE_count);
+    m_impl.PE_energies      = this_info.m_PE_energies;
+    offset += m_impl.PE_count;
+
+    this_info.m_PP_energies = energies.subview(offset, m_impl.PP_count);
+    m_impl.PP_energies      = this_info.m_PP_energies;
+    offset += m_impl.PP_count;
+
+    UIPC_ASSERT(offset == energies.size(),
+                "size mismatch, expected {}, got {}",
+                energies.size(),
+                offset);
+
+    do_compute_energy(this_info);
+}
+
+void SimplexNormalContact::do_report_gradient_hessian_extent(GlobalContactManager::GradientHessianExtentInfo& info)
+{
+    auto& filter = m_impl.simplex_trajectory_filter;
+    bool  gradient_only = info.gradient_only();
+
+    m_impl.PT_count = filter->PTs().size();
+    m_impl.EE_count = filter->EEs().size();
+    m_impl.PE_count = filter->PEs().size();
+    m_impl.PP_count = filter->PPs().size();
+
+    auto pt_count = m_impl.PT_count;
+    auto ee_count = m_impl.EE_count;
+    auto pe_count = m_impl.PE_count;
+    auto pp_count = m_impl.PP_count;
+
+    SizeT contact_gradient_count =
+        pt_count * 4 + ee_count * 4 + pe_count * 3 + pp_count * 2;
+    SizeT contact_hessian_count =
+        pt_count * PTHalfHessianSize + ee_count * EEHalfHessianSize
+        + pe_count * PEHalfHessianSize + pp_count * PPHalfHessianSize;
+
+    info.gradient_count(contact_gradient_count);
+    info.hessian_count(gradient_only ? 0 : contact_hessian_count);
+}
+
+void SimplexNormalContact::do_assemble(GlobalContactManager::GradientHessianInfo& info)
+{
+    ContactInfo this_info{&m_impl};
+    this_info.m_gradient_only = info.gradient_only();
+    // gradient
+    {
+        IndexT offset = 0;
+        this_info.m_PT_gradients = info.gradients().subview(offset, m_impl.PT_count * 4);
+        m_impl.PT_gradients = this_info.m_PT_gradients;
+        offset += m_impl.PT_count * 4;
+
+        this_info.m_EE_gradients = info.gradients().subview(offset, m_impl.EE_count * 4);
+        m_impl.EE_gradients = this_info.m_EE_gradients;
+        offset += m_impl.EE_count * 4;
+
+        this_info.m_PE_gradients = info.gradients().subview(offset, m_impl.PE_count * 3);
+        m_impl.PE_gradients = this_info.m_PE_gradients;
+        offset += m_impl.PE_count * 3;
+
+        this_info.m_PP_gradients = info.gradients().subview(offset, m_impl.PP_count * 2);
+        m_impl.PP_gradients = this_info.m_PP_gradients;
+        offset += m_impl.PP_count * 2;
+
+        UIPC_ASSERT(offset == info.gradients().doublet_count(), "size mismatch");
+    }
+
+    // hessian
+    {
+        if(info.gradient_only())
+        {
+            this_info.m_PT_hessians = {};
+            this_info.m_EE_hessians = {};
+            this_info.m_PE_hessians = {};
+            this_info.m_PP_hessians = {};
+
+            m_impl.PT_hessians = {};
+            m_impl.EE_hessians = {};
+            m_impl.PE_hessians = {};
+            m_impl.PP_hessians = {};
+        }
+        else
+        {
+            IndexT offset = 0;
+            this_info.m_PT_hessians =
+                info.hessians().subview(offset, m_impl.PT_count * PTHalfHessianSize);
+            m_impl.PT_hessians = this_info.m_PT_hessians;
+            offset += m_impl.PT_count * PTHalfHessianSize;
+
+            this_info.m_EE_hessians =
+                info.hessians().subview(offset, m_impl.EE_count * EEHalfHessianSize);
+            m_impl.EE_hessians = this_info.m_EE_hessians;
+            offset += m_impl.EE_count * EEHalfHessianSize;
+
+            this_info.m_PE_hessians =
+                info.hessians().subview(offset, m_impl.PE_count * PEHalfHessianSize);
+            m_impl.PE_hessians = this_info.m_PE_hessians;
+            offset += m_impl.PE_count * PEHalfHessianSize;
+
+            this_info.m_PP_hessians =
+                info.hessians().subview(offset, m_impl.PP_count * PPHalfHessianSize);
+            m_impl.PP_hessians = this_info.m_PP_hessians;
+            offset += m_impl.PP_count * PPHalfHessianSize;
+
+            UIPC_ASSERT(offset == info.hessians().triplet_count(), "size mismatch");
+        }
+    }
+
+    // let subclass to fill in the data
+    do_assemble(this_info);
+}
+
+BufferView<const ContactCoeff> SimplexNormalContact::BaseInfo::contact_tabular() const
+{
+    return m_impl->global_contact_manager->contact_tabular();
+}
+
+
+BufferView<const Vector4i> SimplexNormalContact::PTs() const
+{
+    return m_impl.simplex_trajectory_filter->PTs();
+}
+
+BufferView<const Float> SimplexNormalContact::PT_energies() const
+{
+    return m_impl.PT_energies;
+}
+
+BufferView<const Doublet<Vector3>> SimplexNormalContact::PT_gradients() const
+{
+    return m_impl.PT_gradients;
+}
+
+BufferView<const Triplet<Matrix3>> SimplexNormalContact::PT_hessians() const
+{
+    return m_impl.PT_hessians;
+}
+
+BufferView<const Vector4i> SimplexNormalContact::EEs() const
+{
+    return m_impl.simplex_trajectory_filter->EEs();
+}
+
+BufferView<const Float> SimplexNormalContact::EE_energies() const
+{
+    return m_impl.EE_energies;
+}
+
+BufferView<const Doublet<Vector3>> SimplexNormalContact::EE_gradients() const
+{
+    return m_impl.EE_gradients;
+}
+
+BufferView<const Triplet<Matrix3>> SimplexNormalContact::EE_hessians() const
+{
+    return m_impl.EE_hessians;
+}
+
+BufferView<const Vector3i> SimplexNormalContact::PEs() const
+{
+    return m_impl.simplex_trajectory_filter->PEs();
+}
+
+BufferView<const Float> SimplexNormalContact::PE_energies() const
+{
+    return m_impl.PE_energies;
+}
+
+BufferView<const Doublet<Vector3>> SimplexNormalContact::PE_gradients() const
+{
+    return m_impl.PE_gradients;
+}
+
+BufferView<const Triplet<Matrix3>> SimplexNormalContact::PE_hessians() const
+{
+    return m_impl.PE_hessians;
+}
+
+BufferView<const Vector2i> SimplexNormalContact::PPs() const
+{
+    return m_impl.simplex_trajectory_filter->PPs();
+}
+
+BufferView<const Float> SimplexNormalContact::PP_energies() const
+{
+    return m_impl.PP_energies;
+}
+
+BufferView<const Doublet<Vector3>> SimplexNormalContact::PP_gradients() const
+{
+    return m_impl.PP_gradients;
+}
+
+BufferView<const Triplet<Matrix3>> SimplexNormalContact::PP_hessians() const
+{
+    return m_impl.PP_hessians;
+}
+
+BufferView<const Vector4i> SimplexNormalContact::BaseInfo::PTs() const
+{
+    // return m_impl->PT_constraints.view();
+    return m_impl->simplex_trajectory_filter->PTs();
+}
+
+BufferView<const Vector4i> SimplexNormalContact::BaseInfo::EEs() const
+{
+    return m_impl->simplex_trajectory_filter->EEs();
+}
+
+BufferView<const Vector3i> SimplexNormalContact::BaseInfo::PEs() const
+{
+    return m_impl->simplex_trajectory_filter->PEs();
+}
+
+BufferView<const Vector2i> SimplexNormalContact::BaseInfo::PPs() const
+{
+    return m_impl->simplex_trajectory_filter->PPs();
+}
+
+BufferView<const Float> SimplexNormalContact::BaseInfo::thicknesses() const
+{
+    return m_impl->global_vertex_manager->thicknesses();
+}
+
+BufferView<const Vector3> SimplexNormalContact::BaseInfo::positions() const
+{
+    return m_impl->global_vertex_manager->positions();
+}
+
+BufferView<const Vector3> SimplexNormalContact::BaseInfo::prev_positions() const
+{
+    return m_impl->global_vertex_manager->prev_positions();
+}
+
+BufferView<const Vector3> SimplexNormalContact::BaseInfo::rest_positions() const
+{
+    return m_impl->global_vertex_manager->rest_positions();
+}
+
+BufferView<const IndexT> SimplexNormalContact::BaseInfo::contact_element_ids() const
+{
+    return m_impl->global_vertex_manager->contact_element_ids();
+}
+
+Float SimplexNormalContact::BaseInfo::d_hat() const
+{
+    return m_impl->global_contact_manager->d_hat();
+}
+
+BufferView<const Float> SimplexNormalContact::BaseInfo::d_hats() const
+{
+    return m_impl->global_vertex_manager->d_hats();
+}
+
+Float SimplexNormalContact::BaseInfo::dt() const
+{
+    return m_impl->dt;
+}
+
+Float SimplexNormalContact::BaseInfo::eps_velocity() const
+{
+    return m_impl->global_contact_manager->eps_velocity();
+}
+}  // namespace uipc::backend::luisa
+
+#include <contact_system/contact_exporter.h>
+
+namespace uipc::backend::luisa
+{
+//PT
+class SimplexNormalContactPTExporter final : public ContactExporter
+{
+  public:
+    using ContactExporter::ContactExporter;
+
+    SimSystemSlot<SimplexNormalContact> simplex_normal_contact;
+
+    std::string_view get_prim_type() const noexcept override { return "PT+N"; }
+
+    void do_build(BuildInfo& info) override
+    {
+        simplex_normal_contact =
+            require<SimplexNormalContact>(QueryOptions{.exact = false});
+    }
+
+    void get_contact_energy(std::string_view prim_type, geometry::Geometry& vert_grad) override
+    {
+        auto PTs      = simplex_normal_contact->PTs();
+        auto energies = simplex_normal_contact->PT_energies();
+        UIPC_ASSERT(PTs.size() == energies.size(), "PTs and energies must have the same size.");
+        vert_grad.instances().resize(PTs.size());
+        auto topo = vert_grad.instances().find<Vector4i>("topo");
+        if(!topo)
+        {
+            topo = vert_grad.instances().create<Vector4i>("topo", Vector4i::Zero());
+        }
+
+        auto topo_view = view(*topo);
+        // Copy from device buffer to host vector
+        vector<Vector4i> h_pt_data(PTs.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << PTs.copy_to(h_pt_data.data())
+               << synchronize();
+        std::memcpy(topo_view.data(), h_pt_data.data(), h_pt_data.size() * sizeof(Vector4i));
+
+        auto energy = vert_grad.instances().find<Float>("energy");
+        if(!energy)
+        {
+            energy = vert_grad.instances().create<Float>("energy", 0.0f);
+        }
+
+        auto energy_view = view(*energy);
+        vector<Float> h_energy_data(PTs.size());
+        stream << energies.copy_to(h_energy_data.data())
+               << synchronize();
+        std::memcpy(energy_view.data(), h_energy_data.data(), h_energy_data.size() * sizeof(Float));
+    }
+
+    void get_contact_gradient(std::string_view prim_type, geometry::Geometry& vert_grad) override
+    {
+        auto PT_grads = simplex_normal_contact->PT_gradients();
+        vert_grad.instances().resize(PT_grads.size());
+        auto i = vert_grad.instances().find<IndexT>("i");
+        if(!i)
+        {
+            i = vert_grad.instances().create<IndexT>("i", -1);
+        }
+        auto i_view = view(*i);
+        
+        // Copy indices and values from device
+        vector<Doublet<Vector3>> h_grad_data(PT_grads.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << PT_grads.copy_to(h_grad_data.data())
+               << synchronize();
+        
+        for(SizeT idx = 0; idx < h_grad_data.size(); ++idx)
+        {
+            i_view[idx] = h_grad_data[idx].index;
+        }
+
+        auto grad = vert_grad.instances().find<Vector3>("grad");
+        if(!grad)
+        {
+            grad = vert_grad.instances().create<Vector3>("grad", Vector3::Zero());
+        }
+        auto grad_view = view(*grad);
+        for(SizeT idx = 0; idx < h_grad_data.size(); ++idx)
+        {
+            grad_view[idx] = h_grad_data[idx].value;
+        }
+    }
+
+    void get_contact_hessian(std::string_view prim_type, geometry::Geometry& vert_hess) override
+    {
+        auto PT_hess = simplex_normal_contact->PT_hessians();
+        vert_hess.instances().resize(PT_hess.size());
+
+        auto i = vert_hess.instances().find<IndexT>("i");
+        if(!i)
+        {
+            i = vert_hess.instances().create<IndexT>("i", -1);
+        }
+
+        auto i_view = view(*i);
+
+        auto j = vert_hess.instances().find<IndexT>("j");
+        if(!j)
+        {
+            j = vert_hess.instances().create<IndexT>("j", -1);
+        }
+
+        auto j_view = view(*j);
+
+        auto hess = vert_hess.instances().find<Matrix3x3>("hess");
+        if(!hess)
+        {
+            hess = vert_hess.instances().create<Matrix3x3>("hess", Matrix3x3::Zero());
+        }
+        auto hess_view = view(*hess);
+
+        // Copy hessian data from device
+        vector<Triplet<Matrix3>> h_hess_data(PT_hess.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << PT_hess.copy_to(h_hess_data.data())
+               << synchronize();
+        
+        for(SizeT idx = 0; idx < h_hess_data.size(); ++idx)
+        {
+            i_view[idx] = h_hess_data[idx].row;
+            j_view[idx] = h_hess_data[idx].col;
+            hess_view[idx] = h_hess_data[idx].value;
+        }
+    }
+};
+REGISTER_SIM_SYSTEM(SimplexNormalContactPTExporter);
+
+// EE
+class SimplexNormalContactEEExporter final : public ContactExporter
+{
+  public:
+    using ContactExporter::ContactExporter;
+
+    SimSystemSlot<SimplexNormalContact> simplex_normal_contact;
+
+    std::string_view get_prim_type() const noexcept override { return "EE+N"; }
+
+    void do_build(BuildInfo& info) override
+    {
+        simplex_normal_contact =
+            require<SimplexNormalContact>(QueryOptions{.exact = false});
+    }
+
+    void get_contact_energy(std::string_view prim_type, geometry::Geometry& energy_geo) override
+    {
+        auto EEs      = simplex_normal_contact->EEs();
+        auto energies = simplex_normal_contact->EE_energies();
+        UIPC_ASSERT(EEs.size() == energies.size(), "EEs and energies must have the same size.");
+        energy_geo.instances().resize(EEs.size());
+        auto topo = energy_geo.instances().find<Vector4i>("topo");
+        if(!topo)
+        {
+            topo = energy_geo.instances().create<Vector4i>("topo", Vector4i::Zero());
+        }
+
+        auto topo_view = view(*topo);
+        vector<Vector4i> h_ee_data(EEs.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << EEs.copy_to(h_ee_data.data())
+               << synchronize();
+        std::memcpy(topo_view.data(), h_ee_data.data(), h_ee_data.size() * sizeof(Vector4i));
+
+        auto energy = energy_geo.instances().find<Float>("energy");
+        if(!energy)
+        {
+            energy = energy_geo.instances().create<Float>("energy", 0.0f);
+        }
+
+        auto energy_view = view(*energy);
+        vector<Float> h_energy_data(EEs.size());
+        stream << energies.copy_to(h_energy_data.data())
+               << synchronize();
+        std::memcpy(energy_view.data(), h_energy_data.data(), h_energy_data.size() * sizeof(Float));
+    }
+
+    void get_contact_gradient(std::string_view prim_type, geometry::Geometry& vert_grad) override
+    {
+        auto EE_grads = simplex_normal_contact->EE_gradients();
+        vert_grad.instances().resize(EE_grads.size());
+        auto i = vert_grad.instances().find<IndexT>("i");
+        if(!i)
+        {
+            i = vert_grad.instances().create<IndexT>("i", -1);
+        }
+        auto i_view = view(*i);
+        
+        vector<Doublet<Vector3>> h_grad_data(EE_grads.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << EE_grads.copy_to(h_grad_data.data())
+               << synchronize();
+        
+        for(SizeT idx = 0; idx < h_grad_data.size(); ++idx)
+        {
+            i_view[idx] = h_grad_data[idx].index;
+        }
+
+        auto grad = vert_grad.instances().find<Vector3>("grad");
+        if(!grad)
+        {
+            grad = vert_grad.instances().create<Vector3>("grad", Vector3::Zero());
+        }
+        auto grad_view = view(*grad);
+        for(SizeT idx = 0; idx < h_grad_data.size(); ++idx)
+        {
+            grad_view[idx] = h_grad_data[idx].value;
+        }
+    }
+
+    void get_contact_hessian(std::string_view prim_type, geometry::Geometry& vert_hess) override
+    {
+        auto EE_hess = simplex_normal_contact->EE_hessians();
+        vert_hess.instances().resize(EE_hess.size());
+        auto i = vert_hess.instances().find<IndexT>("i");
+        if(!i)
+        {
+            i = vert_hess.instances().create<IndexT>("i", -1);
+        }
+        auto i_view = view(*i);
+
+        auto j = vert_hess.instances().find<IndexT>("j");
+        if(!j)
+        {
+            j = vert_hess.instances().create<IndexT>("j", -1);
+        }
+        auto j_view = view(*j);
+
+        auto hess = vert_hess.instances().find<Matrix3x3>("hess");
+        if(!hess)
+        {
+            hess = vert_hess.instances().create<Matrix3x3>("hess", Matrix3x3::Zero());
+        }
+        auto hess_view = view(*hess);
+
+        vector<Triplet<Matrix3>> h_hess_data(EE_hess.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << EE_hess.copy_to(h_hess_data.data())
+               << synchronize();
+        
+        for(SizeT idx = 0; idx < h_hess_data.size(); ++idx)
+        {
+            i_view[idx] = h_hess_data[idx].row;
+            j_view[idx] = h_hess_data[idx].col;
+            hess_view[idx] = h_hess_data[idx].value;
+        }
+    }
+};
+REGISTER_SIM_SYSTEM(SimplexNormalContactEEExporter);
+
+// PE
+class SimplexNormalContactPEExporter final : public ContactExporter
+{
+  public:
+    using ContactExporter::ContactExporter;
+
+    SimSystemSlot<SimplexNormalContact> simplex_normal_contact;
+
+    std::string_view get_prim_type() const noexcept override { return "PE+N"; }
+
+    void do_build(BuildInfo& info) override
+    {
+        simplex_normal_contact =
+            require<SimplexNormalContact>(QueryOptions{.exact = false});
+    }
+
+    void get_contact_energy(std::string_view prim_type, geometry::Geometry& vert_grad) override
+    {
+        auto PEs      = simplex_normal_contact->PEs();
+        auto energies = simplex_normal_contact->PE_energies();
+        UIPC_ASSERT(PEs.size() == energies.size(), "PEs and energies must have the same size.");
+
+        vert_grad.instances().resize(PEs.size());
+        auto topo = vert_grad.instances().find<Vector3i>("topo");
+        if(!topo)
+        {
+            topo = vert_grad.instances().create<Vector3i>("topo", Vector3i::Zero());
+        }
+
+        auto topo_view = view(*topo);
+        vector<Vector3i> h_pe_data(PEs.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << PEs.copy_to(h_pe_data.data())
+               << synchronize();
+        std::memcpy(topo_view.data(), h_pe_data.data(), h_pe_data.size() * sizeof(Vector3i));
+
+        auto energy = vert_grad.instances().find<Float>("energy");
+        if(!energy)
+        {
+            energy = vert_grad.instances().create<Float>("energy", 0.0f);
+        }
+
+        auto energy_view = view(*energy);
+        vector<Float> h_energy_data(PEs.size());
+        stream << energies.copy_to(h_energy_data.data())
+               << synchronize();
+        std::memcpy(energy_view.data(), h_energy_data.data(), h_energy_data.size() * sizeof(Float));
+    }
+
+    void get_contact_gradient(std::string_view prim_type, geometry::Geometry& vert_grad) override
+    {
+        auto PE_grads = simplex_normal_contact->PE_gradients();
+        vert_grad.instances().resize(PE_grads.size());
+        auto i = vert_grad.instances().find<IndexT>("i");
+        if(!i)
+        {
+            i = vert_grad.instances().create<IndexT>("i", -1);
+        }
+        auto i_view = view(*i);
+        
+        vector<Doublet<Vector3>> h_grad_data(PE_grads.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << PE_grads.copy_to(h_grad_data.data())
+               << synchronize();
+        
+        for(SizeT idx = 0; idx < h_grad_data.size(); ++idx)
+        {
+            i_view[idx] = h_grad_data[idx].index;
+        }
+
+        auto grad = vert_grad.instances().find<Vector3>("grad");
+        if(!grad)
+        {
+            grad = vert_grad.instances().create<Vector3>("grad", Vector3::Zero());
+        }
+        auto grad_view = view(*grad);
+        for(SizeT idx = 0; idx < h_grad_data.size(); ++idx)
+        {
+            grad_view[idx] = h_grad_data[idx].value;
+        }
+    }
+
+    void get_contact_hessian(std::string_view prim_type, geometry::Geometry& vert_hess) override
+    {
+        auto PE_hess = simplex_normal_contact->PE_hessians();
+        vert_hess.instances().resize(PE_hess.size());
+        auto i = vert_hess.instances().find<IndexT>("i");
+        if(!i)
+        {
+            i = vert_hess.instances().create<IndexT>("i", -1);
+        }
+
+        auto i_view = view(*i);
+
+        auto j = vert_hess.instances().find<IndexT>("j");
+        if(!j)
+        {
+            j = vert_hess.instances().create<IndexT>("j", -1);
+        }
+        auto j_view = view(*j);
+
+        auto hess = vert_hess.instances().find<Matrix3x3>("hess");
+        if(!hess)
+        {
+            hess = vert_hess.instances().create<Matrix3x3>("hess", Matrix3x3::Zero());
+        }
+        auto hess_view = view(*hess);
+
+        vector<Triplet<Matrix3>> h_hess_data(PE_hess.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << PE_hess.copy_to(h_hess_data.data())
+               << synchronize();
+        
+        for(SizeT idx = 0; idx < h_hess_data.size(); ++idx)
+        {
+            i_view[idx] = h_hess_data[idx].row;
+            j_view[idx] = h_hess_data[idx].col;
+            hess_view[idx] = h_hess_data[idx].value;
+        }
+    }
+};
+REGISTER_SIM_SYSTEM(SimplexNormalContactPEExporter);
+
+// PP
+class SimplexNormalContactPPExporter final : public ContactExporter
+{
+  public:
+    using ContactExporter::ContactExporter;
+
+    SimSystemSlot<SimplexNormalContact> simplex_normal_contact;
+
+    std::string_view get_prim_type() const noexcept override { return "PP+N"; }
+
+    void do_build(BuildInfo& info) override
+    {
+        simplex_normal_contact =
+            require<SimplexNormalContact>(QueryOptions{.exact = false});
+    }
+
+    void get_contact_energy(std::string_view prim_type, geometry::Geometry& vert_grad) override
+    {
+        auto PPs      = simplex_normal_contact->PPs();
+        auto energies = simplex_normal_contact->PP_energies();
+        UIPC_ASSERT(PPs.size() == energies.size(), "PPs and energies must have the same size.");
+
+        vert_grad.instances().resize(PPs.size());
+        auto topo = vert_grad.instances().find<Vector2i>("topo");
+        if(!topo)
+        {
+            topo = vert_grad.instances().create<Vector2i>("topo", Vector2i::Zero());
+        }
+
+        auto topo_view = view(*topo);
+        vector<Vector2i> h_pp_data(PPs.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << PPs.copy_to(h_pp_data.data())
+               << synchronize();
+        std::memcpy(topo_view.data(), h_pp_data.data(), h_pp_data.size() * sizeof(Vector2i));
+
+        auto energy = vert_grad.instances().find<Float>("energy");
+        if(!energy)
+        {
+            energy = vert_grad.instances().create<Float>("energy", 0.0f);
+        }
+
+        auto energy_view = view(*energy);
+        vector<Float> h_energy_data(PPs.size());
+        stream << energies.copy_to(h_energy_data.data())
+               << synchronize();
+        std::memcpy(energy_view.data(), h_energy_data.data(), h_energy_data.size() * sizeof(Float));
+    }
+
+    void get_contact_gradient(std::string_view prim_type, geometry::Geometry& vert_grad) override
+    {
+        auto PP_grads = simplex_normal_contact->PP_gradients();
+        vert_grad.instances().resize(PP_grads.size());
+        auto i = vert_grad.instances().find<IndexT>("i");
+        if(!i)
+        {
+            i = vert_grad.instances().create<IndexT>("i", -1);
+        }
+        auto i_view = view(*i);
+        
+        vector<Doublet<Vector3>> h_grad_data(PP_grads.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << PP_grads.copy_to(h_grad_data.data())
+               << synchronize();
+        
+        for(SizeT idx = 0; idx < h_grad_data.size(); ++idx)
+        {
+            i_view[idx] = h_grad_data[idx].index;
+        }
+
+        auto grad = vert_grad.instances().find<Vector3>("grad");
+        if(!grad)
+        {
+            grad = vert_grad.instances().create<Vector3>("grad", Vector3::Zero());
+        }
+        auto grad_view = view(*grad);
+        for(SizeT idx = 0; idx < h_grad_data.size(); ++idx)
+        {
+            grad_view[idx] = h_grad_data[idx].value;
+        }
+    }
+
+    void get_contact_hessian(std::string_view prim_type, geometry::Geometry& vert_hess) override
+    {
+        auto PP_hess = simplex_normal_contact->PP_hessians();
+        vert_hess.instances().resize(PP_hess.size());
+        auto i = vert_hess.instances().find<IndexT>("i");
+        if(!i)
+        {
+            i = vert_hess.instances().create<IndexT>("i", -1);
+        }
+        auto i_view = view(*i);
+
+        auto j = vert_hess.instances().find<IndexT>("j");
+        if(!j)
+        {
+            j = vert_hess.instances().create<IndexT>("j", -1);
+        }
+        auto j_view = view(*j);
+
+        auto hess = vert_hess.instances().find<Matrix3x3>("hess");
+        if(!hess)
+        {
+            hess = vert_hess.instances().create<Matrix3x3>("hess", Matrix3x3::Zero());
+        }
+        auto hess_view = view(*hess);
+
+        vector<Triplet<Matrix3>> h_hess_data(PP_hess.size());
+        auto& engine = simplex_normal_contact->world().sim_engine();
+        auto& stream = static_cast<SimEngine&>(engine).compute_stream();
+        stream << PP_hess.copy_to(h_hess_data.data())
+               << synchronize();
+        
+        for(SizeT idx = 0; idx < h_hess_data.size(); ++idx)
+        {
+            i_view[idx] = h_hess_data[idx].row;
+            j_view[idx] = h_hess_data[idx].col;
+            hess_view[idx] = h_hess_data[idx].value;
+        }
+    }
+};
+REGISTER_SIM_SYSTEM(SimplexNormalContactPPExporter);
+}  // namespace uipc::backend::luisa

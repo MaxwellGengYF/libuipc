@@ -66,6 +66,14 @@ struct Vector
     }
 };
 
+using Vector9 = Vector<float, 9>;      // 9-element vector for ABD
+using Vector3 = luisa::float3;         // 3-element vector
+using Vector4 = luisa::float4;         // 4-element vector
+
+using Matrix3x3 = luisa::float3x3;     // 3x3 matrix
+using Matrix4x4 = luisa::float4x4;     // 4x4 matrix
+using Matrix9x9 = Matrix<float, 9, 9>; // 9x9 matrix for Hessian transformation
+
 using Matrix3x12 = Vector<float, 36>;  // 3x12 = 36 elements, row-major or col-major layout
 using Matrix12x3 = Vector<float, 36>;  // 12x3 = 36 elements
 

@@ -153,15 +153,18 @@ class SimplexTrajectoryFilter : public TrajectoryFilter
         BufferDump dump_PEs;
         BufferDump dump_PPs;
 
+        /**
+         * @brief Resize a buffer to the given size, with a reserve ratio for future growth.
+         * 
+         * In LuisaCompute, buffers are immutable in size, so we need to recreate them.
+         * This function should be called with access to the device/engine.
+         */
         template <typename T>
-        void loose_resize(Buffer<T>& buffer, SizeT size)
+        void loose_resize(Buffer<T>& buffer, SizeT size, luisa::compute::Device& device)
         {
             if(size > buffer.size())
             {
-                // In LuisaCompute, we need to create a new buffer with larger capacity
-                // The actual resize/reallocation is handled by the device
-                // This is a simplified version - actual implementation may need
-                // device reference for buffer recreation
+                buffer = device.create_buffer<T>(static_cast<size_t>(size * reserve_ratio));
             }
         }
     };

@@ -30,6 +30,8 @@ class LinearPCG : public IterativeSolver
     BufferFloat r;   // residual
     BufferFloat p;   // search direction
     BufferFloat Ap;  // A*p
+    
+    luisa::compute::Buffer<int> d_converged_false;  // Always false (0) for preconditioner
 
     Float max_iter_ratio  = 2.0;
     Float global_tol_rate = 1e-4;

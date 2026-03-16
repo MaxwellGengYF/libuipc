@@ -1,5 +1,6 @@
 #pragma once
 #include <luisa/luisa-compute.h>
+#include <array>
 
 namespace uipc::backend::luisa
 {

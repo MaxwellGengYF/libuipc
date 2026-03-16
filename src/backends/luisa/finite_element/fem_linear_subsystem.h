@@ -40,6 +40,14 @@ class FEMLinearSubsystem final : public DiagLinearSubsystem
         luisa::compute::BufferView<luisa::uint> indices;
         luisa::compute::BufferView<luisa::Vector<T, N>> values;
         SizeT count;
+
+        MutableDoubletVectorView subview(SizeT offset, SizeT subcount) const noexcept
+        {
+            return MutableDoubletVectorView{
+                indices.subview(offset, subcount),
+                values.subview(offset, subcount),
+                subcount};
+        }
     };
 
     template<typename T, int M, int N>
@@ -58,6 +66,15 @@ class FEMLinearSubsystem final : public DiagLinearSubsystem
         luisa::compute::BufferView<luisa::uint> col_indices;
         luisa::compute::BufferView<luisa::Matrix<T, N, M>> values;
         SizeT count;
+
+        MutableTripletMatrixView subview(SizeT offset, SizeT subcount) const noexcept
+        {
+            return MutableTripletMatrixView{
+                row_indices.subview(offset, subcount),
+                col_indices.subview(offset, subcount),
+                values.subview(offset, subcount),
+                subcount};
+        }
     };
 
     // Type aliases for FEM 3D (Vector3)

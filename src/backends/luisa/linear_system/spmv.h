@@ -16,11 +16,21 @@ class Spmv
 {
   public:
     /**
+     * @brief Default constructor - stream must be set before use
+     */
+    Spmv() = default;
+
+    /**
      * @brief Construct Spmv with a stream for kernel execution
      */
-    explicit Spmv(luisa::compute::Stream* stream)
-        : _stream(stream)
+    explicit Spmv(luisa::compute::Stream& stream)
+        : _stream(&stream)
     {}
+
+    /**
+     * @brief Set the stream for kernel execution
+     */
+    void set_stream(luisa::compute::Stream& stream) { _stream = &stream; }
 
     /**
      * @brief Symmetric BCOO SpMV: y = a * A * x + b * y

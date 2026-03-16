@@ -34,6 +34,14 @@ public:
     [[nodiscard]] auto values() const noexcept { return m_values; }
     [[nodiscard]] size_t count() const noexcept { return m_count; }
     
+    [[nodiscard]] DoubletVectorView subview(size_t offset, size_t subcount) const noexcept
+    {
+        return DoubletVectorView{
+            m_indices.subview(offset, subcount),
+            m_values.subview(offset, subcount),
+            subcount};
+    }
+    
 private:
     IndexType m_indices;
     ValueType m_values;
@@ -66,6 +74,15 @@ public:
     [[nodiscard]] auto col_indices() const noexcept { return m_col_indices; }
     [[nodiscard]] auto values() const noexcept { return m_values; }
     [[nodiscard]] size_t count() const noexcept { return m_count; }
+    
+    [[nodiscard]] TripletMatrixView subview(size_t offset, size_t subcount) const noexcept
+    {
+        return TripletMatrixView{
+            m_row_indices.subview(offset, subcount),
+            m_col_indices.subview(offset, subcount),
+            m_values.subview(offset, subcount),
+            subcount};
+    }
     
 private:
     RowType m_row_indices;

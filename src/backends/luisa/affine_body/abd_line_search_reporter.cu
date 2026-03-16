@@ -1,6 +1,6 @@
 #include <affine_body/abd_line_search_reporter.h>
 #include <affine_body/affine_body_constitution.h>
-#include <luisa/luisa-compute.h>
+#include <luisa/dsl/dsl.h>
 #include <kernel_cout.h>
 #include <affine_body/abd_line_search_subreporter.h>
 #include <affine_body/affine_body_kinetic.h>
@@ -22,56 +22,52 @@ void ABDLineSearchReporter::Impl::init(LineSearchReporter::InitInfo& info)
     for(auto&& [i, R] : enumerate(reporter_view))
         R->init();
 
-    reporter_energy_offsets_counts.resize(reporter_view.size());
+    reporter_energy_offsets_counts.resize(device(), reporter_view.size());
 }
 
 void ABDLineSearchReporter::Impl::record_start_point(LineSearcher::RecordInfo& info)
 {
-    auto& device = info.device();
-    auto& stream = info.stream();
-
     // Copy q to q_temp using buffer copy
-    stream << abd().body_id_to_q_temp.copy_from(abd().body_id_to_q.view())
-           << luisa::compute::synchronize();
+    stream() << abd().body_id_to_q_temp.copy_from(abd().body_id_to_q.view());
 }
 
 void ABDLineSearchReporter::Impl::step_forward(LineSearcher::StepInfo& info)
 {
-    auto& device = info.device();
-    auto& stream = info.stream();
+    using namespace luisa::compute;
 
-    // Define kernel for stepping forward: qs = q_temps + alpha * dqs
-    luisa::compute::Kernel1D step_forward_kernel = [&](
-        luisa::compute::BufferVar<Vector12> qs,
-        luisa::compute::BufferVar<Vector12> q_temps,
-        luisa::compute::BufferVar<Vector12> dqs,
-        luisa::compute::BufferVar<bool> is_fixed,
-        luisa::compute::Var<float> alpha) noexcept
+    // Kernel for stepping forward: qs = q_temps + alpha * dqs
+    Kernel1D step_kernel = [&](BufferVar<const IndexT> is_fixed,
+                                BufferVar<const Vector12> q_temps,
+                                BufferVar<Vector12> qs,
+                                BufferVar<const Vector12> dqs,
+                                Float alpha) noexcept
     {
-        auto i = luisa::compute::dispatch_x();
-        luisa::compute::Var<bool> fixed = is_fixed.read(i);
-        luisa::compute::$if(!fixed)
+        auto i = dispatch_id().x;
+        $if(i < is_fixed.size())
         {
-            luisa::compute::Var<Vector12> q_temp = q_temps.read(i);
-            luisa::compute::Var<Vector12> dq = dqs.read(i);
-            qs.write(i, q_temp + alpha * dq);
+            $if(is_fixed.read(i) == 0)
+            {
+                Vector12 q_temp = q_temps.read(i);
+                Vector12 dq = dqs.read(i);
+                Vector12 result;
+                for(int k = 0; k < 12; ++k)
+                    result[k] = q_temp[k] + alpha * dq[k];
+                qs.write(i, result);
+            };
         };
     };
 
-    auto shader = device.compile(step_forward_kernel);
-    stream << shader(abd().body_id_to_q.view(),
-                     abd().body_id_to_q_temp.view(),
-                     abd().body_id_to_dq.view(),
-                     abd().body_id_to_is_fixed.view(),
-                     info.alpha)
-                .dispatch(abd().abd_body_count)
-           << luisa::compute::synchronize();
+    auto shader = device().compile(step_kernel);
+    stream() << shader(abd().body_id_to_is_fixed.view(),
+                       abd().body_id_to_q_temp.view(),
+                       abd().body_id_to_q.view(),
+                       abd().body_id_to_dq.view(),
+                       info.alpha).dispatch(abd().abd_body_count);
 }
 
 void ABDLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo& info)
 {
-    auto& device = info.device();
-    auto& stream = info.stream();
+    using namespace luisa::compute;
 
     auto body_count = abd().body_count();
 
@@ -86,46 +82,36 @@ void ABDLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo
         abd().kinetic->compute_energy(this_info);
 
         // Zero out the kinetic energy of fixed bodies and bodies with external kinetic
-        luisa::compute::Kernel1D zero_fixed_energy_kernel = [&](
-            luisa::compute::BufferVar<float> kinetic_energy,
-            luisa::compute::BufferVar<bool> is_fixed,
-            luisa::compute::BufferVar<bool> external_kinetic) noexcept
+        Kernel1D zero_fixed_kernel = [&](BufferVar<Float> kinetic_energy,
+                                          BufferVar<const IndexT> is_fixed,
+                                          BufferVar<const IndexT> external_kinetic) noexcept
         {
-            auto i = luisa::compute::dispatch_x();
-            luisa::compute::Var<bool> fixed = is_fixed.read(i);
-            luisa::compute::Var<bool> external = external_kinetic.read(i);
-            luisa::compute::$if(fixed || external)
+            auto i = dispatch_id().x;
+            $if(i < is_fixed.size())
             {
-                kinetic_energy.write(i, 0.0f);
+                $if(is_fixed.read(i) != 0 || external_kinetic.read(i) != 0)
+                {
+                    kinetic_energy.write(i, 0.0f);
+                };
             };
         };
 
-        auto zero_shader = device.compile(zero_fixed_energy_kernel);
-        stream << zero_shader(body_id_to_kinetic_energy.view(),
-                              abd().body_id_to_is_fixed.view(),
-                              abd().body_id_to_external_kinetic.view())
-                    .dispatch(abd().abd_body_count)
-               << luisa::compute::synchronize();
+        auto zero_shader = device().compile(zero_fixed_kernel);
+        stream() << zero_shader(body_id_to_kinetic_energy.view(),
+                                abd().body_id_to_is_fixed.view(),
+                                abd().body_id_to_external_kinetic.view()).dispatch(abd().abd_body_count);
 
         // Sum up the kinetic energy using reduction
-        // Create a buffer for the result
-        auto result_buffer = device.create_buffer<float>(1);
+        // TODO: Use GPU parallel reduction for better performance
+        // For now, copy to host and sum (similar to CUDA version's approach)
+        std::vector<Float> host_energies(body_count);
+        stream() << body_id_to_kinetic_energy.copy_to(host_energies.data())
+                 << synchronize();
         
-        // Use LuisaCompute's built-in reduction or a custom kernel
-        // For now, we copy back to host and sum (can be optimized with parallel reduction kernel)
-        std::vector<float> host_energies(body_count);
-        stream << body_id_to_kinetic_energy.copy_to(host_energies.data())
-               << luisa::compute::synchronize();
-        
-        float K = 0.0f;
-        for(float e : host_energies)
+        Float K = 0.0;
+        for(auto e : host_energies)
             K += e;
         
-        // Upload back to device
-        stream << result_buffer.copy_from(&K)
-               << luisa::compute::synchronize();
-        
-        // Store result (using the first element as the sum)
         abd_kinetic_energy = K;
     }
 
@@ -145,12 +131,12 @@ void ABDLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo
         }
 
         // Sum up the shape energy
-        std::vector<float> host_energies(body_count);
-        stream << body_id_to_shape_energy.copy_to(host_energies.data())
-               << luisa::compute::synchronize();
+        std::vector<Float> host_energies(body_count);
+        stream() << body_id_to_shape_energy.copy_to(host_energies.data())
+                 << synchronize();
         
-        float shape_E = 0.0f;
-        for(float e : host_energies)
+        Float shape_E = 0.0;
+        for(auto e : host_energies)
             shape_E += e;
         
         abd_shape_energy = shape_E;
@@ -167,7 +153,7 @@ void ABDLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo
             counts[i] = this_info.m_energy_count;
         }
 
-        reporter_energy_offsets_counts.scan();
+        reporter_energy_offsets_counts.scan(stream());
         reporter_energies.resize(reporter_energy_offsets_counts.total_count());
 
         for(auto&& [i, R] : enumerate(reporter_view))
@@ -180,21 +166,21 @@ void ABDLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo
         }
 
         // Compute the total energy from all reporters
-        std::vector<float> host_energies(reporter_energies.size());
+        std::vector<Float> host_energies(reporter_energies.size());
         if(!host_energies.empty())
         {
-            stream << reporter_energies.copy_to(host_energies.data())
-                   << luisa::compute::synchronize();
+            stream() << reporter_energies.copy_to(host_energies.data())
+                     << synchronize();
             
-            float other_E = 0.0f;
-            for(float e : host_energies)
+            Float other_E = 0.0;
+            for(auto e : host_energies)
                 other_E += e;
             
             total_reporter_energy = other_E;
         }
         else
         {
-            total_reporter_energy = 0.0f;
+            total_reporter_energy = 0.0;
         }
     }
 

@@ -10,6 +10,12 @@ option("dev", {default = true, description = "Enable developer mode"})
 option("github_actions", {default = false})
 
 option("backend_cuda", {default = true, description = "Build with CUDA backend"})
+option("backend_luisa", {default = false, description = "Build with LuisaCompute backend"})
+
+-- Define LuisaCompute package if the backend is enabled
+if has_config("backend_luisa") then
+    -- add_requires("luisa-compute")
+end
 
 option("python_version", {default = "3.11.x", description = "Specify python version"})
 option("python_system", {default = false, description = "Use system python"})

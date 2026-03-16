@@ -5,6 +5,7 @@
 
 namespace uipc::backend::luisa
 {
+class SimEngine;
 class SimplicialSurfaceReporter;
 class GlobalSimplicialSurfaceManager : public SimSystem
 {
@@ -88,6 +89,7 @@ class GlobalSimplicialSurfaceManager : public SimSystem
         GlobalVertexManager* global_vertex_manager = nullptr;
         SimSystemSlotCollection<SimplicialSurfaceReporter> reporters;
         luisa::compute::Buffer<int> selected_codim_0d_count;
+        SimEngine* sim_engine = nullptr;
     };
 
     luisa::compute::BufferView<IndexT>   codim_vertices() const noexcept;

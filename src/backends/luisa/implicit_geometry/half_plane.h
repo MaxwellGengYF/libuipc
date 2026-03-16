@@ -41,9 +41,12 @@ class HalfPlane : public SimSystem
     class Impl
     {
       public:
-        void init(WorldVisitor& world);
+        void init(WorldVisitor& world,
+                  luisa::compute::Device& device,
+                  luisa::compute::Stream& stream);
         void _find_geometry(WorldVisitor& world);
-        void _build_geometry();
+        void _build_geometry(luisa::compute::Device& device,
+                             luisa::compute::Stream& stream);
 
         vector<GeoInfo>               geo_infos;
         vector<ImplicitGeometry*>     geos;

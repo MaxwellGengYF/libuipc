@@ -31,6 +31,7 @@ class GlobalLinearSystem : public SimSystem
   public:
     using SimSystem::SimSystem;
     using TripletMatrixView3 = TripletMatrixView<Float, 3>;
+    using MutableTripletMatrix3 = MutableTripletMatrixView<Float, 3>;
     using CBCOOMatrixView3   = CBCOOMatrixView<Float, 3>;
     using DenseVectorView    = luisa::compute::BufferView<Float>;
     using CDenseVectorView   = luisa::compute::BufferView<const Float>;
@@ -103,7 +104,7 @@ class GlobalLinearSystem : public SimSystem
         {
         }
 
-        TripletMatrixView3 hessians() const { return m_hessians; }
+        MutableTripletMatrix3 hessians() const { return m_hessians; }
         DenseVectorView    gradients() const { return m_gradients; }
         bool               gradient_only() const { return m_gradient_only; }
         ComponentFlags     component_flags() const { return m_component_flags; }
@@ -111,7 +112,7 @@ class GlobalLinearSystem : public SimSystem
       private:
         friend class Impl;
         SizeT             m_index = ~0ull;
-        TripletMatrixView3 m_hessians;
+        MutableTripletMatrix3 m_hessians;
         DenseVectorView   m_gradients;
         bool              m_gradient_only   = false;
         ComponentFlags    m_component_flags = ComponentFlags::All;
@@ -138,14 +139,14 @@ class GlobalLinearSystem : public SimSystem
         {
         }
 
-        TripletMatrixView3 lr_hessian() const { return m_lr_hessian; }
-        TripletMatrixView3 rl_hessian() const { return m_rl_hessian; }
+        MutableTripletMatrix3 lr_hessian() const { return m_lr_hessian; }
+        MutableTripletMatrix3 rl_hessian() const { return m_rl_hessian; }
 
       private:
         friend class Impl;
         SizeT             m_index = ~0ull;
-        TripletMatrixView3 m_lr_hessian;
-        TripletMatrixView3 m_rl_hessian;
+        MutableTripletMatrix3 m_lr_hessian;
+        MutableTripletMatrix3 m_rl_hessian;
         Impl*             m_impl = nullptr;
     };
 

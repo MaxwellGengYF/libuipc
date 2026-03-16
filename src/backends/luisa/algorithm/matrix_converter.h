@@ -61,6 +61,52 @@ public:
     auto row_indices_view() { return row_indices.view(); }
     auto col_indices_view() { return col_indices.view(); }
     auto values_view() { return values.view(); }
+    
+    // Compatibility methods for dytopo_effect_system
+    size_t triplet_count() const { return size(); }
+    size_t triplet_capacity() const { return values.size(); }
+    
+    void reshape(size_t rows, size_t cols)
+    {
+        block_rows = rows;
+        block_cols = cols;
+    }
+    
+    // View struct for compatibility
+    struct View
+    {
+        luisa::compute::BufferView<int> row_indices;
+        luisa::compute::BufferView<int> col_indices;
+        luisa::compute::BufferView<ValueT> values;
+        size_t count = 0;
+        
+        View subview(size_t offset, size_t subcount) const
+        {
+            return View{
+                row_indices.subview(offset, subcount),
+                col_indices.subview(offset, subcount),
+                values.subview(offset, subcount),
+                subcount};
+        }
+    };
+    
+    View view() 
+    { 
+        return View{row_indices.view(), col_indices.view(), values.view(), size()}; 
+    }
+    
+    struct CView
+    {
+        luisa::compute::BufferView<const int> row_indices;
+        luisa::compute::BufferView<const int> col_indices;
+        luisa::compute::BufferView<const ValueT> values;
+        size_t count = 0;
+    };
+    
+    CView view() const
+    { 
+        return CView{row_indices.view(), col_indices.view(), values.view(), size()}; 
+    }
 };
 
 /**
@@ -98,6 +144,43 @@ public:
     auto row_indices_view() { return row_indices.view(); }
     auto col_indices_view() { return col_indices.view(); }
     auto values_view() { return values.view(); }
+    
+    // Compatibility methods for dytopo_effect_system
+    size_t triplet_count() const { return size(); }
+    size_t block_count() const { return size(); }
+    
+    void reshape(size_t rows, size_t cols)
+    {
+        block_rows = rows;
+        block_cols = cols;
+    }
+    
+    // View struct for compatibility
+    struct View
+    {
+        luisa::compute::BufferView<int> row_indices;
+        luisa::compute::BufferView<int> col_indices;
+        luisa::compute::BufferView<ValueT> values;
+        size_t block_count = 0;
+    };
+    
+    View view() 
+    { 
+        return View{row_indices.view(), col_indices.view(), values.view(), size()}; 
+    }
+    
+    struct CView
+    {
+        luisa::compute::BufferView<const int> row_indices;
+        luisa::compute::BufferView<const int> col_indices;
+        luisa::compute::BufferView<const ValueT> values;
+        size_t block_count = 0;
+    };
+    
+    CView view() const
+    { 
+        return CView{row_indices.view(), col_indices.view(), values.view(), size()}; 
+    }
 };
 
 /**
@@ -167,6 +250,48 @@ public:
     auto values_view() const { return values.view(); }
     auto indices_view() { return indices.view(); }
     auto values_view() { return values.view(); }
+    
+    // Compatibility methods for dytopo_effect_system
+    size_t doublet_count() const { return size(); }
+    size_t doublet_capacity() const { return values.size(); }
+    
+    void reshape(size_t segments)
+    {
+        segment_count = segments;
+    }
+    
+    // View struct for compatibility
+    struct View
+    {
+        luisa::compute::BufferView<int> indices;
+        luisa::compute::BufferView<ValueT> values;
+        size_t count = 0;
+        
+        View subview(size_t offset, size_t subcount) const
+        {
+            return View{
+                indices.subview(offset, subcount),
+                values.subview(offset, subcount),
+                subcount};
+        }
+    };
+    
+    View view() 
+    { 
+        return View{indices.view(), values.view(), size()}; 
+    }
+    
+    struct CView
+    {
+        luisa::compute::BufferView<const int> indices;
+        luisa::compute::BufferView<const ValueT> values;
+        size_t count = 0;
+    };
+    
+    CView view() const
+    { 
+        return CView{indices.view(), values.view(), size()}; 
+    }
 };
 
 /**
@@ -199,6 +324,40 @@ public:
     auto values_view() const { return values.view(); }
     auto indices_view() { return indices.view(); }
     auto values_view() { return values.view(); }
+    
+    // Compatibility methods for dytopo_effect_system
+    size_t doublet_count() const { return size(); }
+    size_t block_count() const { return size(); }
+    
+    void reshape(size_t segments)
+    {
+        segment_count = segments;
+    }
+    
+    // View struct for compatibility
+    struct View
+    {
+        luisa::compute::BufferView<int> indices;
+        luisa::compute::BufferView<ValueT> values;
+        size_t block_count = 0;
+    };
+    
+    View view() 
+    { 
+        return View{indices.view(), values.view(), size()}; 
+    }
+    
+    struct CView
+    {
+        luisa::compute::BufferView<const int> indices;
+        luisa::compute::BufferView<const ValueT> values;
+        size_t block_count = 0;
+    };
+    
+    CView view() const
+    { 
+        return CView{indices.view(), values.view(), size()}; 
+    }
 };
 
 /**

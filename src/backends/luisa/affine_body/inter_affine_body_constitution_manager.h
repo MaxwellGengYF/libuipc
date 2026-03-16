@@ -102,11 +102,8 @@ class InterAffineBodyConstitutionManager final : public SimSystem
     /**
      * @brief Gradient and Hessian computation info for inter-affine body constitutions.
      * 
-     * In luisa-compute backend, we use raw buffers for sparse linear algebra data.
-     * - gradients: Buffer of Vector12 representing gradient segments
-     * - gradient_indices: Buffer of indices for gradient segments (for sparse storage)
-     * - hessians: Buffer of Matrix12x12 representing Hessian blocks
-     * - hessian_row_indices/hessian_col_indices: Buffers for Hessian block coordinates
+     * Uses DoubletVectorView and TripletMatrixView from ABDLinearSubsystem for compatibility
+     * with the linear system interface.
      */
     class GradientHessianInfo : public BaseInfo
     {
@@ -114,37 +111,25 @@ class InterAffineBodyConstitutionManager final : public SimSystem
         GradientHessianInfo(Impl*                                   impl,
                             IndexT                                  index,
                             Float                                   dt,
-                            luisa::compute::BufferView<Vector12>    gradients,
-                            luisa::compute::BufferView<IndexT>      gradient_indices,
-                            luisa::compute::BufferView<Matrix12x12> hessians,
-                            luisa::compute::BufferView<IndexT>      hessian_row_indices,
-                            luisa::compute::BufferView<IndexT>      hessian_col_indices,
+                            ABDLinearSubsystem::DoubletVectorView<Float, 12> gradients,
+                            ABDLinearSubsystem::TripletMatrixView<Float, 12, 12> hessians,
                             bool                                    gradient_only)
             : BaseInfo(impl, index, dt)
             , m_gradients(gradients)
-            , m_gradient_indices(gradient_indices)
             , m_hessians(hessians)
-            , m_hessian_row_indices(hessian_row_indices)
-            , m_hessian_col_indices(hessian_col_indices)
             , m_gradient_only(gradient_only)
         {
         }
 
-        luisa::compute::BufferView<Vector12>    gradients() const noexcept;
-        luisa::compute::BufferView<IndexT>      gradient_indices() const noexcept;
-        luisa::compute::BufferView<Matrix12x12> hessians() const noexcept;
-        luisa::compute::BufferView<IndexT>      hessian_row_indices() const noexcept;
-        luisa::compute::BufferView<IndexT>      hessian_col_indices() const noexcept;
-        bool                                    gradient_only() const noexcept;
+        ABDLinearSubsystem::DoubletVectorView<Float, 12> gradients() const noexcept;
+        ABDLinearSubsystem::TripletMatrixView<Float, 12, 12> hessians() const noexcept;
+        bool gradient_only() const noexcept;
 
       private:
         friend class InterAffineBodyConstitutionManager;
-        luisa::compute::BufferView<Vector12>    m_gradients;
-        luisa::compute::BufferView<IndexT>      m_gradient_indices;
-        luisa::compute::BufferView<Matrix12x12> m_hessians;
-        luisa::compute::BufferView<IndexT>      m_hessian_row_indices;
-        luisa::compute::BufferView<IndexT>      m_hessian_col_indices;
-        bool                                    m_gradient_only = false;
+        ABDLinearSubsystem::DoubletVectorView<Float, 12> m_gradients;
+        ABDLinearSubsystem::TripletMatrixView<Float, 12, 12> m_hessians;
+        bool m_gradient_only = false;
     };
 
     class GradientHessianExtentInfo

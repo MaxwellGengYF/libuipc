@@ -1,7 +1,6 @@
 #pragma once
 #include <type_define.h>
-#include <luisa/runtime/buffer.h>
-#include <luisa/runtime/stream.h>
+#include <luisa/luisa-compute.h>
 
 namespace uipc::backend::luisa
 {
@@ -14,6 +13,9 @@ namespace uipc::backend::luisa
  * Key parameters:
  * - BANKSIZE = 16: each cluster has at most 16 nodes (48 DOFs).
  * - Mixed precision: Hessian assembled in double, inverse stored in float.
+ * 
+ * NOTE: This is a placeholder implementation. The full conversion requires
+ * significant refactoring of CUDA-specific warp primitives and shared memory.
  */
 class MASPreconditionerEngine
 {
@@ -44,14 +46,14 @@ class MASPreconditionerEngine
         int index[MAX_LEVELS];
     };
 
-    // Host-side level size cache
+    // Host-side level size cache (replaces CUDA int2 to avoid host-side CUDA types)
     struct Int2
     {
         int x = 0;
         int y = 0;
     };
 
-    MASPreconditionerEngine(luisa::compute::Device& device, luisa::compute::Stream& stream);
+    MASPreconditionerEngine()  = default;
     ~MASPreconditionerEngine() = default;
 
     // ---- Phase 1: Initialize neighbor structures (called once) ----
@@ -81,7 +83,9 @@ class MASPreconditionerEngine
 
     // ---- Phase 3: Apply preconditioning z = M^{-1} r (per PCG iteration) ----
 
-    void apply(luisa::compute::BufferView<Float> r, luisa::compute::BufferView<Float> z);
+    void apply(luisa::compute::BufferView<const Float> r,
+               luisa::compute::BufferView<Float>  z,
+               luisa::compute::BufferView<const IndexT> converged);
 
     bool is_initialized() const { return m_initialized; }
 
@@ -124,15 +128,13 @@ class MASPreconditionerEngine
     void invert_cluster_matrices();
 
     // Preconditioning steps
-    void build_multi_level_R(const double3* R);
-    void schwarz_local_solve();
-    void collect_final_Z(double3* Z);
+    void build_multi_level_R(const double3* R,
+                             luisa::compute::BufferView<const IndexT> converged);
+    void schwarz_local_solve(luisa::compute::BufferView<const IndexT> converged);
+    void collect_final_Z(double3* Z,
+                         luisa::compute::BufferView<const IndexT> converged);
 
   private:
-    // ---- LuisaCompute runtime ----
-    luisa::compute::Device&  m_device;
-    luisa::compute::Stream&  m_stream;
-
     // ---- State ----
     bool m_initialized        = false;
     int  m_total_nodes        = 0;

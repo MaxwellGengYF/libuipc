@@ -110,14 +110,11 @@ class VertexHalfPlaneTrajectoryFilter : public TrajectoryFilter
         BufferDump dump_PHs;
 
         template <typename T>
-        void loose_resize(Buffer<T>& buffer, SizeT size)
+        void loose_resize(Buffer<T>& buffer, SizeT size, luisa::compute::Device& device)
         {
             if(size > buffer.size())
             {
-                // In LuisaCompute, we need to create a new buffer with larger capacity
-                // The actual resize/reallocation is handled by the device
-                // This is a simplified version - actual implementation may need
-                // device reference for buffer recreation
+                buffer = device.create_buffer<T>(static_cast<size_t>(size * reserve_ratio));
             }
         }
     };

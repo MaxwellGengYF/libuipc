@@ -14,8 +14,7 @@ using VarView          = BufferView<Float>;
 // Helper function to zero out a buffer
 static void buffer_zero(DenseVectorView y, Stream& stream)
 {
-    std::vector<Float> zeros(y.size(), 0.0f);
-    stream << y.copy_from(zeros.data());
+    stream << y.fill(0.0f);
 }
 
 // Helper: y = b * y
@@ -37,6 +36,19 @@ static void scale_vector(DenseVectorView y, Float b, Stream& stream)
     stream << shader(y, b).dispatch(y.size());
 }
 
+// Helper to reinterpret Eigen::Matrix buffer as Matrix3x3 buffer
+// Both have the same memory layout (9 floats in column-major order)
+static BufferView<const Matrix3x3> reinterpret_as_matrix3x3(
+    BufferView<const Eigen::Matrix<Float, 3, 3>> eigen_buffer)
+{
+    // Both Eigen::Matrix<Float, 3, 3> and Matrix3x3 (float3x3) are 
+    // 9 floats in column-major order, so we can safely reinterpret
+    return BufferView<const Matrix3x3>(
+        eigen_buffer.handle(),
+        eigen_buffer.offset(),
+        eigen_buffer.size());
+}
+
 void Spmv::sym_spmv(Float                           a,
                     CBCOOMatrixView<Float, 3>       A,
                     CDenseVectorView                x,
@@ -56,10 +68,13 @@ void Spmv::sym_spmv(Float                           a,
         buffer_zero(y, stream);
     }
 
+    // Reinterpret the Eigen matrix buffer as Matrix3x3 buffer
+    auto block_values_view = reinterpret_as_matrix3x3(A.block_values);
+
     // Kernel for symmetric SpMV: y += a * A * x
-    Kernel1D sym_spmv_kernel = [&](BufferVar<const uint>    row_indices,
-                                   BufferVar<const uint>    col_indices,
-                                   BufferVar<const float3x3> block_values,
+    Kernel1D sym_spmv_kernel = [&](BufferVar<const int>    row_indices,
+                                   BufferVar<const int>    col_indices,
+                                   BufferVar<const Matrix3x3> block_values,
                                    BufferVar<const Float>   x_buf,
                                    BufferVar<Float>         y_buf,
                                    Float                    alpha,
@@ -117,7 +132,7 @@ void Spmv::sym_spmv(Float                           a,
     auto shader = stream.device().compile(sym_spmv_kernel);
     stream << shader(A.block_row_indices,
                      A.block_col_indices,
-                     A.block_values,
+                     block_values_view,
                      x,
                      y,
                      a,
@@ -155,10 +170,13 @@ void Spmv::rbk_sym_spmv(Float                           a,
         buffer_zero(y, stream);
     }
 
+    // Reinterpret the Eigen matrix buffer as Matrix3x3 buffer
+    auto block_values_view = reinterpret_as_matrix3x3(A.block_values);
+
     // Kernel for symmetric reduce-by-key SpMV
-    Kernel1D rbk_sym_kernel = [&](BufferVar<const uint>    row_indices,
-                                  BufferVar<const uint>    col_indices,
-                                  BufferVar<const float3x3> block_values,
+    Kernel1D rbk_sym_kernel = [&](BufferVar<const int>    row_indices,
+                                  BufferVar<const int>    col_indices,
+                                  BufferVar<const Matrix3x3> block_values,
                                   BufferVar<const Float>   x_buf,
                                   BufferVar<Float>         y_buf,
                                   Float                    alpha,
@@ -213,7 +231,7 @@ void Spmv::rbk_sym_spmv(Float                           a,
     auto shader = stream.device().compile(rbk_sym_kernel);
     stream << shader(A.block_row_indices,
                      A.block_col_indices,
-                     A.block_values,
+                     block_values_view,
                      x,
                      y,
                      a,
@@ -244,10 +262,13 @@ void Spmv::rbk_sym_spmv_dot(Float                           a,
     // Zero out d_dot (assuming d_dot has size 1)
     buffer_zero(d_dot, stream);
 
+    // Reinterpret the Eigen matrix buffer as Matrix3x3 buffer
+    auto block_values_view = reinterpret_as_matrix3x3(A.block_values);
+
     // Kernel for symmetric SpMV with fused dot product
-    Kernel1D rbk_sym_dot_kernel = [&](BufferVar<const uint>    row_indices,
-                                      BufferVar<const uint>    col_indices,
-                                      BufferVar<const float3x3> block_values,
+    Kernel1D rbk_sym_dot_kernel = [&](BufferVar<const int>    row_indices,
+                                      BufferVar<const int>    col_indices,
+                                      BufferVar<const Matrix3x3> block_values,
                                       BufferVar<const Float>   x_buf,
                                       BufferVar<Float>         y_buf,
                                       BufferVar<Float>         dot_buf,
@@ -316,7 +337,7 @@ void Spmv::rbk_sym_spmv_dot(Float                           a,
     auto shader = stream.device().compile(rbk_sym_dot_kernel);
     stream << shader(A.block_row_indices,
                      A.block_col_indices,
-                     A.block_values,
+                     block_values_view,
                      x,
                      y,
                      d_dot,
@@ -335,11 +356,11 @@ void Spmv::cpu_sym_spmv(Float                           a,
     auto& stream = *_stream;
 
     // Download data from device
-    std::vector<uint>      row_indices(A.block_count);
-    std::vector<uint>      col_indices(A.block_count);
-    std::vector<float3x3>  block_values(A.block_count);
-    std::vector<Float>     x_host(x.size());
-    std::vector<Float>     y_host(y.size());
+    std::vector<int>      row_indices(A.block_count);
+    std::vector<int>      col_indices(A.block_count);
+    std::vector<Eigen::Matrix<Float, 3, 3>> block_values(A.block_count);
+    std::vector<Float>    x_host(x.size());
+    std::vector<Float>    y_host(y.size());
 
     stream << A.block_row_indices.copy_to(row_indices.data())
            << A.block_col_indices.copy_to(col_indices.data())
@@ -366,43 +387,37 @@ void Spmv::cpu_sym_spmv(Float                           a,
     {
         auto i = row_indices[idx];
         auto j = col_indices[idx];
-        auto mat = block_values[idx];
+        const auto& eigen_mat = block_values[idx];
 
         // Load x_j
-        Float3 x_j;
-        x_j.x = x_host[j * N + 0];
-        x_j.y = x_host[j * N + 1];
-        x_j.z = x_host[j * N + 2];
+        Eigen::Vector3f x_j;
+        x_j[0] = x_host[j * N + 0];
+        x_j[1] = x_host[j * N + 1];
+        x_j[2] = x_host[j * N + 2];
 
-        // Compute block * x_j
-        Float3 vec;
-        vec.x = mat[0][0] * x_j.x + mat[1][0] * x_j.y + mat[2][0] * x_j.z;
-        vec.y = mat[0][1] * x_j.x + mat[1][1] * x_j.y + mat[2][1] * x_j.z;
-        vec.z = mat[0][2] * x_j.x + mat[1][2] * x_j.y + mat[2][2] * x_j.z;
+        // Compute block * x_j using Eigen
+        Eigen::Vector3f vec = eigen_mat * x_j;
 
         // Add to y[i]
         auto y_i_base = i * N;
-        y_host[y_i_base + 0] += a * vec.x;
-        y_host[y_i_base + 1] += a * vec.y;
-        y_host[y_i_base + 2] += a * vec.z;
+        y_host[y_i_base + 0] += a * vec[0];
+        y_host[y_i_base + 1] += a * vec[1];
+        y_host[y_i_base + 2] += a * vec[2];
 
         // For off-diagonal, also add transpose contribution to y[j]
         if(i != j)
         {
-            Float3 x_i;
-            x_i.x = x_host[i * N + 0];
-            x_i.y = x_host[i * N + 1];
-            x_i.z = x_host[i * N + 2];
+            Eigen::Vector3f x_i;
+            x_i[0] = x_host[i * N + 0];
+            x_i[1] = x_host[i * N + 1];
+            x_i[2] = x_host[i * N + 2];
 
-            Float3 vec_t;
-            vec_t.x = mat[0][0] * x_i.x + mat[0][1] * x_i.y + mat[0][2] * x_i.z;
-            vec_t.y = mat[1][0] * x_i.x + mat[1][1] * x_i.y + mat[1][2] * x_i.z;
-            vec_t.z = mat[2][0] * x_i.x + mat[2][1] * x_i.y + mat[2][2] * x_i.z;
+            Eigen::Vector3f vec_t = eigen_mat.transpose() * x_i;
 
             auto y_j_base = j * N;
-            y_host[y_j_base + 0] += a * vec_t.x;
-            y_host[y_j_base + 1] += a * vec_t.y;
-            y_host[y_j_base + 2] += a * vec_t.z;
+            y_host[y_j_base + 0] += a * vec_t[0];
+            y_host[y_j_base + 1] += a * vec_t[1];
+            y_host[y_j_base + 2] += a * vec_t[2];
         }
     }
 

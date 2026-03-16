@@ -1,12 +1,14 @@
 #pragma once
 #include <sim_system.h>
 #include <luisa/runtime/buffer.h>
+#include <luisa/runtime/stream.h>
 
 namespace uipc::backend::luisa
 {
 class TrajectoryFilter;
 class GlobalContactManager;
 class ContactExporterManager;
+class SimEngine;
 
 class GlobalTrajectoryFilter final : public SimSystem
 {
@@ -73,8 +75,8 @@ class GlobalTrajectoryFilter final : public SimSystem
     class Impl
     {
       public:
-        void  init();
-        Float filter_toi(Float alpha);
+        void  init(SimEngine& engine);
+        Float filter_toi(Float alpha, luisa::compute::Stream& stream);
 
         SimSystemSlotCollection<TrajectoryFilter> filters;
         SimSystemSlot<GlobalContactManager>       global_contact_manager;

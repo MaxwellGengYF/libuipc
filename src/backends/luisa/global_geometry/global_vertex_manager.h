@@ -8,6 +8,7 @@
 
 namespace uipc::backend::luisa
 {
+class SimEngine;
 class GlobalTrajectoryFilter;
 class VertexReporter;
 
@@ -227,6 +228,8 @@ class GlobalVertexManager final : public SimSystem
         SimSystemSlotCollection<VertexReporter> vertex_reporters;
 
         OffsetCountCollection<IndexT> reporter_vertex_offsets_counts;
+        
+        SimEngine* sim_engine = nullptr;
 
         AABB vertex_bounding_box;
 
