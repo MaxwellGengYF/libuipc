@@ -3,18 +3,25 @@
 #include <muda/buffer/device_buffer.h>
 #include <muda/buffer/device_var.h>
 #include <muda/ext/linear_system.h>
+#include <uipc/common/span.h>
+#include <filesystem>
+#include <string_view>
 
 namespace uipc::backend::cuda
 {
 /**
- * @brief MAS (Multiplicative Additive Schwarz) preconditioner engine.
+ * @brief MAS (MultiLevel Additive Schwarz) preconditioner engine.
  *
  * Multi-level domain-decomposition preconditioner from StiffGIPC.
  * Operates on 3x3 block matrices (BCOO format) and produces z = M^{-1} r.
  *
  * Key parameters:
  * - BANKSIZE = 16: each cluster has at most 16 nodes (48 DOFs).
- * - Mixed precision: Hessian assembled in double, inverse stored in float.
+ * - Mixed precision (matches StiffGIPC):
+ *     - Hessian assembly and Gauss-Jordan inversion run in double.
+ *     - The inverted per-cluster preconditioner, multi-level residual and
+ *       solution buffers are stored in float for memory / atomic bandwidth.
+ *     - Only the final apply output is cast back to double.
  */
 class MASPreconditionerEngine
 {
@@ -27,17 +34,19 @@ class MASPreconditionerEngine
     // Symmetric upper-triangle block count: BANKSIZE*(BANKSIZE+1)/2
     static constexpr int SYM_BLOCK_COUNT = BANKSIZE * (BANKSIZE + 1) / 2;
 
-    // A single cluster's symmetric matrix in double (for assembly)
-    struct alignas(16) ClusterMatrixSym
+    template <typename Scalar>
+    struct alignas(16) ClusterMatrixSymT
     {
-        Eigen::Matrix3d M[SYM_BLOCK_COUNT];
+        Eigen::Matrix<Scalar, 3, 3> M[SYM_BLOCK_COUNT];
+        MUDA_GENERIC                ClusterMatrixSymT()
+        {
+            for(auto& m : M)
+                m.setZero();
+        }
     };
 
-    // A single cluster's symmetric matrix in float (the inverted preconditioner)
-    struct alignas(16) ClusterMatrixSymF
-    {
-        Eigen::Matrix3f M[SYM_BLOCK_COUNT];
-    };
+    using ClusterMatrixSym  = ClusterMatrixSymT<double>;  // Hessian assembly
+    using ClusterMatrixSymF = ClusterMatrixSymT<float>;   // Inverted preconditioner
 
     // Level traversal table per node
     struct LevelTable
@@ -57,14 +66,14 @@ class MASPreconditionerEngine
 
     // ---- Phase 1: Initialize neighbor structures (called once) ----
 
-    void init_neighbor(int                              vert_num,
-                       int                              total_neighbor_num,
-                       int                              part_map_size,
-                       const std::vector<unsigned int>& h_neighbor_list,
-                       const std::vector<unsigned int>& h_neighbor_start,
-                       const std::vector<unsigned int>& h_neighbor_num,
-                       const std::vector<int>&          h_part_to_real,
-                       const std::vector<int>&          h_real_to_part);
+    void init_neighbor(int                     vert_num,
+                       int                     total_neighbor_num,
+                       int                     part_map_size,
+                       span<const unsigned int> h_neighbor_list,
+                       span<const unsigned int> h_neighbor_start,
+                       span<const unsigned int> h_neighbor_num,
+                       span<const int>          h_part_to_real,
+                       span<const int>          h_real_to_part);
 
     // ---- Phase 1b: Allocate matrix-level buffers (called once) ----
 
@@ -72,13 +81,12 @@ class MASPreconditionerEngine
 
     // ---- Phase 2: Assemble preconditioner (per Newton iteration) ----
 
-    void set_preconditioner(const Eigen::Matrix3d* d_triplet_values,
-                            const int*             d_row_ids,
-                            const int*             d_col_ids,
-                            const uint32_t*        d_indices,
-                            int                    dof_offset,
-                            int                    triplet_num,
-                            int                    cp_num);
+    void set_preconditioner(muda::CBufferView<Eigen::Matrix3d> triplet_values,
+                            muda::CBufferView<int>             row_ids,
+                            muda::CBufferView<int>             col_ids,
+                            muda::CBufferView<uint32_t>        indices,
+                            int                                dof_offset,
+                            int                                cp_num);
 
     // ---- Phase 3: Apply preconditioning z = M^{-1} r (per PCG iteration) ----
 
@@ -87,6 +95,40 @@ class MASPreconditionerEngine
                muda::CVarView<IndexT>        converged);
 
     bool is_initialized() const { return m_initialized; }
+
+    /**
+     * @brief Override the number of active levels used during apply().
+     *
+     * By default all m_level_num levels are used (full hierarchy, injection prolongation).
+     * Set to 1 to use only the fine level (block Jacobi with BANKSIZE-node clusters).
+     *
+     * @param n  1 = fine-only (block Jacobi), 0 = use full hierarchy (default).
+     */
+    void set_active_level_num(int n)
+    {
+        if(n <= 0 || n > m_level_num)
+            m_active_level_num = m_level_num;  // clamp: 0 or out-of-range -> full hierarchy
+        else
+            m_active_level_num = n;
+    }
+
+    /**
+     * @brief No-op kept for API compatibility; coarse damping is unused since
+     *        collect_final_Z now uses pure injection prolongation (StiffGIPC default).
+     */
+    void set_coarse_damping(Float /*omega*/) {}
+
+    /** Dump cluster matrices in Matrix Market (.mtx) format and metadata as JSON for debug.
+     *
+     * `output_dir` is interpreted as a filesystem path; the caller may pass any
+     * `std::filesystem::path::string()`-like result. Files written:
+     *   - `mas_cluster_hess.f<frame>.n<newton>.mtx`
+     *   - `mas_cluster_inv.f<frame>.n<newton>.mtx`
+     *   - `mas_cluster_meta.f<frame>.n<newton>.json`
+     */
+    void dump_cluster_matrices_debug(std::string_view output_dir,
+                                     SizeT            frame,
+                                     SizeT            newton_iter);
 
     // ===========================================================================
     // All methods below are public because NVCC on Windows requires
@@ -105,41 +147,27 @@ class MASPreconditionerEngine
     void compute_next_level(int level);
     void aggregation_kernel();
 
-    // Contact-aware connectivity: injects BCOO off-diagonal coupling
-    // into the hierarchy at each level.
-    void build_hessian_connection(unsigned int* connection_mask,
-                                  const int*   coarse_table,   // nullptr for L0
-                                  int          level);
-
-    // Set BCOO coupling data for contact-aware hierarchy
-    void set_hessian_coupling(const int* d_row_ids,
-                              const int* d_col_ids,
-                              int        triplet_num,
-                              int        dof_offset);
-
     // Hessian assembly + inversion
-    void scatter_hessian_to_clusters(const Eigen::Matrix3d* d_triplet_values,
-                                     const int*             d_row_ids,
-                                     const int*             d_col_ids,
-                                     const uint32_t*        d_indices,
-                                     int                    dof_offset,
-                                     int                    triplet_num);
+    void scatter_hessian_to_clusters(muda::CBufferView<Eigen::Matrix3d> triplet_values,
+                                     muda::CBufferView<int>             row_ids,
+                                     muda::CBufferView<int>             col_ids,
+                                     muda::CBufferView<uint32_t>        indices,
+                                     int                                dof_offset);
     void invert_cluster_matrices();
 
     // Preconditioning steps
-    void build_multi_level_R(const double3* R,
-                             muda::CVarView<IndexT> converged);
+    void build_multi_level_R(muda::CDenseVectorView<Float> R, muda::CVarView<IndexT> converged);
     void schwarz_local_solve(muda::CVarView<IndexT> converged);
-    void collect_final_Z(double3* Z,
-                         muda::CVarView<IndexT> converged);
+    void collect_final_Z(muda::DenseVectorView<Float> Z, muda::CVarView<IndexT> converged);
 
   private:
     // ---- State ----
-    bool m_initialized        = false;
-    int  m_total_nodes        = 0;
-    int  m_total_map_nodes    = 0;
-    int  m_level_num          = 0;
-    int  m_total_num_clusters = 0;
+    bool  m_initialized        = false;
+    int   m_total_nodes        = 0;
+    int   m_total_map_nodes    = 0;
+    int   m_level_num          = 0;
+    int   m_active_level_num   = 0;   // levels used during apply(); 0 = use m_level_num
+    int   m_total_num_clusters = 0;
     Int2 m_h_level_size;
 
     // ---- GPU buffers: hierarchy ----
@@ -156,7 +184,7 @@ class MASPreconditionerEngine
     muda::DeviceBuffer<unsigned int> next_prefix_sums;
 
     // ---- GPU buffers: neighbor graph ----
-    int m_neighbor_list_size = 0;
+    int                              m_neighbor_list_size = 0;
     muda::DeviceBuffer<unsigned int> neighbor_lists;
     muda::DeviceBuffer<unsigned int> neighbor_starts;
     muda::DeviceBuffer<unsigned int> neighbor_nums;
@@ -164,21 +192,15 @@ class MASPreconditionerEngine
     muda::DeviceBuffer<unsigned int> neighbor_nums_init;
 
     // ---- GPU buffers: partition mappings ----
-    muda::DeviceBuffer<int> part_to_real;   // partition-ordered index -> real vertex index
-    muda::DeviceBuffer<int> real_to_part;   // real vertex index -> partition-ordered index
+    muda::DeviceBuffer<int> part_to_real;  // partition-ordered index -> real vertex index
+    muda::DeviceBuffer<int> real_to_part;  // real vertex index -> partition-ordered index
 
     // ---- GPU buffers: cluster matrices ----
     muda::DeviceBuffer<ClusterMatrixSym>  cluster_hessians;   // assembled Hessian blocks (double)
-    muda::DeviceBuffer<ClusterMatrixSymF> cluster_inverses;   // inverted preconditioner (float)
+    muda::DeviceBuffer<ClusterMatrixSymF> cluster_inverses;   // inverted preconditioner (float, matches GIPC)
 
-    // ---- GPU buffers: multi-level residual / solution ----
+    // ---- GPU buffers: multi-level residual / solution (float, matches GIPC) ----
     muda::DeviceBuffer<Eigen::Vector3f> multi_level_R;
     muda::DeviceBuffer<float3>          multi_level_Z;
-
-    // ---- BCOO coupling data (for contact-aware MAS) ----
-    const int* m_bcoo_row_ids    = nullptr;  // device pointer, owned by caller
-    const int* m_bcoo_col_ids    = nullptr;
-    int        m_bcoo_triplet_num = 0;
-    int        m_bcoo_dof_offset  = 0;
 };
 }  // namespace uipc::backend::cuda

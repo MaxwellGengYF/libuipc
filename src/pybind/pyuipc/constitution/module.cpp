@@ -18,10 +18,16 @@
 #include <pyuipc/constitution/kirchhoff_rod_bending.h>
 #include <pyuipc/constitution/soft_transform_constraint.h>
 #include <pyuipc/constitution/discrete_shell_bending.h>
+#include <pyuipc/constitution/strain_plastic_discrete_shell_bending.h>
+#include <pyuipc/constitution/stress_plastic_discrete_shell_bending.h>
 #include <pyuipc/constitution/arap.h>
 #include <pyuipc/constitution/inter_affine_body_constitution.h>
 #include <pyuipc/constitution/affine_body_revolute_joint.h>
 #include <pyuipc/constitution/affine_body_prismatic_joint.h>
+#include <pyuipc/constitution/affine_body_fixed_joint.h>
+#include <pyuipc/constitution/affine_body_spherical_joint.h>
+#include <pyuipc/constitution/affine_body_driving_revolute_joint.h>
+#include <pyuipc/constitution/affine_body_driving_prismatic_joint.h>
 #include <pyuipc/constitution/affine_body_revolute_joint_limit.h>
 #include <pyuipc/constitution/affine_body_prismatic_joint_limit.h>
 #include <pyuipc/constitution/inter_primitive_constitution.h>
@@ -29,6 +35,9 @@
 #include <pyuipc/constitution/soft_vertex_edge_stitch.h>
 #include <pyuipc/constitution/soft_vertex_triangle_stitch.h>
 #include <pyuipc/constitution/affine_body_external_force.h>
+#include <pyuipc/constitution/affine_body_prismatic_joint_external_force.h>
+#include <pyuipc/constitution/affine_body_revolute_joint_external_force.h>
+#include <pyuipc/constitution/finite_element_external_force.h>
 #include <pyuipc/constitution/external_articulation_constraint.h>
 
 namespace pyuipc::constitution
@@ -47,9 +56,15 @@ PyModule::PyModule(py::module& m)
     PyInterAffineBodyExtraConstitution{m};
     PyAffineBodyRevoluteJoint{m};
     PyAffineBodyPrismaticJoint{m};
+    PyAffineBodyFixedJoint{m};
+    PyAffineBodySphericalJoint{m};
+    PyAffineBodyDrivingRevoluteJoint{m};
+    PyAffineBodyDrivingPrismaticJoint{m};
     PyAffineBodyRevoluteJointLimit{m};
     PyAffineBodyPrismaticJointLimit{m};
     PyAffineBodyExternalForce{m};
+    PyAffineBodyPrismaticJointExternalForce{m};
+    PyAffineBodyRevoluteJointExternalForce{m};
 
     // Finite Element Constitutions
     PyFiniteElementConstitution{m};
@@ -65,12 +80,17 @@ PyModule::PyModule(py::module& m)
     PyFiniteElementExtraConstitution{m};
     PyKirchhoffRodBending{m};
     PyDiscreteShellBending{m};
+    PyStrainPlasticDiscreteShellBending{m};
+    PyStressPlasticDiscreteShellBending{m};
 
     // Inter Primitive Constitutions
     PyInterPrimitiveConstitution{m};
     PySoftVertexStitch{m};
     PySoftVertexEdgeStitch{m};
     PySoftVertexTriangleStitch{m};
+
+    // Finite Element External Force
+    PyFiniteElementExternalForce{m};
 
     // Constraints
     PySoftPositionConstraint{m};

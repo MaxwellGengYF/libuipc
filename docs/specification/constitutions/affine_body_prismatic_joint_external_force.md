@@ -1,0 +1,63 @@
+# Affine Body Prismatic Joint External Force
+
+## #667 AffineBodyPrismaticJointExternalForce
+
+The **Affine Body Prismatic Joint External Force** applies a scalar external force along the axis of a [Prismatic Joint](./affine_body_prismatic_joint.md). The force drives translational motion between the two connected affine bodies along the joint's tangent direction $\hat{\mathbf{t}}$.
+
+## Force Application
+
+Given a scalar force $f$ and the joint tangent direction $\hat{\mathbf{t}}$, the external force is applied as a 12D generalized force to each connected affine body:
+
+$$
+\mathbf{F}_i = \begin{bmatrix} +f \, \hat{\mathbf{t}}_i \\ \mathbf{0}_9 \end{bmatrix} \in \mathbb{R}^{12}, \quad
+\mathbf{F}_j = \begin{bmatrix} -f \, \hat{\mathbf{t}}_j \\ \mathbf{0}_9 \end{bmatrix} \in \mathbb{R}^{12},
+$$
+
+where:
+
+- $f$ is the scalar force magnitude (per edge)
+- $\hat{\mathbf{t}}_i = \mathring{\mathbf{J}}^{\hat{t}}_i \mathbf{q}_i$ is the joint tangent direction in body $i$'s current frame
+- $\hat{\mathbf{t}}_j = \mathring{\mathbf{J}}^{\hat{t}}_j \mathbf{q}_j$ is the joint tangent direction in body $j$'s current frame
+- $\mathbf{0}_9$ denotes the nine-dimensional zero vector (no affine force component)
+
+The tangent directions $\hat{\mathbf{t}}_i$ and $\hat{\mathbf{t}}_j$ are extracted from the current affine body states using the rest-space tangent coordinates, following the same conventions as the [Prismatic Joint](./affine_body_prismatic_joint.md).
+
+A positive $f$ pushes body $i$ along $+\hat{\mathbf{t}}$ and body $j$ along $-\hat{\mathbf{t}}$, effectively driving the two bodies apart along the joint axis.
+
+## Energy Integration
+
+The external forces are incorporated into each affine body's kinetic energy term through the predicted position $\tilde{\mathbf{q}}$, following the same mechanism as [AffineBodyExternalForce](./affine_body_external_force.md):
+
+$$
+E = \frac{1}{2} \left(\mathbf{q} - \tilde{\mathbf{q}}\right)^T \mathbf{M} \left(\mathbf{q} - \tilde{\mathbf{q}}\right),
+$$
+
+where $\tilde{\mathbf{q}}$ is updated each time step to include the acceleration from the external force:
+
+$$
+\mathbf{a}_{ext} = \mathbf{M}^{-1} \mathbf{F}_{ext}.
+$$
+
+## State Update
+
+The current signed displacement $d_{\text{current}}$ is tracked and written back to the `distance` edge attribute by the **base** [AffineBodyPrismaticJoint](./affine_body_prismatic_joint.md) — not by this external-force constitution. See [Distance State](./affine_body_prismatic_joint.md#distance-state) for the formulation.
+
+## Runtime Control
+
+The force can be updated at each frame through the Animator system:
+
+- Set `external_force/is_constrained` to `1` to enable the force, or `0` to disable it.
+- Modify the `external_force` attribute to change the force magnitude.
+
+## Requirement
+
+This constitution must be applied to a geometry that already has an [AffineBodyPrismaticJoint](./affine_body_prismatic_joint.md) (UID=20) constitution.
+
+## Attributes
+
+On the joint geometry (1D simplicial complex), on **edges** (one edge per joint). The edge inherits all linking and state fields of the base [Affine Body Prismatic Joint](./affine_body_prismatic_joint.md): `l_geo_id`, `r_geo_id`, `l_inst_id`, `r_inst_id`, `strength_ratio`, `distance`, `init_distance`, and optional `l_position0`, `l_position1`, `r_position0`, `r_position1` when created via Local `create_geometry`.
+
+External-force-specific attributes on **edges**:
+
+- `external_force`: $f$ in the formulae above, scalar force along the joint axis (one per edge)
+- `external_force/is_constrained`: enables (`1`) or disables (`0`) the external force

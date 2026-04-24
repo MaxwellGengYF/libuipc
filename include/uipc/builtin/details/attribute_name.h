@@ -243,4 +243,5 @@ UIPC_BUILTIN_ATTRIBUTE(abd_mass_x_bar);
  * Must be set together with `abd_mass` and `abd_mass_x_bar`.
  */
 UIPC_BUILTIN_ATTRIBUTE(abd_mass_x_bar_x_bar);
+
 #endif

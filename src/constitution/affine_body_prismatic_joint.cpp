@@ -31,68 +31,105 @@ AffineBodyPrismaticJoint::AffineBodyPrismaticJoint(const Json& config)
 
 AffineBodyPrismaticJoint::~AffineBodyPrismaticJoint() = default;
 
-void AffineBodyPrismaticJoint::apply_to(geometry::SimplicialComplex& sc,
-                                        span<SlotTuple>              geo_slots,
-                                        Float strength_ratio_v)
+geometry::SimplicialComplex AffineBodyPrismaticJoint::create_geometry(
+    span<const Vector3>                      position0s,
+    span<const Vector3>                      position1s,
+    span<S<geometry::SimplicialComplexSlot>> l_geo_slots,
+    span<IndexT>                             l_instance_ids,
+    span<S<geometry::SimplicialComplexSlot>> r_geo_slots,
+    span<IndexT>                             r_instance_ids,
+    span<Float>                              strength_ratios)
 {
-    UIPC_WARN_WITH_LOCATION(R"(AffineBodyPrismaticJoint::apply_to(SimplicialComplex&, span<SlotTuple>, Float) is deprecated. 
-Ref: https://github.com/spiriMirror/libuipc/issues/260
-)");
+    auto N = position0s.size();
+    UIPC_ASSERT_THROW(N == position1s.size(),
+                "position0s({}) vs position1s({}) size mismatch",
+                N,
+                position1s.size());
 
-    auto size = sc.edges().size();
-    UIPC_ASSERT(size == geo_slots.size(),
-                "The number of edges ({}) does not match the number of link pairs ({})",
-                size,
-                geo_slots.size());
+    geometry::SimplicialComplex sc;
+    sc.vertices().resize(2 * N);
+    auto pos_view = view(sc.positions());
 
-    // Convert old API to new API format
-    vector<S<geometry::SimplicialComplexSlot>> l_geo_slots;
-    vector<IndexT>                              l_instance_id;
-    vector<S<geometry::SimplicialComplexSlot>> r_geo_slots;
-    vector<IndexT>                              r_instance_id;
+    sc.edges().resize(N);
+    auto topo = sc.edges().create<Vector2i>(builtin::topo, Vector2i::Zero(), false);
+    auto topo_view = view(*topo);
 
-    l_geo_slots.reserve(size);
-    l_instance_id.reserve(size);
-    r_geo_slots.reserve(size);
-    r_instance_id.reserve(size);
-
-    for(const auto& slot_tuple : geo_slots)
+    for(SizeT i = 0; i < N; ++i)
     {
-        auto&& [l, r] = slot_tuple;
-
-        UIPC_ASSERT(l->geometry().instances().size() == 1,
-                    "Link must have exactly one instance, found {} instances",
-                    l->geometry().instances().size());
-        UIPC_ASSERT(r->geometry().instances().size() == 1,
-                    "Link must have exactly one instance, found {} instances",
-                    r->geometry().instances().size());
-
-        l_geo_slots.push_back(l);
-        l_instance_id.push_back(0);
-        r_geo_slots.push_back(r);
-        r_instance_id.push_back(0);
+        pos_view[2 * i + 0] = position0s[i];
+        pos_view[2 * i + 1] = position1s[i];
+        topo_view[i] = Vector2i{static_cast<int>(2 * i), static_cast<int>(2 * i + 1)};
     }
 
-    vector<Float> strength_ratios(size, strength_ratio_v);
-    apply_to(sc,
-             span{l_geo_slots},
-             span{l_instance_id},
-             span{r_geo_slots},
-             span{r_instance_id},
-             span{strength_ratios});
+    apply_to(sc, l_geo_slots, l_instance_ids, r_geo_slots, r_instance_ids, strength_ratios);
+    return sc;
+}
+
+geometry::SimplicialComplex AffineBodyPrismaticJoint::create_geometry(
+    span<const Vector3>                      l_position0,
+    span<const Vector3>                      l_position1,
+    span<const Vector3>                      r_position0,
+    span<const Vector3>                      r_position1,
+    span<S<geometry::SimplicialComplexSlot>> l_geo_slots,
+    span<IndexT>                             l_instance_ids,
+    span<S<geometry::SimplicialComplexSlot>> r_geo_slots,
+    span<IndexT>                             r_instance_ids,
+    span<Float>                              strength_ratios)
+{
+    auto N = l_position0.size();
+    UIPC_ASSERT_THROW(N == l_position1.size(),
+                "l_position0({}) vs l_position1({}) size mismatch",
+                N,
+                l_position1.size());
+    UIPC_ASSERT_THROW(N == r_position0.size(),
+                "l_position0({}) vs r_position0({}) size mismatch",
+                N,
+                r_position0.size());
+    UIPC_ASSERT_THROW(N == r_position1.size(),
+                "l_position0({}) vs r_position1({}) size mismatch",
+                N,
+                r_position1.size());
+
+    geometry::SimplicialComplex sc;
+    sc.vertices().resize(2 * N);
+
+    sc.edges().resize(N);
+    auto topo = sc.edges().create<Vector2i>(builtin::topo, Vector2i::Zero(), false);
+    auto topo_view = view(*topo);
+
+    auto l_pos0_attr = sc.edges().create<Vector3>("l_position0", Vector3::Zero());
+    auto l_pos1_attr = sc.edges().create<Vector3>("l_position1", Vector3::Zero());
+    auto r_pos0_attr = sc.edges().create<Vector3>("r_position0", Vector3::Zero());
+    auto r_pos1_attr = sc.edges().create<Vector3>("r_position1", Vector3::Zero());
+    auto l_pos0_view = view(*l_pos0_attr);
+    auto l_pos1_view = view(*l_pos1_attr);
+    auto r_pos0_view = view(*r_pos0_attr);
+    auto r_pos1_view = view(*r_pos1_attr);
+
+    for(SizeT i = 0; i < N; ++i)
+    {
+        topo_view[i]    = Vector2i{static_cast<int>(2 * i), static_cast<int>(2 * i + 1)};
+        l_pos0_view[i]  = l_position0[i];
+        l_pos1_view[i]  = l_position1[i];
+        r_pos0_view[i]  = r_position0[i];
+        r_pos1_view[i]  = r_position1[i];
+    }
+
+    apply_to(sc, l_geo_slots, l_instance_ids, r_geo_slots, r_instance_ids, strength_ratios);
+    return sc;
 }
 
 void AffineBodyPrismaticJoint::apply_to(geometry::SimplicialComplex& edges,
-                                       span<S<geometry::SimplicialComplexSlot>> l_geo_slots,
-                                       span<S<geometry::SimplicialComplexSlot>> r_geo_slots,
-                                       Float                                  strength_ratio)
+                                        span<S<geometry::SimplicialComplexSlot>> l_geo_slots,
+                                        span<S<geometry::SimplicialComplexSlot>> r_geo_slots,
+                                        Float strength_ratio)
 {
     auto size = edges.edges().size();
-    UIPC_ASSERT(size == l_geo_slots.size(),
+    UIPC_ASSERT_THROW(size == l_geo_slots.size(),
                 "The number of edges ({}) does not match the number of left geo slots ({})",
                 size,
                 l_geo_slots.size());
-    UIPC_ASSERT(size == r_geo_slots.size(),
+    UIPC_ASSERT_THROW(size == r_geo_slots.size(),
                 "The number of edges ({}) does not match the number of right geo slots ({})",
                 size,
                 r_geo_slots.size());
@@ -111,33 +148,33 @@ void AffineBodyPrismaticJoint::apply_to(geometry::SimplicialComplex& edges,
 }
 
 void AffineBodyPrismaticJoint::apply_to(geometry::SimplicialComplex& edges,
-                                       span<S<geometry::SimplicialComplexSlot>> l_geo_slots,
-                                       span<IndexT>                           l_instance_id,
-                                       span<S<geometry::SimplicialComplexSlot>> r_geo_slots,
-                                       span<IndexT>                           r_instance_id,
-                                       span<Float>                            strength_ratio)
+                                        span<S<geometry::SimplicialComplexSlot>> l_geo_slots,
+                                        span<IndexT> l_instance_ids,
+                                        span<S<geometry::SimplicialComplexSlot>> r_geo_slots,
+                                        span<IndexT> r_instance_ids,
+                                        span<Float>  strength_ratios)
 {
     auto size = edges.edges().size();
-    UIPC_ASSERT(size == l_geo_slots.size(),
+    UIPC_ASSERT_THROW(size == l_geo_slots.size(),
                 "The number of edges ({}) does not match the number of left geo slots ({})",
                 size,
                 l_geo_slots.size());
-    UIPC_ASSERT(size == l_instance_id.size(),
+    UIPC_ASSERT_THROW(size == l_instance_ids.size(),
                 "The number of edges ({}) does not match the number of left instance IDs ({})",
                 size,
-                l_instance_id.size());
-    UIPC_ASSERT(size == r_geo_slots.size(),
+                l_instance_ids.size());
+    UIPC_ASSERT_THROW(size == r_geo_slots.size(),
                 "The number of edges ({}) does not match the number of right geo slots ({})",
                 size,
                 r_geo_slots.size());
-    UIPC_ASSERT(size == r_instance_id.size(),
+    UIPC_ASSERT_THROW(size == r_instance_ids.size(),
                 "The number of edges ({}) does not match the number of right instance IDs ({})",
                 size,
-                r_instance_id.size());
-    UIPC_ASSERT(size == strength_ratio.size(),
+                r_instance_ids.size());
+    UIPC_ASSERT_THROW(size == strength_ratios.size(),
                 "The number of edges ({}) does not match the number of strength ratios ({})",
                 size,
-                strength_ratio.size());
+                strength_ratios.size());
 
     auto uid = edges.meta().find<U64>(builtin::constitution_uid);
     if(!uid)
@@ -146,19 +183,25 @@ void AffineBodyPrismaticJoint::apply_to(geometry::SimplicialComplex& edges,
     }
     view(*uid)[0] = this->uid();
 
-    auto geo_ids = edges.edges().find<Vector2i>("geo_ids");
-    if(!geo_ids)
-    {
-        geo_ids = edges.edges().create<Vector2i>("geo_ids", Vector2i{-1, -1});
-    }
-    auto geo_ids_view = view(*geo_ids);
+    auto l_geo_id_attr = edges.edges().find<IndexT>("l_geo_id");
+    if(!l_geo_id_attr)
+        l_geo_id_attr = edges.edges().create<IndexT>("l_geo_id", IndexT{-1});
+    auto l_geo_id_view = view(*l_geo_id_attr);
 
-    auto inst_ids = edges.edges().find<Vector2i>("inst_ids");
-    if(!inst_ids)
-    {
-        inst_ids = edges.edges().create<Vector2i>("inst_ids", Vector2i{-1, -1});
-    }
-    auto inst_ids_view = view(*inst_ids);
+    auto r_geo_id_attr = edges.edges().find<IndexT>("r_geo_id");
+    if(!r_geo_id_attr)
+        r_geo_id_attr = edges.edges().create<IndexT>("r_geo_id", IndexT{-1});
+    auto r_geo_id_view = view(*r_geo_id_attr);
+
+    auto l_inst_id_attr = edges.edges().find<IndexT>("l_inst_id");
+    if(!l_inst_id_attr)
+        l_inst_id_attr = edges.edges().create<IndexT>("l_inst_id", IndexT{-1});
+    auto l_inst_id_view = view(*l_inst_id_attr);
+
+    auto r_inst_id_attr = edges.edges().find<IndexT>("r_inst_id");
+    if(!r_inst_id_attr)
+        r_inst_id_attr = edges.edges().create<IndexT>("r_inst_id", IndexT{-1});
+    auto r_inst_id_view = view(*r_inst_id_attr);
 
     auto strength_ratio_attr = edges.edges().find<Float>("strength_ratio");
     if(!strength_ratio_attr)
@@ -166,25 +209,47 @@ void AffineBodyPrismaticJoint::apply_to(geometry::SimplicialComplex& edges,
         strength_ratio_attr = edges.edges().create<Float>("strength_ratio", 0.0);
     }
     auto strength_ratio_view = view(*strength_ratio_attr);
-    std::ranges::copy(strength_ratio, strength_ratio_view.begin());
+    std::ranges::copy(strength_ratios, strength_ratio_view.begin());
+
+    auto distance = edges.edges().find<Float>("distance");
+    if(!distance)
+    {
+        distance = edges.edges().create<Float>("distance", 0.0);
+    }
+    auto distance_view = view(*distance);
+    std::ranges::fill(distance_view, 0.0);
+
+    auto init_distance = edges.edges().find<Float>("init_distance");
+    if(!init_distance)
+    {
+        init_distance = edges.edges().create<Float>("init_distance", 0.0);
+    }
+    auto init_distance_view = view(*init_distance);
+    std::ranges::fill(init_distance_view, 0.0);
 
     for(auto&& [i, l_slot] : enumerate(l_geo_slots))
     {
         auto r_slot = r_geo_slots[i];
-        auto l_inst = l_instance_id[i];
-        auto r_inst = r_instance_id[i];
+        auto l_inst = l_instance_ids[i];
+        auto r_inst = r_instance_ids[i];
 
-        UIPC_ASSERT(l_inst >= 0 && l_inst < static_cast<IndexT>(l_slot->geometry().instances().size()),
+        UIPC_ASSERT_THROW(l_inst >= 0
+                        && l_inst < static_cast<IndexT>(
+                               l_slot->geometry().instances().size()),
                     "Left instance ID {} is out of range [0, {})",
                     l_inst,
                     l_slot->geometry().instances().size());
-        UIPC_ASSERT(r_inst >= 0 && r_inst < static_cast<IndexT>(r_slot->geometry().instances().size()),
+        UIPC_ASSERT_THROW(r_inst >= 0
+                        && r_inst < static_cast<IndexT>(
+                               r_slot->geometry().instances().size()),
                     "Right instance ID {} is out of range [0, {})",
                     r_inst,
                     r_slot->geometry().instances().size());
 
-        geo_ids_view[i]  = Vector2i{l_slot->id(), r_slot->id()};
-        inst_ids_view[i] = Vector2i{l_inst, r_inst};
+        l_geo_id_view[i]  = l_slot->id();
+        r_geo_id_view[i]  = r_slot->id();
+        l_inst_id_view[i] = l_inst;
+        r_inst_id_view[i] = r_inst;
     }
 }
 

@@ -6,7 +6,17 @@
 
 ## Energy
 
-The limit adds an energy $E(x)$ where $x$ is the scalar joint angle (its exact meaning is given in [Meaning of $x$](#meaning-of-x)). Let $l,u$ be lower/upper limits and $s$ be `limit/strength`.
+`limit/lower` and `limit/upper` are **absolute bounds on the reported `angle` attribute** (i.e. $\theta_{\text{current}}$ as defined by the base [Revolute Joint](./affine_body_revolute_joint.md#angle-state)). The user can set them directly against the value they read back from `angle`.
+
+Internally the penalty is evaluated on the raw revolute coordinate $x$ (see [Meaning of $x$](#meaning-of-x); to a first approximation $x \approx \theta(\mathbf{q}) = \theta_{\text{current}} - \alpha_0$). The effective bounds on $x$ are therefore shifted by $-\alpha_0$:
+
+$$
+l = l_{\text{user}} - \alpha_0, \quad u = u_{\text{user}} - \alpha_0,
+$$
+
+where $l_{\text{user}}, u_{\text{user}}$ are `limit/lower`, `limit/upper` and $\alpha_0$ is `init_angle` from the base joint. Algebraically this is equivalent to enforcing $l_{\text{user}} \le \theta_{\text{current}} \le u_{\text{user}}$. Let $s$ be `limit/strength`.
+
+Because $x$ is a raw accumulator that is not wrapped to $(-\pi,\pi]$, the limit is well-defined only while $|x| < \pi$; this is the intended operating range (the penalty itself prevents the joint from drifting that far).
 
 For normal range width ($u>l$):
 
@@ -55,7 +65,7 @@ Here:
 - $\mathbf{q}_{ref}$ is the reference DOF captured at initialization.
 - $\theta^t$ is the accumulated revolute angle from the previous step.
 
-Note that $\mathbf{q}$ is the concatenation of the DOF of the two affine bodies connected by the prismatic joint.
+Note that $\mathbf{q}$ is the concatenation of the DOF of the two affine bodies connected by the revolute joint.
 
 $$
 \mathbf{q} =
@@ -85,9 +95,9 @@ $$
 $$
 
 $$
-\cos\theta=\frac{\hat{\mathbf{b}}_i\cdot\hat{\mathbf{b}}_j+\hat{\mathbf{n}}_i\cdot\hat{\mathbf{n}}_j}{2},
+\cos\theta=\frac{\hat{\mathbf{n}}_i\cdot\hat{\mathbf{n}}_j+\hat{\mathbf{b}}_i\cdot\hat{\mathbf{b}}_j}{2},
 \quad
-\sin\theta=\frac{\hat{\mathbf{n}}_i\cdot\hat{\mathbf{b}}_j-\hat{\mathbf{b}}_i\cdot\hat{\mathbf{n}}_j}{2}.
+\sin\theta=\frac{\hat{\mathbf{b}}_i\cdot\hat{\mathbf{n}}_j-\hat{\mathbf{n}}_i\cdot\hat{\mathbf{b}}_j}{2}.
 $$
 
 The sign of $x$ follows the sign of $\sin\theta$ under this convention.
@@ -100,8 +110,12 @@ This limit term is meaningful only on a geometry that already represents a
 
 ## Attributes
 
-On `edges`:
+The host geometry is **edge-based** (one edge per joint), with the same linking fields as [Affine Body Revolute Joint](./affine_body_revolute_joint.md): `l_geo_id`, `r_geo_id`, `l_inst_id`, `r_inst_id`, `strength_ratio`, and optional `l_position0`, `l_position1`, `r_position0`, `r_position1` when created via Local `create_geometry`.
 
-- `limit/lower`: $l$ in the energy above
-- `limit/upper`: $u$ in the energy above
-- `limit/strength`: $s$ in the energy above
+On **edges** (in addition to the base joint attributes above):
+
+- `limit/lower`: $l_{\text{user}}$ — absolute lower bound on the reported `angle` (default `0.0`)
+- `limit/upper`: $u_{\text{user}}$ — absolute upper bound on the reported `angle` (default `0.0`)
+- `limit/strength`: $s$ — penalty strength (default `1.0`)
+
+The limit also consumes the base-joint attribute `init_angle` ($\alpha_0$, default `0.0`); it is **subtracted** from `limit/lower`/`limit/upper` to form the effective bounds $l$/$u$ used on the raw coordinate $x$.

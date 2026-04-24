@@ -31,6 +31,7 @@ class Codim1DConstitutionDiffParmReporter;
 class Codim0DConstitutionDiffParmReporter;
 
 class FiniteElementDiffDofReporter;
+class FEMExternalForceManager;
 
 class FiniteElementMethod final : public SimSystem
 {
@@ -273,6 +274,9 @@ class FiniteElementMethod final : public SimSystem
         muda::DeviceBuffer<Float>   masses;    // Mass
         muda::DeviceBuffer<Float>   thicknesses;  // Thickness
 
+        muda::DeviceBuffer<Vector3> vertex_external_forces;      // per-vertex F_ext
+        muda::DeviceBuffer<Vector3> vertex_external_force_accs;  // per-vertex a_ext = F/m
+
 
         //tex:
         // FEM3D Material Basis
@@ -312,6 +316,11 @@ class FiniteElementMethod final : public SimSystem
     auto is_dynamic() const noexcept { return m_impl.is_dynamic.view(); }
     auto x_bars() const noexcept { return m_impl.x_bars.view(); }
     auto xs() const noexcept { return m_impl.xs.view(); }
+
+    /**
+     * @brief overwrite the vertex positions
+     */
+    void overwrite_xs(muda::CBufferView<Vector3> xs);
     auto dxs() const noexcept { return m_impl.dxs.view(); }
     auto x_temps() const noexcept { return m_impl.x_temps.view(); }
     auto vs() const noexcept { return m_impl.vs.view(); }
@@ -324,6 +333,8 @@ class FiniteElementMethod final : public SimSystem
     auto rest_lengths() const noexcept { return m_impl.rest_lengths.view(); }
     auto Dm3x3_invs() const noexcept { return m_impl.Dm3x3_invs.view(); }
     auto gravities() const noexcept { return m_impl.gravities.view(); }
+    auto vertex_external_forces() const noexcept { return m_impl.vertex_external_forces.view(); }
+    auto vertex_external_force_accs() const noexcept { return m_impl.vertex_external_force_accs.view(); }
 
     /**
      * @brief return the frame-local dof offset of FEM for the given frame
@@ -391,6 +402,7 @@ class FiniteElementMethod final : public SimSystem
     friend class FEMTimeIntegrator;
 
     friend class FiniteElementStateAccessorFeatureOverrider;
+    friend class FEMExternalForceManager;
 
     friend class SimEngine;
     void init();  // only be called by SimEngine

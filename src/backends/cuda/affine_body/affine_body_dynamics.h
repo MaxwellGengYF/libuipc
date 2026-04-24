@@ -235,9 +235,9 @@ class AffineBodyDynamics : public SimSystem
         // =
         //\left[\begin{array}{ccc|ccc:ccc:ccc}
         //1 &   &   & \bar{x}_1 & \bar{x}_2 & \bar{x}_3 &  &  &  &  &  & \\
-            //& 1 &   &  &  &  & \bar{x}_1 & \bar{x}_2 & \bar{x}_3 &  &  &  \\
-            //&   & 1 &  &  &  &  &  &  &  \bar{x}_1 & \bar{x}_2 & \bar{x}_3\\
-            //\end{array}\right] $$
+        //& 1 &   &  &  &  & \bar{x}_1 & \bar{x}_2 & \bar{x}_3 &  &  &  \\
+        //&   & 1 &  &  &  &  &  &  &  \bar{x}_1 & \bar{x}_2 & \bar{x}_3\\
+        //\end{array}\right] $$
         DeviceBuffer<ABDJacobi> vertex_id_to_J;
         DeviceBuffer<IndexT>    vertex_id_to_body_id;
 
@@ -272,10 +272,10 @@ class AffineBodyDynamics : public SimSystem
         // $$\mathbf{m_q} =
         // \begin{bmatrix}
         // \mathbf { p } \\
-            // \mathbf{a} _1 \\
-            // \mathbf{a} _2 \\
-            // \mathbf{a} _3 \\
-            // \end{bmatrix}
+        // \mathbf{a} _1 \\
+        // \mathbf{a} _2 \\
+        // \mathbf{a} _3 \\
+        // \end{bmatrix}
         // $$
         // where
         // $$
@@ -378,6 +378,11 @@ class AffineBodyDynamics : public SimSystem
      * @brief return dof `q` of the body
      */
     auto qs() const noexcept { return m_impl.body_id_to_q.view(); }
+
+    /**
+     * @brief overwrite the dof `q` of the body
+     */
+    void overwrite_qs(muda::CBufferView<Vector12> qs);
 
     /**
      * @brief return the delta dof `dq` of the body

@@ -32,7 +32,7 @@ namespace detail
                 auto simplicial_complex =
                     dynamic_cast<SimplicialComplex*>(&geo->geometry());
 
-                UIPC_ASSERT(simplicial_complex, "type mismatch, why can it happen?");
+                UIPC_ASSERT_THROW(simplicial_complex, "type mismatch, why can it happen?");
 
                 switch(simplicial_complex->dim())
                 {
@@ -76,7 +76,7 @@ namespace detail
             {
                 auto simplicial_complex = geo.as<SimplicialComplex>();
 
-                UIPC_ASSERT(simplicial_complex, "type mismatch, why can it happen?");
+                UIPC_ASSERT_THROW(simplicial_complex, "type mismatch, why can it happen?");
 
                 // 1) label original_index for each vertex, edge, triangle, tetrahedron
                 {
@@ -209,7 +209,7 @@ namespace detail
             {
                 auto simplicial_complex =
                     dynamic_cast<SimplicialComplex*>(&geo->geometry());
-                UIPC_ASSERT(simplicial_complex, "type mismatch, why can it happen?");
+                UIPC_ASSERT_THROW(simplicial_complex, "type mismatch, why can it happen?");
 
                 // 1) Contact Element ID
                 auto contact_element_id =
@@ -530,6 +530,26 @@ class Context::Impl
         return m_scene->subscene_tabular();
     }
 
+    S<const core::Object> find_object(IndexT id) const noexcept
+    {
+        return m_scene->objects().find(id);
+    }
+
+    span<S<geometry::GeometrySlot>> geometries() const noexcept
+    {
+        return m_scene->geometries().geometry_slots();
+    }
+
+    S<geometry::GeometrySlot> find_geometry(IndexT id) const noexcept
+    {
+        return m_scene->geometries().find(id);
+    }
+
+    const geometry::AttributeCollection& config() const noexcept
+    {
+        return m_scene->config();
+    }
+
   private:
     S<core::internal::Scene>               m_scene;
     mutable U<geometry::SimplicialComplex> m_scene_simplicial_surface;
@@ -567,6 +587,31 @@ const core::ContactTabular& Context::contact_tabular() const noexcept
 const core::SubsceneTabular& Context::subscene_tabular() const noexcept
 {
     return m_impl->subscene_tabular();
+}
+
+std::string_view Context::workspace() const
+{
+    return SanityChecker::workspace();
+}
+
+S<const core::Object> Context::find_object(IndexT id) const
+{
+    return m_impl->find_object(id);
+}
+
+span<S<geometry::GeometrySlot>> Context::geometries() const
+{
+    return m_impl->geometries();
+}
+
+S<geometry::GeometrySlot> Context::find_geometry(IndexT id) const
+{
+    return m_impl->find_geometry(id);
+}
+
+const geometry::AttributeCollection& Context::config() const
+{
+    return m_impl->config();
 }
 
 U64 Context::get_id() const noexcept

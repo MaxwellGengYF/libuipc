@@ -32,24 +32,42 @@ geometry::AttributeCollection default_scene_config() noexcept
     //  - linear_pcg (30% slower)
     config.create("linear_system/solver", std::string{"fused_pcg"});
 
-    config.create("linear_system/precond/mas/contact_aware", IndexT{0});
     config.create("line_search/max_iter", IndexT{8});
     config.create("line_search/report_energy", IndexT{0});
 
     config.create("contact/enable", IndexT{1});
-    config.create("contact/friction/enable", IndexT{1});
-    config.create("contact/constitution", std::string{"ipc"});
     config.create("contact/d_hat", Float{0.01});
+
+    config.create("contact/friction/enable", IndexT{1});
+    // friction transition velocity
+    config.create("contact/eps_velocity", Float{0.01_m / 1.0_s});
+    
+    // default:
+    //  - ipc
+    // or:
+    //  - al-ipc
+    config.create("contact/constitution", std::string{"ipc"});
+
+    // al-ipc tuning knobs. They are ignored when contact/constitution != "al-ipc".
+    config.create("contact/al-ipc/mu_scale_fem", Float{5e7});
+    config.create("contact/al-ipc/mu_scale_abd", Float{1e5});
+    config.create("contact/al-ipc/toi_threshold", Float{0.1});
+    config.create("contact/al-ipc/alpha_lower_bound", Float{1e-6});
+    config.create("contact/al-ipc/decay_factor", Float{0.3});
+
+    // adaptive contact tuning knobs.
     config.create("contact/adaptive/min_kappa", Float{100.0_MPa});
     config.create("contact/adaptive/init_kappa", Float{1.0_GPa});
     config.create("contact/adaptive/max_kappa", Float{100.0_GPa});
-    config.create("contact/eps_velocity", Float{0.01_m / 1.0_s});
+
+    
 
     // default:
-    //  - stackless_bvh
+    //  - info_stackless_bvh
     // or:
+    //  - stackless_bvh
     //  - linear_bvh (slower)
-    config.create("collision_detection/method", std::string{"stackless_bvh"});
+    config.create("collision_detection/method", std::string{"info_stackless_bvh"});
 
     config.create("sanity_check/enable", IndexT{1});
     config.create("sanity_check/mode", std::string{"normal"});
@@ -59,7 +77,7 @@ geometry::AttributeCollection default_scene_config() noexcept
     config.create("extras/debug/dump_surface", IndexT{0});
     config.create("extras/debug/dump_linear_system", IndexT{0});
     config.create("extras/debug/dump_linear_pcg", IndexT{0});
-
+    config.create("extras/debug/dump_mas_matrices", IndexT{0});
     config.create("extras/strict_mode/enable", IndexT{0});
 
     return config;
@@ -97,7 +115,7 @@ Json to_config_json(const geometry::AttributeCollection& config)
     for(auto& name : names)
     {
         auto attr = config.find(name);
-        UIPC_ASSERT(attr != nullptr, "Attribute '{}' not found in config.", name);
+        UIPC_ASSERT_THROW(attr != nullptr, "Attribute '{}' not found in config.", name);
         auto& sub_json = nested_json(j, name);
         sub_json       = attr->to_json(0);
     }
@@ -140,7 +158,7 @@ void from_config_json(geometry::AttributeCollection& config, const Json& j)
     for(auto& name : names)
     {
         auto attr = config.find(name);
-        UIPC_ASSERT(attr != nullptr, "Attribute '{}' not found in config.", name);
+        UIPC_ASSERT_THROW(attr != nullptr, "Attribute '{}' not found in config.", name);
         auto sub_json = find_nested_json(j, name);
         if(sub_json != nullptr)
         {

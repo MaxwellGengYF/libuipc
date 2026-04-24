@@ -12,6 +12,7 @@
 #include <uipc/builtin/geometry_type.h>
 #include <uipc/builtin/constitution_type.h>
 #include <uipc/builtin/constitution_uid_collection.h>
+#include <uipc/common/log.h>
 
 namespace std
 {
@@ -40,7 +41,7 @@ class SimplicialVolumeCheck final : public SanityChecker
     virtual U64 get_id() const noexcept override { return SanityCheckerUID; }
 
     virtual SanityCheckResult do_check(backend::SceneVisitor& scene,
-                                       backend::SanityCheckMessageVisitor& msg) noexcept override
+                                       backend::SanityCheckMessageVisitor& msg) override
     {
         auto context = find<Context>();
 
@@ -56,7 +57,7 @@ class SimplicialVolumeCheck final : public SanityChecker
                 continue;
 
             auto sc = geo.as<geometry::SimplicialComplex>();
-            UIPC_ASSERT(sc, "Cannot cast to simplicial complex, why can this happen?");
+            UIPC_ASSERT_THROW(sc, "Cannot cast to simplicial complex, why can this happen?");
 
             auto cuid = sc->meta().find<U64>(builtin::constitution_uid);
             if(!cuid)
@@ -71,23 +72,48 @@ class SimplicialVolumeCheck final : public SanityChecker
             {
                 auto volume      = sc->vertices().find<Float>(builtin::volume);
                 auto volume_view = volume->view();
-                auto min_elem =
+                auto min_it =
                     std::min_element(volume_view.begin(), volume_view.end());
 
-                if(*min_elem <= 0.0)
+                if(*min_it <= 0.0)
                 {
+                    auto obj_name = objects().find(oid)->name();
+                    IndexT invalid_count =
+                        static_cast<IndexT>(std::count_if(volume_view.begin(),
+                                                          volume_view.end(),
+                                                          [](Float v)
+                                                          { return v <= 0.0; }));
+                    IndexT min_idx =
+                        static_cast<IndexT>(std::distance(volume_view.begin(), min_it));
+                    logger::error(
+                        "FEM Geometry({}) in Object[{}({})]: "
+                        "{} vertex/vertices with non-positive volume "
+                        "(min={} at vertex {}).",
+                        gid,
+                        obj_name,
+                        oid,
+                        invalid_count,
+                        *min_it,
+                        min_idx);
                     invalid_geo_ids.push_back(gid);
                     invalid_obj_ids.push_back(oid);
                 }
             }
             else if(uid_info.type == builtin::AffineBody)
             {
-
                 auto volume      = sc->meta().find<Float>(builtin::volume);
                 auto volume_view = volume->view().front();
 
                 if(volume_view <= 0.0)
                 {
+                    auto obj_name = objects().find(oid)->name();
+                    logger::error(
+                        "ABD Geometry({}) in Object[{}({})]: "
+                        "non-positive volume ({}).",
+                        gid,
+                        obj_name,
+                        oid,
+                        volume_view);
                     invalid_geo_ids.push_back(gid);
                     invalid_obj_ids.push_back(oid);
                 }

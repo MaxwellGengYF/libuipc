@@ -1,16 +1,39 @@
 #include <uipc/core/animator.h>
 #include <uipc/common/log.h>
+#include <algorithm>
 namespace uipc::core
 {
-void Animator::substep(SizeT n) noexcept
+void Animator::substep(SizeT n)
 {
-    UIPC_ASSERT(n > 0, "Animator: Substep must be greater than 0, yours' {}", n);
+    UIPC_ASSERT_THROW(n > 0, "Animator: Substep must be greater than 0, yours' {}", n);
     m_substep = n;
 }
 
 SizeT Animator::substep() const noexcept
 {
     return m_substep;
+}
+
+SizeT Animator::animation_count() const noexcept
+{
+    return m_animations.size();
+}
+
+bool Animator::has_animation(IndexT id) const noexcept
+{
+    return m_animations.find(id) != m_animations.end();
+}
+
+vector<IndexT> Animator::animation_ids() const
+{
+    vector<IndexT> ids;
+    ids.reserve(m_animations.size());
+    for(const auto& [id, _] : m_animations)
+    {
+        ids.push_back(id);
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
 }
 
 void Animator::insert(Object& obj, Animation::ActionOnUpdate&& on_update)
@@ -22,7 +45,7 @@ void Animator::insert(Object& obj, Animation::ActionOnUpdate&& on_update)
         if(it != m_animations.end())
         {
             auto obj = it->second.m_object;
-            UIPC_ASSERT(it == m_animations.end(),
+            UIPC_ASSERT_THROW(it == m_animations.end(),
                         "Animator: Object (name={}, id={}) already has an animation.",
                         obj->name(),
                         obj->id());

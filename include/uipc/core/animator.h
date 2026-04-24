@@ -20,8 +20,11 @@ class Scene;
 class UIPC_CORE_API Animator
 {
   public:
-    void  substep(SizeT n) noexcept;
+    void  substep(SizeT n);
     SizeT substep() const noexcept;
+    SizeT animation_count() const noexcept;
+    bool  has_animation(IndexT id) const noexcept;
+    vector<IndexT> animation_ids() const;
 
     void insert(Object& obj, Animation::ActionOnUpdate&& on_update);
     void erase(IndexT id);

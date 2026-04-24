@@ -53,34 +53,34 @@ void AffineBodyRevoluteJointLimit::apply_to(geometry::SimplicialComplex& sc,
                                             span<Float>                  uppers,
                                             span<Float> strengths)
 {
-    UIPC_ASSERT(sc.dim() == 1,
+    UIPC_ASSERT_THROW(sc.dim() == 1,
                 "AffineBodyRevoluteJointLimit can only be applied to 1D simplicial complex (linemesh), but got {}D",
                 sc.dim());
 
     auto base_uid = sc.meta().find<U64>(builtin::constitution_uid);
-    UIPC_ASSERT(base_uid, "AffineBodyRevoluteJointLimit requires `meta.constitution_uid` on joint mesh");
-    UIPC_ASSERT(base_uid->view()[0] == RevoluteJointUID,
+    UIPC_ASSERT_THROW(base_uid, "AffineBodyRevoluteJointLimit requires `meta.constitution_uid` on joint mesh");
+    UIPC_ASSERT_THROW(base_uid->view()[0] == RevoluteJointUID,
                 "AffineBodyRevoluteJointLimit must be applied on a revolute joint mesh with constitution UID={}, but got {}",
                 RevoluteJointUID,
                 base_uid->view()[0]);
 
     auto edge_count = sc.edges().size();
-    UIPC_ASSERT(lowers.size() == edge_count,
+    UIPC_ASSERT_THROW(lowers.size() == edge_count,
                 "Lower limit size mismatch: expected {}, got {}",
                 edge_count,
                 lowers.size());
-    UIPC_ASSERT(uppers.size() == edge_count,
+    UIPC_ASSERT_THROW(uppers.size() == edge_count,
                 "Upper limit size mismatch: expected {}, got {}",
                 edge_count,
                 uppers.size());
-    UIPC_ASSERT(strengths.size() == edge_count,
+    UIPC_ASSERT_THROW(strengths.size() == edge_count,
                 "Strength size mismatch: expected {}, got {}",
                 edge_count,
                 strengths.size());
 
     for(auto&& [i, l] : enumerate(lowers))
     {
-        UIPC_ASSERT(l <= uppers[i],
+        UIPC_ASSERT_THROW(l <= uppers[i],
                     "Invalid limit range at edge {}: lower ({}) must be <= upper ({})",
                     i,
                     l,
@@ -100,6 +100,10 @@ void AffineBodyRevoluteJointLimit::apply_to(geometry::SimplicialComplex& sc,
     auto strength_attr = sc.edges().find<Float>(LimitStrengthName);
     if(!strength_attr)
         strength_attr = sc.edges().create<Float>(LimitStrengthName, 1.0f);
+
+    auto init_angle_attr = sc.edges().find<Float>("init_angle");
+    if(!init_angle_attr)
+        init_angle_attr = sc.edges().create<Float>("init_angle", 0.0f);
 
     auto lower_view    = view(*lower_attr);
     auto upper_view    = view(*upper_attr);

@@ -1,32 +1,16 @@
 #pragma once
 #include <uipc/constitution/constitution.h>
 #include <uipc/geometry/simplicial_complex.h>
+#include <uipc/common/unit.h>
 
 namespace uipc::constitution
 {
-class AffineBodyConstitution;
-
-class UIPC_CONSTITUTION_API AffineBodyMaterial
-{
-  public:
-    void apply_to(geometry::SimplicialComplex& sc) const;
-
-  private:
-    friend class AffineBodyConstitution;
-    AffineBodyMaterial(const AffineBodyConstitution&, Float kappa, Float mass_density = 1e3) noexcept;
-
-    const AffineBodyConstitution& m_constitution;
-    Float                         m_kappa;
-    Float                         m_mass_density;
-};
-
 class UIPC_CONSTITUTION_API AffineBodyConstitution : public IConstitution
 {
     using Base = IConstitution;
 
   public:
     AffineBodyConstitution(const Json& config = default_config()) noexcept;
-    AffineBodyMaterial create_material(Float kappa) const noexcept;
 
     void apply_to(geometry::SimplicialComplex& sc, Float kappa, Float mass_density = 1e3) const;
 
@@ -42,25 +26,50 @@ class UIPC_CONSTITUTION_API AffineBodyConstitution : public IConstitution
                   const Matrix12x12&           mass,
                   Float                        volume) const;
 
+    /**
+     * @brief Create a 1-vertex proxy affine body from rigid body mass properties.
+     *
+     * The returned SimplicialComplex has a single vertex at the origin and
+     * carries all ABD meta attributes.  It participates in dynamics (gravity,
+     * shape energy) but has no collision geometry.
+     */
+    [[nodiscard]] geometry::SimplicialComplex create_proxy(Float              kappa,
+                                                           Float              mass,
+                                                           const Vector3&     mass_center,
+                                                           const Matrix3x3&   inertia,
+                                                           Float              volume) const;
+
+    /**
+     * @brief Create a 1-vertex proxy affine body from a precomputed 12x12 ABD
+     *        mass matrix.
+     */
+    [[nodiscard]] geometry::SimplicialComplex create_proxy(Float              kappa,
+                                                           const Matrix12x12& abd_mass,
+                                                           Float              volume) const;
+
     static Json default_config() noexcept;
 
   protected:
     virtual U64 get_uid() const noexcept override;
 
     /**
-     * @brief Common ABD attribute setup without volume computation.
+     * @brief Common ABD attribute setup.
      * 
      * Sets constitution_uid, transforms, dof_offset, dof_count, is_fixed,
      * is_dynamic, external_kinetic, velocity, self_collision, kappa,
-     * volume, and mass_density attributes.
+     * volume, mass_density, abd_mass/abd_mass_x_bar/abd_mass_x_bar_x_bar,
+     * and user-facing mass/mass_center/inertia on sc.meta().
      * 
      * Subclasses (AffineBodyShell, AffineBodyRod) call this with their
-     * own pre-computed volume instead of compute_mesh_volume().
+     * own pre-computed volume and dyadic mass.
      */
-    void setup_abd_attributes(geometry::SimplicialComplex& sc,
-                              Float                        kappa,
-                              Float                        mass_density,
-                              Float                        volume) const;
+    void create_attributes(geometry::SimplicialComplex& sc,
+                               Float                        kappa,
+                               Float                        mass_density,
+                               Float                        volume,
+                               Float                        m,
+                               const Vector3&               m_x_bar,
+                               const Matrix3x3&             m_x_bar_x_bar) const;
 
   private:
     Json m_config;

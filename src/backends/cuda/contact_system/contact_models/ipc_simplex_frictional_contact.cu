@@ -5,6 +5,7 @@
 #include <utils/make_spd.h>
 #include <utils/matrix_assembler.h>
 #include <utils/primitive_d_hat.h>
+#include <pipeline/ipc_pipeline_flag.h>
 
 
 namespace uipc::backend::cuda
@@ -16,12 +17,7 @@ class IPCSimplexFrictionalContact final : public SimplexFrictionalContact
 
     virtual void do_build(BuildInfo& info) override
     {
-        auto constitution =
-            world().scene().config().find<std::string>("contact/constitution");
-        if(constitution->view()[0] != "ipc")
-        {
-            throw SimSystemException("Constitution is not IPC");
-        }
+        require<IPCPipelineFlag>();
     }
 
     virtual void do_compute_energy(EnergyInfo& info) override
@@ -328,7 +324,7 @@ class IPCSimplexFrictionalContact final : public SimplexFrictionalContact
                    {
                        if(idx < ee_offset)
                        {
-                           // ── PT friction ──
+                           // PT friction
                            int i = idx;
                            const auto& PT = PTs(i);
                            Vector4i cids = {contact_ids(PT[0]), contact_ids(PT[1]),
@@ -375,7 +371,7 @@ class IPCSimplexFrictionalContact final : public SimplexFrictionalContact
                        }
                        else if(idx < pe_offset)
                        {
-                           // ── EE friction ──
+                           // EE friction
                            int i = idx - ee_offset;
                            const auto& EE = EEs(i);
                            Vector4i cids = {contact_ids(EE[0]), contact_ids(EE[1]),
@@ -442,7 +438,7 @@ class IPCSimplexFrictionalContact final : public SimplexFrictionalContact
                        }
                        else if(idx < pp_offset)
                        {
-                           // ── PE friction ──
+                           // PE friction
                            int i = idx - pe_offset;
                            const auto& PE = PEs(i);
                            Vector3i cids = {contact_ids(PE[0]), contact_ids(PE[1]), contact_ids(PE[2])};
@@ -482,7 +478,7 @@ class IPCSimplexFrictionalContact final : public SimplexFrictionalContact
                        }
                        else
                        {
-                           // ── PP friction ──
+                           // PP friction
                            int i = idx - pp_offset;
                            const auto& PP = PPs(i);
                            Vector2i cids = {contact_ids(PP[0]), contact_ids(PP[1])};

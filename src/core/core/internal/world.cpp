@@ -13,7 +13,7 @@ namespace uipc::core::internal
 {
 static S<internal::Engine> lock(const W<internal::Engine>& e)
 {
-    UIPC_ASSERT(!e.expired(), "Engine is expired, did you throw the `Engine`?");
+    UIPC_ASSERT_THROW(!e.expired(), "Engine is expired, did you throw the `Engine`?");
     return e.lock();
 }
 
@@ -31,13 +31,14 @@ void World::init(internal::Scene& s)
 
     auto engine = lock(m_engine);
 
+    auto& config = m_scene->config();
+    auto  sanity_check_enable =
+        config.find<IndexT>("sanity_check/enable");
+
     // 2. Sanity Check Before Init
-    // initialize sanity checker
-    m_sanity_checker = uipc::make_shared<SanityChecker>(s, engine->workspace());
-    auto& config     = m_scene->config();
-    auto  sanity_check_enable_attr = config.find<IndexT>("sanity_check/enable");
-    if(sanity_check_enable_attr->view()[0])
+    if(sanity_check_enable && sanity_check_enable->view()[0])
     {
+        m_sanity_checker = uipc::make_shared<SanityChecker>(s, *engine);
         _sanity_check();
     }
     if(!m_valid)
@@ -198,19 +199,18 @@ const FeatureCollection& World::features() const
 
 SanityChecker& World::sanity_checker()
 {
-    UIPC_ASSERT(m_sanity_checker, "SanityChecker is not initialized. You should call World::init() first.");
+    UIPC_ASSERT_THROW(m_sanity_checker, "SanityChecker is not initialized. You should call World::init() first.");
     return *m_sanity_checker;
 }
 
 const SanityChecker& World::sanity_checker() const
 {
-    UIPC_ASSERT(m_sanity_checker, "SanityChecker is not initialized. You should call World::init() first.");
+    UIPC_ASSERT_THROW(m_sanity_checker, "SanityChecker is not initialized. You should call World::init() first.");
     return *m_sanity_checker;
 }
 
 void World::_sanity_check()
 {
-    auto  engine         = lock(m_engine);
     auto& sanity_checker = *m_sanity_checker;
     auto  result         = sanity_checker.check();
     if(result != SanityCheckResult::Success)

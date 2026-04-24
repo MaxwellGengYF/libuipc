@@ -48,9 +48,46 @@ void SanityCheckerCollection::build(core::internal::Scene& s)
     }
 
     auto ctx = find<Context>();
-    UIPC_ASSERT(ctx != nullptr, "SanityCheckBuild: Context not found");
+    UIPC_ASSERT_THROW(ctx != nullptr, "SanityCheckBuild: Context not found");
 
     ctx->prepare();
+}
+
+void SanityCheckerCollection::insert(S<core::ISanityChecker> checker)
+{
+    U64 new_id = checker->id();
+
+    auto it = std::find_if(m_entries.begin(),
+                           m_entries.end(),
+                           [new_id](const auto& e) { return e->id() == new_id; });
+
+    if(it != m_entries.end())
+    {
+        m_valid_entries.remove(it->get());
+        *it = std::move(checker);
+    }
+    else
+    {
+        m_entries.emplace_back(std::move(checker));
+        it = std::prev(m_entries.end());
+    }
+
+    try
+    {
+        (*it)->build();
+        m_valid_entries.emplace_back(it->get());
+    }
+    catch(const uipc::Exception& e)
+    {
+        logger::debug("[{}] shutdown, reason: {}", (*it)->name(), e.what());
+    }
+}
+
+core::ISanityCheckContext& SanityCheckerCollection::context()
+{
+    auto ctx = find<Context>();
+    UIPC_ASSERT_THROW(ctx != nullptr, "SanityCheckerCollection::context(): Context not found");
+    return *ctx;
 }
 
 SanityCheckResult SanityCheckerCollection::check(core::SanityCheckMessageCollection& msgs) const
