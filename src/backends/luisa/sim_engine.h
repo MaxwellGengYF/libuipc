@@ -25,6 +25,8 @@ class GlobalSimplicialSurfaceManager;
 class TimeIntegratorManager;
 class GlobalAnimator;
 class GlobalExternalForceManager;
+class GlobalDyTopoEffectManager;
+class LineSearcher;
 
 class SimEngine final : public backend::SimEngine
 {
@@ -101,6 +103,11 @@ class SimEngine final : public backend::SimEngine
     TimeIntegratorManager*      m_time_integrator_manager      = nullptr;
     GlobalAnimator*             m_global_animator              = nullptr;
     GlobalExternalForceManager* m_global_external_force_manager = nullptr;
+    // T4.3: the reference `find<>`s the dytopo effect manager (it only exists
+    // when the scene enables contact or uses an InterPrimitive constitution)
+    // and `require<>`s the LineSearcher, which is always registered.
+    GlobalDyTopoEffectManager* m_global_dytopo_effect_manager = nullptr;
+    LineSearcher*              m_line_searcher                   = nullptr;
 
     PipelineType m_pipeline_type = PipelineType::Basic;
 

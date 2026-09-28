@@ -5,6 +5,9 @@
 #include <uipc/common/log_pattern_guard.h>
 
 #include <backends/common/module.h>
+// T4.3: the constructor touches EngineCreateInfo::config (EngineCreateInfo is
+// only forward-declared by the base engine header).
+#include <uipc/backend/engine_create_info.h>
 
 // T4.1/T4.2: the engine drives the engine-aware systems (see init_scene() /
 // do_advance()); the include order mirrors the reference's sim_engine_do_init.cu.
@@ -16,6 +19,9 @@
 #include <pipeline/ipc_pipeline_flag.h>
 #include <pipeline/al_ipc_pipeline_flag.h>
 #include <time_integrator/time_integrator_manager.h>
+// T4.3
+#include <dytopo_effect_system/global_dytopo_effect_manager.h>
+#include <line_search/line_searcher.h>
 
 
 namespace uipc::backend::luisa
@@ -28,6 +34,13 @@ SimEngine::SimEngine(EngineCreateInfo* info)
     logger::info(
         "LuisaCompute backend (LC device backend 'cuda' by default). "
         "The full advance pipeline is assembled in Phase 8.");
+    // T4.3: bring the LC device up here, like the reference backend does in its
+    // constructor. `World::init` runs the sanity check *before* it calls
+    // engine->init() (i.e. before do_init()), and the backend's checkers are
+    // device code, so the device must already exist at that point.
+    // Runtime::init() is idempotent (a no-op when the runtime is up), so the
+    // do_init() call below is unchanged.
+    init_device(info->config);
 }
 
 SimEngine::~SimEngine()
@@ -60,7 +73,7 @@ void SimEngine::do_init(InitInfo& info)
     LogPatternGuard guard("Luisa");
     logger::info("do_init() called.");
 
-    init_device(info.config());
+    init_device(info.config());  // idempotent; the constructor already did this
 
     m_state = SimEngineState::BuildSystems;
     build_systems();
@@ -100,7 +113,10 @@ void SimEngine::build_engine_systems()
     m_global_body_manager   = &require<GlobalBodyManager>();
     m_time_integrator_manager = &require<TimeIntegratorManager>();
 
+    m_line_searcher = &require<LineSearcher>();
+
     m_global_simplicial_surface_manager = find<GlobalSimplicialSurfaceManager>();
+    m_global_dytopo_effect_manager = find<GlobalDyTopoEffectManager>();
     m_global_animator                   = find<GlobalAnimator>();
     m_global_external_force_manager     = find<GlobalExternalForceManager>();
 }
@@ -153,7 +169,13 @@ void SimEngine::init_scene()
     {
         m_global_simplicial_surface_manager->init();
     }
-    // (3.1 Forwards: GlobalDyTopoEffectManager, GlobalContactManager -> T4.3+)
+    // 3.1 Forwards (reference order): dytopo effect manager -> contact manager
+    //     (Phase 8) -> animator -> external force -> active set (Phase 8) ->
+    //     line searcher -> linear system (Phase 8) -> time integrator -> ...
+    if(m_global_dytopo_effect_manager)
+    {
+        m_global_dytopo_effect_manager->init();
+    }
     if(m_global_animator)
     {
         m_global_animator->init();
@@ -162,7 +184,8 @@ void SimEngine::init_scene()
     {
         m_global_external_force_manager->init();
     }
-    // (GlobalActiveSetManager -> Phase 8; LineSearcher / GlobalLinearSystem -> Phase 8)
+    // (GlobalActiveSetManager -> Phase 8; GlobalLinearSystem -> Phase 8)
+    m_line_searcher->init();
     if(m_time_integrator_manager)
     {
         m_time_integrator_manager->init();

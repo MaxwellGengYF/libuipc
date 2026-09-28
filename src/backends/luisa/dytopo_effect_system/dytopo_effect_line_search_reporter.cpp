@@ -1,0 +1,86 @@
+#include <dytopo_effect_system/dytopo_effect_line_search_reporter.h>
+#include <dytopo_effect_system/global_dytopo_effect_manager.h>
+
+#include <frame_stream.h>
+#include <luisa_device/linear/algorithms.h>
+#include <uipc/common/enumerate.h>
+#include <uipc/common/zip.h>
+
+namespace uipc::backend::luisa
+{
+namespace lla = luisa_device::linalg;
+
+REGISTER_SIM_SYSTEM(DyTopoEffectLineSearchReporter);
+
+void DyTopoEffectLineSearchReporter::do_build(LineSearchReporter::BuildInfo& info)
+{
+    m_impl.global_dytopo_effect_manager = require<GlobalDyTopoEffectManager>();
+}
+
+void DyTopoEffectLineSearchReporter::do_init(LineSearchReporter::InitInfo& info)
+{
+    m_impl.init();
+}
+
+void DyTopoEffectLineSearchReporter::Impl::init() {}
+
+void DyTopoEffectLineSearchReporter::Impl::compute_energy(bool is_init)
+{
+    auto& manager   = global_dytopo_effect_manager->m_impl;
+    auto  reporters = manager.dytopo_effect_reporters.view();
+
+    auto energy_counts = manager.reporter_energy_offsets_counts.counts();
+    for(auto&& [i, reporter] : enumerate(reporters))
+    {
+        GlobalDyTopoEffectManager::EnergyExtentInfo extent_info;
+        reporter->report_energy_extent(extent_info);
+        energy_counts[i] = extent_info.m_energy_count;
+    }
+
+    manager.reporter_energy_offsets_counts.scan();
+    loose_resize(energies, manager.reporter_energy_offsets_counts.total_count());
+
+    for(auto&& [i, reporter] : enumerate(reporters))
+    {
+        GlobalDyTopoEffectManager::EnergyInfo this_info;
+        auto [offset, count] = manager.reporter_energy_offsets_counts[i];
+        this_info.m_energies = energies.view(offset, count);
+        this_info.m_is_initial = is_init;
+        reporter->compute_energy(this_info);
+    }
+}
+
+void DyTopoEffectLineSearchReporter::do_record_start_point(LineSearcher::RecordInfo& info)
+{
+    // Do nothing, because GlobalVertexManager will do the record start point for all the vertices we need
+}
+
+void DyTopoEffectLineSearchReporter::do_step_forward(LineSearcher::StepInfo& info)
+{
+    // Do nothing, because GlobalVertexManager will do the step forward for all the vertices we need
+}
+
+void DyTopoEffectLineSearchReporter::do_compute_energy(LineSearcher::ComputeEnergyInfo& info)
+{
+    m_impl.compute_energy(info.is_initial());
+
+    // cuda_tool::DeviceReduce().Sum(m_impl.energies.data(), info.energy().data(), size)
+    // on the shared frame stream, so the reduction is batched with the reporters'
+    // dispatches (T3.2; the reference submits on the default stream).
+    auto& stream = frame_stream();
+    if(m_impl.energies.size() > 0)
+    {
+        lla::device_reduce_sum(stream,
+                               m_impl.energies.cview(),
+                               info.energy(),
+                               m_impl.energies.size());
+    }
+    else
+    {
+        // DeviceReduce of an empty array writes the identity in the reference too;
+        // the port writes it with a one-element copy recorded on the frame stream.
+        const Float zero = 0.0;
+        stream.record(info.energy().native().copy_from(lcrt::span<const Float>{&zero, 1u}));
+    }
+}
+}// namespace uipc::backend::luisa

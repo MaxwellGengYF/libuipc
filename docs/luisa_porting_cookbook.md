@@ -1191,6 +1191,120 @@ engine shell wiring. The rules below are what the port turned out to depend on.
    they are; the report lists what is therefore not exercised on the device.
 
 Appendix — Verified LC API cheat-sheet (from T0.1)
+### 7.15 Patterns established in T4.3 (kernel_cout device print, sanity checker, dytopo effects, line search)
+M4 commits: T4.1 `30f07811`, T4.2 `789f84b1`, T4.3 `<the parent's `[luisa-backend] T4.3 …` commit>`.
+`src/backends/luisa/{kernel_cout.*,sanity_check/*,dytopo_effect_system/*,line_search/*,energy_component_flags.*}`
+port `kernel_cout.h`, `sanity_check/{backend_sanity_checker.h,half_plane_vertex_distance_check.cu}`,
+`dytopo_effect_system/*` (classify info, receiver/reporter bases, the line-search reporter, the global manager),
+`line_search/{line_searcher,line_search_reporter}.{h,cu}` and `energy_component_flags.{h,cpp}`. The rules below are
+what the port turned out to depend on.
+
+1. **A device-print *capture* is LC's per-stream log callback, installed once and retargeted.**
+   The reference's `KernelCout::viewer()` streaming is impossible on LC (there is no device-side stream object), so
+   `LC_LOG(fmt, args…)` (→ `device_log`) is the print and `luisa_device::LoggerViewer` stays a no-op handle for
+   plumbing parity. The formatted text is delivered to `Stream::set_log_callback`'s callback when the stream reaches
+   the print buffer's read-back, i.e. *on the next synchronize* — exactly the reference's "flushed on the next sync".
+   `KernelCout::set_capture(stream, lines)` / `KernelCoutCapture` route it into a string list.
+   * LC warns (`Setting CUDAStream::log_callback more than once … not thread-safe`) whenever `set_log_callback` is
+     called on a stream whose callback is already set — **including the call that clears it**. The port therefore
+     installs one trampoline per stream (the first capture on that stream, after `synchronize()`) and later captures
+     only retarget it; `clear_capture()` sets the target to null and the trampoline then reproduces LC's own default,
+     `LUISA_INFO("[DEVICE] {}", line)` (shader_print_formatter.h). Measured: 4 captures in the test originally
+     produced 4 warnings, none after the change.
+   * `luisa::log_info("…{}", x)` **does not compile** (fmt 10's `format_string` cannot be constructed from the literal
+     through the template — C7595 "call to immediate function is not a constant expression"), and neither does it in a
+     lambda. LC's own spelling is the macro `LUISA_INFO(fmt, args…)`, which pre-formats with `fmt::format(FMT_STRING(…))`
+     and passes the resulting string to `log_info`. Use the macro (or `log_info` with a single already-formatted
+     argument) for any LC logging added to the backend.
+   * LC accepts only `{}` per argument (a width/precision specifier asserts) and renders with fmt's default
+     formatter — doubles in the shortest round-trip spelling, not the reference's `printf("%f")`. The reference's
+     *text* is therefore not reproducible token-for-token; the port's text is exact for a given LC_LOG call.
+     Measured: `LC_LOG("int={} uint={}", v, 7u)` → `int=-7 uint=7`, `LC_LOG("double={}", 0.5)` → `double=0.5`,
+     `LC_LOG("mixed {} {} {}", -3, 42u, 2.25)` → `mixed -3 42 2.25` (dispatch order preserved), and the no-capture
+     fallback prints `[DEVICE] t43_no_capture 1` through the process log.
+   * Kernel print is compiled out unless `UIPC_LUISA_KERNEL_PRINT=1` *in the translation unit that defines the
+     kernel* (luisa_device/log.h) — a per-TU macro, which is why a test enables it at the very top of its file.
+
+2. **A backend sanity checker is registered in the module and replaces the CPU one by uid — and it needs a live
+   device *before* `do_init()`.** `sanity_check/backend_sanity_checker.h` derives from `core::ISanityChecker`, takes
+   the CPU sanity module's `core::ISanityCheckContext`, and self-registers with `REGISTER_BACKEND_SANITY_CHECKER`;
+   `core::SanityChecker::check()` loads `uipc_sanity_check`, builds it (which flattens the scene into
+   `scene_simplicial_surface()` and fills `sanity_check/{contact_element_id,subscene_contact_element_id,geometry_id,
+   object_id,dim,self_collision}`), then lets the engine insert the backend's checkers so
+   `SanityCheckerCollection::insert()` replaces the entry with the same id. Consequences:
+   * `msg->name()` is `uipc::demangle(typeid(*this).name())` → the ported checker reports as
+     `uipc::backend::luisa::HalfPlaneVertexDistanceCheck` (uid 2), which is how a test proves *its* checker ran and
+     not the CPU one;
+   * a checker whose `build()` throws `BackendSanityCheckerException` is simply not inserted (the reference's
+     "contact is not enabled" gate);
+   * **`World::init()` runs the sanity check before `engine->init()`**, i.e. before `SimEngine::do_init()` — the
+     reference CUDA backend creates its device in the engine *constructor*, so the port does the same
+     (`init_device(info->config)` in `SimEngine::SimEngine`, `Runtime::init()` being idempotent). Without it every
+     device-side checker throws "luisa_device::Runtime is not initialized" (measured).
+   * the checker's `map<Vector2i, Vector2i>` uses a *named* comparator (`Vec2iLess`) instead of specialising
+     `std::less` for the Eigen type (what the reference does is formally UB; the ordering — and therefore the reported
+     pair order — is identical).
+
+3. **`Scene::validate_config()` rejects unknown config *groups* — a test-local system knob must live elsewhere.**
+   `config["test_t43"]["mode"] = "fast"` throws `Assertion entries.contains(name) failed. Unknown mutable scene config
+   attribute 'test_t43/mode' … Custom metadata belongs on geometry, not Scene::config()` in `World::init` (measured).
+   Keys *inside* a known group (e.g. `contact/d_hat_relative`, `line_search/max_iter`) are fine. A test that needs to
+   steer its own registered systems therefore uses a translation-unit-local variable (T4.3's `t43_dytopo::g_mode`),
+   not the scene config.
+
+4. **The dytopo manager's contract, and the two paths a receiver sees.** `GlobalDyTopoEffectManager` fans out to the
+   `DyTopoEffectReporter`s (each declares `component_flags()` — which must be a *single* valid bit: `Contact` or
+   `Complement`; `EnergyComponentFlags::All` fails the manager's `is_valid_flag` assert and is only for
+   `ComputeDyTopoEffectInfo`), scans the reported extents, hands each reporter a `subview` of the collected gradient /
+   hessian to fill, converts collected → sorted BCOO (duplicates summed, sorted by index / by `(row<<32)|col`) and then
+   classifies into each receiver's reported ranges:
+   * a **single diagonal receiver** whose range is exactly the leading dynamic prefix (`x == 0`, `y != 0`,
+     `y <= global_vertex_manager->positions().size()`) gets the *collected* arrays, unconverted
+     (`_convert_matrix()` is skipped) — the reference still *sizes* the sorted containers in `_assemble()`, so only the
+     data (raw order, duplicates kept) distinguishes the paths;
+   * otherwise the gradient is the contiguous partition of the *sorted* doublets whose index lies in the receiver's
+     `gradient_i_range()`, and the hessian is the sorted selection of triplets with `i` and `j` inside its ranges
+     (an off-diagonal `range(L, R)` leaves the gradient view empty). A diagonal range that does not start at 0 takes
+     the distributed path.
+   Port-specific deviations: `DeviceVar<Vector2i> gradient_range` is a flat two-element `IndexT` buffer (k1 writes x
+   and y from *different* lanes, which one vector-element write cannot express) cleared with a two-element copy *on the
+   frame stream*; and `selected_hessian[N]` (the exclusive scan's "last" slot) is cleared by thread 0 with the select
+   kernel dispatched over `max(N, 1)` threads, so `N == 0` clears it too (the reference leaves it untouched and only
+   happens to get a zeroed fresh allocation).
+
+5. **dytopo/line-search type mapping** (all already ported): `DeviceTripletMatrix/DoubletVector/BCOOMatrix/BCOOVector`
+   → T3.1 `lla::L*`, `CTripletMatrixView/CDoubletVectorView` → `lla::LCTripletMatrixView<T,M,N>` /
+   `lla::LCDoubletVectorView<T,N>` (the *host* flavour — a reporter's `do_assemble` is host code that writes the
+   slices with `row_indices()/col_indices()/values()` `copy_from`s), `MatrixConverter<Float,3>` → T3.3
+   `lla::MatrixConverter` (its `convert(from, to, stream)` overload keeps the conversion on the frame stream),
+   `DeviceScan().ExclusiveSum` → `lla::exclusive_scan`, `DeviceReduce().Sum` → `lla::device_reduce_sum`,
+   `cuda_tool::VarView<Float>` (a one-scalar view) → a one-element `LBufferView<Float>` subview. Inside a kernel the
+   views are rebuilt from the raw row/col/value buffers with `from_handles` — never captured (cookbook §7.9 rule 2).
+   `GlobalDyTopoEffectManager` is `find<>`-able (a `SimSystemCreator` specialisation creates it only when
+   `contact/enable` is set or the scene has an `InterPrimitive` constitution); `LineSearcher` is `require<>`d and is
+   always registered. Both are initialised from `SimEngine::init_scene()` in the reference's order
+   (vertex → surface → dytopo → contact → animator → external force → active set → line searcher → linear system →
+   time integrator), and `LineSearcher::init()` reads `line_search/{report_energy,max_iter}` + `dt` from the scene
+   config (the shell exposes only `max_iter()` until Phase 8 drives `record_start_point/step_forward/compute_energy`,
+   which are private with `friend class SimEngine`, exactly like the reference).
+
+6. **`lla` is a namespace alias inside `luisa_device`, so a backend *header* must re-declare it.** `sim_engine.h`,
+   the ported managers and the test files all use `lla::…`; inside `uipc::backend::luisa` that only resolves if the
+   file (or an included header) declares `namespace lla = luisa_device::linalg;`. `using lla = luisa_device::linalg;`
+   is a *type* alias declaration and fails with C2061 "unrecognised linalg" — write `namespace lla = …`.
+
+7. **`include <backends/luisa/sim_engine.h>`, not `<sim_engine.h>`, in any TU that may borrow the test target's
+   include path** (rule 7 of §7.14 restated) — the single-TU checker `scripts/luisa_check_compile.py` borrows exactly
+   those flags, so a bare `<sim_engine.h>` makes the fast inner loop compile the *none* backend's shell and report
+   "SimEngine is incomplete"/`find<>` failures that the real module build never sees.
+
+8. **What T4.3 did *not* port, and why** (kept in `sanity_check/backend_sanity_checker.h` and in the T4.3 row):
+   `simplicial_surface_distance_check.cu` / `simplicial_surface_intersection_check.cu` need
+   `InfoStacklessBVH::build()/query()` (T7.1); `distance_system/distance_diagnoser.*` needs
+   `contact_system/contact_models/codim_ipc_contact_function.h` (+ `sym/codim_ipc_contact.inl`) and
+   `utils/friction_utils.h` (T8.1), plus `utils/codim_thickness.h` / `utils/primitive_d_hat.h` whose first consumer is
+   that diagnoser. They must not be stubbed.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
