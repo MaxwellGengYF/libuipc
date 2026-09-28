@@ -22,6 +22,8 @@
 // T4.3
 #include <dytopo_effect_system/global_dytopo_effect_manager.h>
 #include <line_search/line_searcher.h>
+// T5.1
+#include <finite_element/finite_element_method.h>
 
 
 namespace uipc::backend::luisa
@@ -119,6 +121,9 @@ void SimEngine::build_engine_systems()
     m_global_dytopo_effect_manager = find<GlobalDyTopoEffectManager>();
     m_global_animator                   = find<GlobalAnimator>();
     m_global_external_force_manager     = find<GlobalExternalForceManager>();
+    // T5.1: the reference `find<>`s the FEM method alongside AffineBodyDynamics
+    // (optional: only a scene with a FiniteElement constitution has one).
+    m_finite_element_method = find<FiniteElementMethod>();
 }
 
 void SimEngine::set_pipeline_type()
@@ -150,8 +155,17 @@ void SimEngine::init_scene()
 
     set_pipeline_type();
 
-    // 1. Before the common scene initialization: the body manager hands out the
-    //    global body ranges that the vertex reporters use while filling body_ids.
+    // 1. Before the common scene initialization: the FEM method builds its
+    //    geometry/constitution infos, uploads the rest state and hands the
+    //    constitutions their init(); then the body manager hands out the global
+    //    body ranges that the vertex reporters use while filling body_ids.
+    //    (Reference order, sim_engine_do_init.cu step 1:
+    //     affine_body_dynamics -> inter_affine_body_constitution_manager ->
+    //     finite_element_method -> global_body_manager.)
+    if(m_finite_element_method)
+    {
+        m_finite_element_method->init();
+    }
     if(m_global_body_manager)
     {
         m_global_body_manager->init();

@@ -1305,6 +1305,91 @@ what the port turned out to depend on.
    `utils/friction_utils.h` (T8.1), plus `utils/codim_thickness.h` / `utils/primitive_d_hat.h` whose first consumer is
    that diagnoser. They must not be stubbed.
 
+### 7.16 Patterns established in T5.1 (FEM base & utils)
+
+1. **DSL-callable utility headers are header-only with a *deduced* scalar type.** `finite_element/fem_utils.h` and
+   `finite_element/matrix_utils.h` carry their bodies inline (no `.cu`/`.cpp`) because a DSL call needs the body at
+   the call site to emit IR. Both are `template<class T>` / `template<class Scalar>` with `auto` returns, so
+   `fem::dJdF<Float>(...)`-style reference call sites keep working while the same code instantiates for `double`
+   (host) and `Var<float>`/`Expr` (device). Deviation from the reference's `.h`+`.cu` split, reported in the header
+   comments. Two signatures *had* to be loosened to `is_vec_like_v<V> && vec_dim_v<V> == 3` (`project_F_gradient`,
+   `project_F_hessian_block`) so that Eigen's `shape_gradients.col(i)` (`VecMap`) binds.
+2. **Re-export `lps` math through `using`-declarations, never wrapper templates.**
+   `using lps::svd; using lps::qr_svd; using lps::polar_decomposition; using lps::evd;` inside
+   `uipc::backend::luisa`. A wrapper `template<class...A> auto svd(A&&...)` is *ambiguously* overload-resolved
+   (measured **C2668**) once ADL also finds `lps::svd` for an `LMat` argument — the same trap as the `lla`/`detail`
+   aliases of §7.10 rule 4.
+3. **`Var<T>` arithmetic rules (restated for FEM):** no `operator+=`, no copy-assignment, `lps::stored()` is
+   scalar-only (never call it on a container — `storage_of` maps non-arithmetic to `Var<…>`). Write every scalar
+   expression through `lps::detail::{add,sub,mul,div,neg}` (alias `namespace detail = lps::detail;`) and let the
+   LVec/LMat operators come from ADL. Ordering inside a header-only translation unit is now significant: `Ds`
+   must be **defined before** `Dm_inv` (in the reference both are only declared in the `.h`, so order is free).
+4. **`LDeviceBuffer` semantics you must not assume away.**
+   (a) `resize()` zero-fills the tail, so **value-initialise the host staging array** (`std::vector<T> v(n, T{})`)
+   before `copy_from`, exactly like `cuda_tool`'s alloc+fill.
+   (b) **Copy-assignment shares the allocation, it does not copy**: `x_temps = xs;` aliases the same buffer, whereas
+   `cuda_tool::DeviceBuffer` deep-copies. Every reference idiom of that shape must be spelled as an explicit
+   deep copy (here: the `copy_device(dst, src)` helper) — the `dump_recover` test only reached bitwise 187/187
+   after this fix.
+   (c) `LBufferView::copy_from/copy_to` default to the **main stream** and are no-ops on empty views.
+5. **`backend::BufferView::handle()` is a *host* address.** Documented deviation: the reference reinterprets it as a
+   raw device pointer and does a D2D copy; LC exposes no raw device pointer and the pybind frontend hands host
+   buffers, so `copy_to_buffer_view` does D2H + `stream << synchronize()` + element-wise `LVector3` conversion.
+6. **Kernel asserts.** `UIPC_KERNEL_ASSERT` → `lcrt::device_assert(cond, "literal")`; LC cannot format device
+   indices, so the tet-index part of the message is dropped. Placement is preserved verbatim, which matters:
+   in the rest-volume kernel the check sits **after** the closed-form inverse (a zero/negative-volume tet therefore
+   still computes `Dm_inv` first), and the shell rest-area kernel has **no** assert at all (zero area stays `0`).
+7. **`UIPC_ASSERT` in the backend aborts, it does not throw** (`utils/report_extent_check.h` → logger + `uipc::abort()`).
+   A Catch2 test can therefore never exercise the two invalid `check_report_extent` combinations; the test pins only
+   the legal ones and the assertions are documented in the header.
+8. **Interfaces owned by later tasks still have to *link* in T5.1.** Three sub-rules learned here:
+   (a) a member whose **parameter** type is a nested class of a class that does not exist yet
+   (`FEMLinearSubsystem::AssembleInfo`, `FEMLineSearchReporter::ComputeEnergyInfo`) cannot even be declared →
+   it is deferred (elastics' `assemble`/`compute_energy`), because a nested type needs its enclosing class complete;
+   (b) the method `dynamic_cast`s to the four dimension bases, so their final overrides must be **defined** now even
+   though the concrete constitutions arrive in T5.2 (a concrete class's vtable references them);
+   (c) `FEMLinearSubsystem::add_reporter` and `ReportExtentInfo::{gradient_count,hessian_count,check}` are defined in
+   `fem_linear_subsystem_reporter.cpp` so the T5.1 reporter base links; T5.4 relocates them next to the subsystem they
+   belong to (said so in-file).
+9. **Keep the reference `friend` lists verbatim** rather than widening accessors — `Impl` state is reached only
+   through the friends the reference already declares, and every later task port is then a mechanical edit.
+10. **MSVC warning hygiene over LC buffers (reference-parity, not semantic change).** `std::iota`/`fill`/`transform`
+    on a `span<T>` of an LC buffer raise **C4267** (`size_t`→`IndexT`) → put `static_cast<IndexT>(i)` in the lambda;
+    `std::exclusive_scan` with a `0` init raises **C4244** → use `SizeT{0}`. Goal: module build with 0 warnings.
+11. **Verifying a "clean rebuild" of the backend module needs a cmake re-run in between.** The module sets
+    `WINDOWS_EXPORT_ALL_SYMBOLS`, so CMake writes the object-list file
+    `build/src/backends/luisa/CMakeFiles/luisa.dir/exports.def.objs` at *generate* time. Deleting the `.dir` tree
+    (the usual way to force a full recompile) therefore leaves the link step failing with
+    `could not open object list file: …\luisa.dir\.\exports.def.objs`. The sequence that works is
+    `rm -rf build/src/backends/luisa/CMakeFiles/luisa.dir build/apps/tests/backends/luisa/CMakeFiles/backend_luisa.dir`
+    → `cmake -S . -B build` → `python scripts/luisa_build.py build backend_luisa` (measured: 81 CXX compile steps,
+    rc 0, 0 warnings, ~85 s; keep the log — `scratch/t51_cleanbuild.log`).
+12. **Test-side patterns (reusable by T5.2–T5.5).**
+    (a) Keep hand-derived oracles in Eigen notation: a small test namespace of shims (`lv`, `Ds`, `Dm_inv`, `F`,
+    `dFdx`, `tetrahedron_shape_gradients`) converts `Eigen::Matrix`→`lps::LMat`/`LVec`, so the oracle reads like the
+    paper formula while the *ported* utils are still what runs.
+    (b) One generic dumper beats N ad-hoc checks: `fem_util_round<S, Put>` serialises **187 doubles** (v9 9, ddot 1,
+    inv2F 1, inv3F 1, Σ 3, inv2σ 1, inv3σ 1, inv4 1, inv5 1, dFdx 108, dJdF 9, shape grads 12, project grad 3,
+    project Hessian block 9, Dm_inv 9, Ds 9, F 9) from any scalar backend; run it on host `double` and on device
+    `Float` and compare **bitwise** → "187/187 bitwise equal, worst abs 0.000e+00" is a far stronger claim than a
+    per-function epsilon. The device side is one `cached_kernel<Buffer<double>>` writing each entry with
+    host-constant indices (traps 1/4 of §7.10 still apply: the compiled kernel and the result buffer are leaked).
+    (c) Record the tolerances actually achieved so later tasks stop over-tightening: h=1e-6 FD gradient worst abs
+    **1.069e-09** / rel **9.064e-10**; FD Hessian worst abs **6.685e-10** / rel **5.293e-10**; Hessian asymmetry
+    **2.220e-16**; min eigenvalue **-2.980e-16** at λmax **9.437e+00**; `dFdx` vs FD rel **8.227e-11**; `dJdF` vs FD
+    rel **6.884e-11**. Assert order-of-magnitude bounds, never exact values.
+    (d) `type_define.h` keeps growing but generically: a `LMat` used by value (kernel arg, struct member) fails with
+    **C2027** when only `<luisa_device/math/vec.h>` is included (it merely forward-declares `LMat`) → include
+    `<luisa_device/math/mat.h>`. Any new element type needs `sizeof`/`alignof` static_asserts, `to_luisa`/`to_eigen`
+    and a **global-scope** `LUISA_STRUCT(…)` registration, otherwise `buffer.h:85`'s `is_valid_buffer_element_v`
+    static_assert stops the build (added here: `LVector4i`, `LMatrix3x3`).
+13. **What T5.1 did *not* port, and why** (recorded in each file's scope note and in the T5.1 row): concrete
+    constitutions + `sym/*.inl` (T5.2), shell bending/mass (T5.2/T5.3), `FiniteElementElastics::Impl::assemble` /
+    `compute_energy` and its two nested reporter systems (T5.4/T5.5), the `FEMLinearSubsystem` system class and
+    `ReportExtentInfo::Impl` (T5.4), the concrete extra constitutions (T5.5), and
+    `finite_element_diff_parm_reporter` (needs `<diff_sim/…>`, not ported at all). None of them may be stubbed:
+    a stub would silently turn a missing-feature build error into a runtime no-op.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

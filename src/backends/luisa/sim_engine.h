@@ -27,6 +27,10 @@ class GlobalAnimator;
 class GlobalExternalForceManager;
 class GlobalDyTopoEffectManager;
 class LineSearcher;
+// T5.1: the FEM method is engine-aware (the reference engine owns a
+// `find<FiniteElementMethod>()` pointer and calls its init() in the
+// "before common scene initialization" step).
+class FiniteElementMethod;
 
 class SimEngine final : public backend::SimEngine
 {
@@ -107,7 +111,10 @@ class SimEngine final : public backend::SimEngine
     // when the scene enables contact or uses an InterPrimitive constitution)
     // and `require<>`s the LineSearcher, which is always registered.
     GlobalDyTopoEffectManager* m_global_dytopo_effect_manager = nullptr;
-    LineSearcher*              m_line_searcher                   = nullptr;
+    LineSearcher* m_line_searcher = nullptr;
+    // T5.1: optional (`find<>`) — the FEM method only exists when the scene uses a
+    // FiniteElement constitution type.
+    FiniteElementMethod* m_finite_element_method = nullptr;
 
     PipelineType m_pipeline_type = PipelineType::Basic;
 

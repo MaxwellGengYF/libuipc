@@ -51,6 +51,9 @@
 
 #include <luisa_device/luisa_device.h>
 #include <luisa_device/math/vec.h>
+// T5.1: this header now names LMat<Float,3,3> (LMatrix3x3), so the matrix header
+// must be complete here -- vec.h only forward-declares LMat.
+#include <luisa_device/math/mat.h>
 
 namespace uipc::backend::luisa
 {
@@ -90,12 +93,22 @@ using LVector2  = lps::LVec<Float, 2>;
 using LVector3  = lps::LVec<Float, 3>;
 using LVector2i = lps::LVec<IndexT, 2>;
 using LVector3i = lps::LVec<IndexT, 3>;
+// T5.1 additions (the FEM method's element buffers): `tets` is a Vector4i
+// attribute and `Dm3x3_invs` a Matrix3x3 attribute.
+using LVector4i  = lps::LVec<IndexT, 4>;
+using LMatrix3x3 = lps::LMat<Float, 3, 3>;
 
 static_assert(sizeof(LVector2) == sizeof(Vector2));
 static_assert(sizeof(LVector3) == sizeof(Vector3));
 static_assert(sizeof(LVector2i) == sizeof(Vector2i));
 static_assert(sizeof(LVector3i) == sizeof(Vector3i));
 static_assert(alignof(LVector3) == alignof(Vector3));
+static_assert(sizeof(LVector4i) == sizeof(Vector4i));
+// LMat's storage is a plain column-major std::array<T,R*C>, i.e. the same bytes
+// as Eigen's Matrix<double,3,3> (72 B) -- which is what makes the FEM dump files
+// portable between the two backends.
+static_assert(sizeof(LMatrix3x3) == sizeof(Matrix3x3));
+static_assert(alignof(LMatrix3x3) == alignof(Matrix3x3));
 
 // Host <-> device element conversion (identical layout, unrelated types).
 [[nodiscard]] inline LVector2 to_luisa(const Vector2& v) noexcept
@@ -130,6 +143,30 @@ static_assert(alignof(LVector3) == alignof(Vector3));
 {
     return Vector3i{v(0), v(1), v(2)};
 }
+[[nodiscard]] inline LVector4i to_luisa(const Vector4i& v) noexcept
+{
+    return LVector4i{v(0), v(1), v(2), v(3)};
+}
+[[nodiscard]] inline Vector4i to_eigen(const LVector4i& v) noexcept
+{
+    return Vector4i{v(0), v(1), v(2), v(3)};
+}
+[[nodiscard]] inline LMatrix3x3 to_luisa(const Matrix3x3& m) noexcept
+{
+    LMatrix3x3 r;
+    for(int c = 0; c < 3; ++c)
+        for(int i = 0; i < 3; ++i)
+            r(i, c) = m(i, c);
+    return r;
+}
+[[nodiscard]] inline Matrix3x3 to_eigen(const LMatrix3x3& m) noexcept
+{
+    Matrix3x3 r;
+    for(int c = 0; c < 3; ++c)
+        for(int i = 0; i < 3; ++i)
+            r(i, c) = m(i, c);
+    return r;
+}
 }// namespace uipc::backend::luisa
 
 // ---------------------------------------------------------------------------
@@ -143,6 +180,9 @@ LUISA_STRUCT(uipc::backend::luisa::LVector2, data){};
 LUISA_STRUCT(uipc::backend::luisa::LVector3, data){};
 LUISA_STRUCT(uipc::backend::luisa::LVector2i, data){};
 LUISA_STRUCT(uipc::backend::luisa::LVector3i, data){};
+// T5.1: the FEM method's `tets` and `Dm3x3_invs` element types.
+LUISA_STRUCT(uipc::backend::luisa::LVector4i, data){};
+LUISA_STRUCT(uipc::backend::luisa::LMatrix3x3, data){};
 
 namespace uipc::backend::luisa
 {
@@ -210,5 +250,32 @@ inline void store_vec3i(lcrt::Var<LVector3i>& dst,
     dst.data[0] = v(0);
     dst.data[1] = v(1);
     dst.data[2] = v(2);
+}
+[[nodiscard]] inline lps::LVec<lcrt::Var<IndexT>, 4> load_vec4i(
+    const lcrt::Expr<LVector4i>& e) noexcept
+{
+    lps::LVec<lcrt::Var<IndexT>, 4> v;
+    v(0) = e.data[0];
+    v(1) = e.data[1];
+    v(2) = e.data[2];
+    v(3) = e.data[3];
+    return v;
+}
+/// Materialise a device matrix element as a mutable DSL matrix (numerics layer).
+[[nodiscard]] inline lps::LMat<lcrt::Var<Float>, 3, 3> load_mat3x3(
+    const lcrt::Expr<LMatrix3x3>& e) noexcept
+{
+    lps::LMat<lcrt::Var<Float>, 3, 3> m;
+    for(int c = 0; c < 3; ++c)
+        for(int r = 0; r < 3; ++r)
+            m(r, c) = e.data[c * 3 + r];  // column-major, LMat's own layout
+    return m;
+}
+inline void store_mat3x3(lcrt::Var<LMatrix3x3>& dst,
+                         const lps::LMat<lcrt::Var<Float>, 3, 3>& m) noexcept
+{
+    for(int c = 0; c < 3; ++c)
+        for(int r = 0; r < 3; ++r)
+            dst.data[c * 3 + r] = m(r, c);
 }
 }// namespace uipc::backend::luisa
