@@ -130,6 +130,12 @@ class LDeviceBuffer
     void copy_from(std::span<const T> host)
     {
         resize(host.size());
+        if(m_size == 0u)
+        {
+            // An empty copy must not dereference the (never allocated) handle:
+            // resize(0) leaves m_buffer null.
+            return;
+        }
         main_stream() << m_buffer->view(0u, m_size).copy_from(host);
     }
 

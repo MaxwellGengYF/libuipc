@@ -460,10 +460,17 @@ unscoped `enum { ... }` is not accepted as an operand of `Expr<uint>` arithmetic
   `<Eigen/Geometry>`.
 * Catch2 forbids `&&` inside an assertion — wrap the whole expression in an extra
   pair of parentheses: `CHECK((a && b));`.
-* **Test-case order matters.** `zzz_runtime_shutdown` tears LC down explicitly
-  (without it Windows exits with 0xC0000409) and must run last. Catch2 runs cases
-  in the sorted source-glob order, so the teardown lives alone in
-  `zzz_runtime_shutdown.cpp`; never name another test file so that it sorts after.
+  * **Test-case order matters.** `zzz_runtime_shutdown` tears LC down explicitly
+    (without it Windows exits with 0xC0000409) and must run last. Catch2 runs cases
+    in the sorted source-glob order, so the teardown lives alone in
+    `zzz_runtime_shutdown.cpp`; never name another test file so that it sorts after.
+    Because that teardown is a *case*, a **filtered** run
+    (`uipc_test_backend_luisa.exe "[linear]"`, `scripts/luisa_build.py run "[tag]"`)
+    skips it and then exits with the same `0xC0000409`; the `RuntimeShutdownListener`
+    in the same file performs the identical teardown at the end of the run so that
+    filtered runs also exit `0`. If you select a subset, check the exit code, not just
+    the "All tests passed" line.
+
 * Helpers: `scripts/luisa_build.py {build|run|ctest}`,
   `scripts/luisa_standalone.py [backend]`, and
   `scripts/luisa_check_compile.py <file> --syntax` (single-TU syntax/instantiation
@@ -590,7 +597,93 @@ non-trivial ported routine: it is cheap and it is reusable across back ends.
   inputs — keep exactly-degenerate configurations in the host reference-equivalence
   tests, not in the device smoke.
 
----
+7.9 Patterns established in T3.1 (linear containers & views)
+`src/backends/luisa/luisa_device/linear/{views.h,containers.h,linear.h}` port
+`cuda_tool/linear_system.h` + `linear_system/views.h` into
+`luisa_device::linalg` (alias `lla`). The five rules below are what the port
+turned out to depend on.
+
+1. A block is **flat scalar storage**, column-major inside the block.
+   `DeviceTripletMatrix<T,M,N>::values()` becomes one `LDeviceBuffer<double>` of
+   `nnz*M*N` elements with `index(i,r,c) == i*M*N + c*M + r`, i.e. the bytes of
+   block `i` are exactly `Eigen::Matrix<T,M,N>` / `math::LMat<T,M,N>` bytes;
+   `M == N == 1` stays a plain scalar with no indirection. Measured
+   (scratch/lc_lin_spike) before choosing this: `lcrt::Matrix<double,3>`
+   (`double3x3`) *is* a legal buffer element, but its stride is **96 B** — the
+   columns are `alignas(16)`, starting at +0/+32/+64 — against Eigen's 72 B, so
+   the device ABI and the Eigen/T3.3-comparison ABI differ; a `LUISA_STRUCT` POD
+   element can be made 72 B (9 doubles, Eigen-compatible) and is writable through
+   `Var<struct>` member assignment, but it needs one registered struct type per
+   `(M,N)` shape and its accessor surface is not the `LMat` one — it cannot back
+   the generic `<T,M,N>` block API. Flat scalars win on both layout and
+   genericity.
+
+2. A view owns **handles, not pointers**, and is never captured into a kernel.
+   Views are built from `LBufferView<S>` handles (host / consumer side) or from
+   `lcrt::Expr<lcrt::Buffer<S>>` handles (inside a kernel, from the kernel's
+   arguments). Both reach the same accessor code through a *storage flavour*
+   template parameter — `storage::buffers`, `storage::device` and
+   `storage::memory` (raw host pointers, used by the unit tests and by
+   host-reference evaluation of a ported body). A view is **passed as launch
+   arguments**, never captured: a captured `BufferView` becomes a *bound
+   argument* of the compiled shader, and LC bakes the buffer handle in at
+   compile time. scratch/lc_lin_spike demonstrates the trap — after the owner
+   reallocates, re-dispatching the same compiled shader rewrites the **old**
+   buffer and leaves the new one untouched. So:
+
+     ```
+     static auto k = lud::compile1<lcrt::Buffer<int>, lcrt::Buffer<int>,
+                                   lcrt::Buffer<double>, uint32_t>(
+         [](BufferVar<int> rows, BufferVar<int> cols, BufferVar<double> vals,
+            Var<uint32_t> n) noexcept {
+             auto A = lla::LCTripletMatrixDeviceView<double, 3>::from_handles(
+                 rows, cols, vals, n, n, n);
+             ...
+         });
+     stream << k(A.row_indices(), A.col_indices(), A.values(), A.triplet_count())
+                   .dispatch(A.triplet_count());
+     ```
+   This is the concrete form of R5 ("views are frame-scoped"): the host views
+   carry a shared generation cell and `view.use_check()` throws when the owner
+   resized after the view was taken.
+
+3. Device indices are **signed** (`lcrt::Expr<std::int32_t>`), matching the
+   reference's `int` indices, and every caller-supplied index goes through
+   `Storage::as_index(...)` so a kernel may pass `dispatch_x()`
+   (`Var<uint32_t>`), a buffer read or a literal without casting. Two related
+   traps: `Expr<T>` has **no default constructor** (so `CTriplet`/`CDoublet` are
+   aggregates without default member initialisers and are always aggregate
+   initialised) and **no copy assignment** (so sub-views/`as_const()` are
+   *constructed*, never copy-and-assign).
+
+4. A `CView` has **no write path at all** — the write members exist only on the
+   non-const flavour (`requires(!IsConst)`), and `operator()` on a const view
+   returns the read-only aggregate (`CTriplet`/`CDoublet`) instead of a write
+   proxy. The unit tests assert this with dependent `requires`-expressions
+   (`static_assert(cannot_write_triplet<CV>::value)`); note that a
+   *non-dependent* `!requires{...}` is diagnosed eagerly by MSVC, and that a
+   host `LBufferView` view intentionally refuses *element access* entirely
+   (`static_assert` in `storage::buffers::load`) — a host read of device memory
+   would be an invisible synchronisation. Portable host-side element access is
+   `storage::memory`.
+
+5. Views are **not** registered as `vec_like`/`mat_like`, and `as_eigen()` is the
+   view itself. Element access is a buffer load (a DSL expression), and RULE M1
+   forbids a second arithmetic-operator namespace, so a kernel materialises a
+   segment before using the numerics layer:
+   `LVec<T,N> v = x.segment<N>(off).as_eigen();` — which is exactly the
+   reference's `Eigen::Vector<T,N> v = seg.as_eigen();` step (an implicit
+   conversion on the statically sized `segment<SegN>` view). `+=`, `-=`,
+   `atomic_add(LVec)` and `to_vec<N>()` cover the mutable-map uses.
+
+Two minimal additions were needed in the foundation (both crash/UB guards for
+zero-size work, which the new containers hit with `nnz == 0`):
+`LDeviceBuffer::copy_from` must not dereference the (never allocated) handle when
+the span is empty, and `LBufferView::{copy_from,copy_to}` must return early for a
+zero-size (or unallocated) view instead of enqueuing a copy through the invalid
+native handle.
+
+Appendix — Verified LC API cheat-sheet (from T0.1)
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

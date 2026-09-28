@@ -105,6 +105,12 @@ class LBufferView
         {
             throw std::invalid_argument{"LBufferView::copy_from size mismatch"};
         }
+        if(m_size == 0u || !m_base)
+        {
+            // An empty (never allocated) view has no native handle to copy
+            // through: nothing to do.
+            return;
+        }
         auto& stream = s ? s->stream() : main_stream();
         stream << native().copy_from(src);
     }
@@ -114,6 +120,10 @@ class LBufferView
         if(dst.size() != m_size)
         {
             throw std::invalid_argument{"LBufferView::copy_to size mismatch"};
+        }
+        if(m_size == 0u || !m_base)
+        {
+            return;
         }
         auto& stream = s ? s->stream() : main_stream();
         stream << native().copy_to(dst);
@@ -125,6 +135,10 @@ class LBufferView
         if(src.size() != m_size)
         {
             throw std::invalid_argument{"LBufferView::copy_from(d2d) size mismatch"};
+        }
+        if(m_size == 0u || !m_base || !src.m_base)
+        {
+            return;
         }
         auto& stream = s ? s->stream() : main_stream();
         stream << native().copy_from(src.native());
