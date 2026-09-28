@@ -32,11 +32,18 @@ Status: ⬜ todo · 🟡 in-progress · ✅ done
 |---|---|---|---|---|---|---|
 | T0.1 | LC build & device spike | M0 | ✅ | _see tag luisa-m0_ | `scratch/lc_spike/build/lc_spike.exe cuda` → RC 0; `[ ok ] Kernel1D write`; `[ ok ] warp_active_sum + atomic_fetch_add` (sum exact); 32 `[DEVICE] warp[N] partial=` lines captured | Spike at `scratch/lc_spike/`; strategy in cookbook §1 |
 | T0.2 | muda/Eigen/CUB API inventory | M0 | ✅ | _see tag luisa-m0_ | `python scripts/luisa_inventory.py` → 8071 occurrences, 154 distinct, **0 unmapped**, exit 0 | `docs/luisa_api_inventory.md` |
-| T1.0 | Porting cookbook + backend skeleton | M1 | 🟡 | | cookbook authored (`docs/luisa_porting_cookbook.md`); skeleton pending build | |
+| T1.0 | Porting cookbook + backend skeleton | M1 | 🟡 | | cookbook written & authoritative (`docs/luisa_porting_cookbook.md`); skeleton dirs pending | |
 | T1.1 | Build integration (CMake+xmake) | M1 | ⬜ | | | |
-| T1.2 | luisa_device core runtime | M1 | ⬜ | | | |
-| T1.3 | Foundation unit tests | M1 | ⬜ | | | |
+| T1.2 | luisa_device core runtime | M1 | ✅ | _T1.2 commit_ | `scratch/lc_spike/lc_spike2.exe cuda` → RC 0, 4/4 design checks (subview offsets, double atomics, Shared block reduce, runtime dispatch); `luisa_device_tests.exe cuda` exercises the layer | `src/backends/luisa/luisa_device/*`; R9 double-atomic gap closed in `atomic.h` |
+| T1.3 | Foundation unit tests | M1 | ✅ | _T1.3 commit_ | `luisa_device_tests.exe cuda` → **7 cases, 0 checks failed**, exit 0 (runtime_init, buffer_ops, device_var_scalar, parallel_for, stream_commands, atomic_and_reductions, kernel_print) | `apps/tests/backends/luisa/`; runs standalone now, registered in-tree via `uipc_add_test` in T1.1 |
 | T1.4 | Backend shell + SimSystem plumbing | M1 | ⬜ | | | |
+
+### Execution note
+
+T1.2/T1.3 were implemented **before** T1.0's skeleton because the `luisa_device`
+layer is self-contained (LC + std only) and could therefore be built and validated
+on the GPU immediately, without the libuipc vcpkg toolchain. The cookbook (T1.0)
+was authored first and is already authoritative. Task ids keep the plan's meaning.
 
 ### Not started (planned)
 

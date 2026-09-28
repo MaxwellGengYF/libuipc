@@ -134,20 +134,33 @@ so call-sites keep the cuda_tool signature shape.
 
 ### 3.2 Buffers & views
 
-`LBuffer<T>` mirrors `DeviceVector<T>`: `resize/reserve/clear/size/data/view()/cview()`.
-`LBufferView<T>` mirrors `BufferView<T>` with `operator()(i)`, `subview(off,cnt)`,
-`size()`, plus device read/write through a proxy:
+LC's `luisa::compute::BufferView<T>` is a lightweight, non-owning handle
+(handle + stride + byte offset + size) and is exactly the type a kernel invocation
+accepts for a `Buffer<T>`/`BufferVar<T>` parameter — including **subviews**, so the
+byte offset is honoured by the backend. `luisa_device::LBufferView<T>` adds
+ownership (a `shared_ptr` to the LC Buffer) plus the cuda_tool accessor surface and
+an implicit conversion to the LC view:
 
 ```cpp
-// host
-auto pos = LDeviceBuffer<Vector3>{};
+// host: LDeviceBuffer<T> mirrors cuda_tool::DeviceVector
+lud::LDeviceBuffer<Vector3> pos;
 pos.resize(n);
-kernel = device.compile<1>([&](LBufferView<Vector3> p) noexcept {
-    auto i = dispatch_x();
-    p(i) = p(i) * a;          // proxy: reads then writes
-    auto q = p(i);            // proxy -> Expr<T> conversion
-});
+
+// kernel: parameters are the LC prototype types
+static auto k = lud::compile1<luisa::compute::Buffer<Vector3>, uint32_t>(
+    [](luisa::compute::BufferVar<Vector3> p, luisa::compute::Var<uint32_t> n) noexcept {
+        auto i = luisa::compute::dispatch_x();       // == dispatch_id().x
+        $if (i < n) { p->write(i, p->read(i) * 2.0); };
+    });
+
+// dispatch: pass the (possibly offset) view directly
+stream << k(pos.view(offset, count), count).dispatch(count);
 ```
+
+**Rule B0 (kernel parameters).** A kernel lambda's buffer parameter must be
+declared with the *prototype* type `luisa::compute::Buffer<T>` (equivalently
+`BufferVar<T>` as the creation type). `BufferView<T>` is the **host-side invocation
+argument**, never a parameter prototype — LC only maps `Buffer<T>` prototypes.
 
 **Rule B1 (view lifetime — R5).** LC `Buffer<T>` has fixed capacity; growing an
 `LBuffer` reallocates. **Views are frame-scoped**: never store an `LBufferView<T>`
@@ -165,6 +178,21 @@ so steady-state frames stop reallocating (avoids R5 in the common case).
 | `atomicAdd(&eigen_vec.x(), x)` (3 scalars) | `math::atomic_add(v.atomic(i), LVec{...})` (3 fetch_adds) |
 | `atomicMax(&v(i), x)` | `v.atomic(i).fetch_max(x)` |
 | `atomicCAS(...)` | `v.atomic(i).compare_exchange(...)` |
+
+**R9 gap closed — `AtomicRef<double>`.** LC's DSL specializes `AtomicRef<T>` for
+int/uint/slong/ulong and float, but **not** for `double`; `v.atomic(i).fetch_add(x)`
+on a `Buffer<double>` therefore fails to compile. Its CUDA codegen already maps
+`ATOMIC_FETCH_ADD` to `atomicAdd`, which has a double overload, so only the DSL
+type was missing. `luisa_device/atomic.h` adds the specialization (a legal explicit
+specialization in `luisa::compute::detail`) — verified on the GPU by
+`scratch/lc_spike/spike2.cpp` and `luisa_device_tests.cpp::atomic_and_reductions`.
+If a non-CUDA LC backend later lacks double atomics, this one header is the place
+to swap in a CAS-on-`ulong` emulation.
+
+**R9 gap — no raw warp shuffles.** LC has no `__shfl_*_sync`; use the higher level
+primitives (`warp_active_sum`, `warp_prefix_sum`, `warp_read_lane`) or the
+`luisa_device::warp::shfl_*` shims in `builtins.h`, which implement them in terms
+of `warp_read_lane`.
 
 ### 3.4 Warp / block intrinsics (`luisa_device/builtins.h`)
 

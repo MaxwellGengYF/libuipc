@@ -30,5 +30,10 @@ add_executable(lc_spike main.cpp)
 target_link_libraries(lc_spike PRIVATE luisa::compute)
 set_target_properties(lc_spike PROPERTIES CXX_STANDARD 20)
 
+add_executable(lc_spike2 spike2.cpp)
+target_link_libraries(lc_spike2 PRIVATE luisa::compute)
+set_target_properties(lc_spike2 PROPERTIES CXX_STANDARD 20)
+
 # Copies the LC runtime DLLs / backend modules next to the executable.
 luisa_compute_deploy_runtime(TARGET lc_spike)
+luisa_compute_deploy_runtime(TARGET lc_spike2)
