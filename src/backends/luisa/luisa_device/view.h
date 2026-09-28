@@ -177,11 +177,16 @@ namespace detail
 template <typename T>
 [[nodiscard]] inline auto& fill_kernel()
 {
-    static auto s_kernel = device().compile<1>(
+    // Deliberately leaked (cookbook §7.10 trap 1): a Shader held by a
+    // function-local static is destroyed during static destruction, i.e. after the
+    // test harness's explicit Runtime::shutdown(), and destroying an LC resource
+    // whose device is gone aborts the process (0xC0000409). Compiled shaders have
+    // no destructor work worth doing, so the cache is a heap object.
+    static auto* s_kernel = new lcrt::Shader<1u, lcrt::Buffer<T>, T>{device().compile<1>(
         lcrt::Kernel1D<lcrt::Buffer<T>, T>{[](lcrt::BufferVar<T> v, lcrt::Var<T> value) noexcept {
             v->write(lcrt::dispatch_x(), value);
-        }});
-    return s_kernel;
+        }})};
+    return *s_kernel;
 }
 }// namespace detail
 

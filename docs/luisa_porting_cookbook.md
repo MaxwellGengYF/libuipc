@@ -551,7 +551,7 @@ sign convention and the inverted `select`) were localised this way in minutes,
 whereas the C++ test only reported "check failed". Keep such a script for every
 non-trivial ported routine: it is cheap and it is reusable across back ends.
 
-7.8 Patterns established in T2.3 (distance / CCD)
+### 7.8 Patterns established in T2.3 (distance / CCD)
 * **Generated arithmetic is transcribed by a generator, never by hand.**
   The reference's gradient/Hessian bodies are Symbolic-Math-Toolbox output
   (`t17 = -v11 + v01;`). They are copied verbatim, only re-spelled through the
@@ -597,7 +597,7 @@ non-trivial ported routine: it is cheap and it is reusable across back ends.
   inputs — keep exactly-degenerate configurations in the host reference-equivalence
   tests, not in the device smoke.
 
-7.9 Patterns established in T3.1 (linear containers & views)
+### 7.9 Patterns established in T3.1 (linear containers & views)
 `src/backends/luisa/luisa_device/linear/{views.h,containers.h,linear.h}` port
 `cuda_tool/linear_system.h` + `linear_system/views.h` into
 `luisa_device::linalg` (alias `lla`). The five rules below are what the port
@@ -852,6 +852,117 @@ header comment.
    input is only achievable with exactly representable values (small integers): a
    float re-association changes the last bits, so the shuffled-input check uses
    integer-valued blocks while the general cases are compared within 1e-6.
+
+### 7.12 Patterns established in T3.4 (SpMV + dense BLAS)
+src/backends/luisa/luisa_device/linear/{spmv,blas}.{h,cpp} port
+`linear_system/spmv.{h,cu}` (class `Spmv` → `lla::LSpmv<T,N>`, alias
+`lla::Spmv = LSpmv<double,3>`) and `cuda_tool/linear_reduction.h` +
+`cuda_tool::LinearSystemContext` (→ `lla::LLinearSystemContext`, alias
+`LinearSystemContext`, plus the free-function spellings).  The nine rules below
+are what the port turned out to depend on.
+
+1. The symmetric convention, extracted from the reference kernels and preserved.
+   A triplet `(i, j, B)` of the upper-packed block BCOO contributes
+   `a * B * x_j` to output row `i`; when `i != j` **and only then** it *also*
+   contributes `a * B^T * x_i` to output row `j`.  The diagonal is therefore
+   neither halved nor doubled and has no mirrored copy; a duplicated `(i, j)`
+   entry is an independent contribution and simply sums; `b` is applied to `y`
+   *before* the kernel (`y = b*y`, or a zero fill when `b == 0`), so a row with no
+   entry keeps its scaled value.  `rbk_sym_spmv_dot` folds the dot contribution
+   with the same convention — `a * x_i^T B x_i` for a diagonal entry,
+   `2*a * x_i^T B x_j` for an off-diagonal one — i.e. `x^T (a A_sym x)`,
+   independent of `b`.  `rbk_spmv` is the *general* variant: it applies the stored
+   entries as a plain COO matrix (a symmetric upper-packed input gives
+   `a*A_upper*x + b*y`, not the symmetric product) and assumes one row's entries
+   are consecutive (the converter's sorted output).
+
+2. Capacities are not counts: clamp every index read past the device-side count.
+   `rbk_sym_spmv_dot` reads its triplet count *on the device* and sizes the grid by
+   `triplet_capacity`, so lanes with `dispatch_x() >= count` still run and read the
+   reserved-but-unwritten tail of the row/col arrays (the reference's grid-stride
+   loop skips those lanes entirely).  The *buffer* read is safe (the allocation
+   covers the capacity), but the indices it yields are arbitrary device bytes; used
+   as a segment offset (`x.segment<N>(col * N)`) they are an illegal memory access.
+   Every such read goes through `min(max(i, 0), segments - 1)` with `segments`
+   passed in as the real dof count, and the contribution is still masked by
+   `valid`/gated on `is_head` so the value is unchanged.  Measured: without the
+   clamp the full test suite aborted with `CUDA_ERROR_ILLEGAL_ADDRESS` when a
+   reserved tail happened to hold stale bytes, while the same test passed in
+   isolation (fresh allocations are zeroed); the T3.4 test now poisons the
+   reserved tail (`poison_reserved_tail`) so the clamp is regression-tested.
+
+3. The reference's atomics are kept for `y`, and R6 is met by the reductions.
+   All four variants accumulate `y` with `atomic_add` exactly like the reference
+   (the `rbk` variants differ only in that the entries of one output row are first
+   folded by a warp-level head-segmented reduce, so one atomic per row segment
+   instead of one per entry).  When several warps/blocks contribute to the same
+   row the *order* of those atomics is not fixed by the programming model, so the
+   last bits of `y` can differ between two runs (and between two launch shapes) —
+   the reference has the same property.  The *reductions* are atomic-free
+   two-pass folds (block partials + a fixed-order fold), so `dot`, `norm` and the
+   fused `d_dot` are bitwise reproducible; the fused variant writes its per-block
+   dot partials to a scratch array (`detail::carve`, retired on growth) and folds
+   them in a second dispatch instead of `atomicAdd`-ing into `d_dot`, which is what
+   makes the ``grid sized by capacity'' contract exact for `d_dot` (the extra
+   all-zero partials cannot change a fixed-order sum).
+
+4. `LVec<T,1>`'s single-component constructor hijacks copy-construction.
+   `LVec`'s variadic constructor is constrained by
+   `sizeof...(U) == N && (is_convertible_v<U, T> && ...)`, and `Var<T>`'s
+   converting constructor is unconstrained, so for `N == 1` `LVec<Var<T>,1> v = w;`
+   with `w` a **non-const lvalue** selects that constructor (a better ICS than the
+   copy constructor's `const LVec&`) and fails inside `Type::of<LVec>` /
+   `assign_impl`.  Two consequences for ported kernels: materialise a view with
+   `view.to_vec<N>()` rather than `SomeVec v = view.as_eigen();` (the view's
+   conversion operator and the LVec ctor are both viable, and `as_eigen()`'s
+   `ThisView` is not `vec_like`), and copy an `LVec` parameter element-wise
+   (`for(c) v(c) = src(c);`) instead of taking it by value.  Prvalue
+   initialisation (`Vec v = expr;`) is fine.
+
+5. A function-local static `Shader` anywhere in the foundation is a teardown trap.
+   `view.h`'s `detail::fill_kernel<T>()` held its compiled shader in a
+   function-local static, so the first `LBufferView::fill` destroyed it during
+   static destruction — after the harness's explicit `Runtime::shutdown()` —
+   and the process aborted with 0xC0000409 (the §7.10 trap 1).  Filtered runs that
+   never call `fill` exited 0, which is why this survived T3.1–T3.3: the T3.4 BLAS
+   test is the first filtered run to call it.  Fixed minimally (the one foundation
+   addition of T3.4): the kernel is now a `Shader&` bound to a heap object,
+   exactly like `detail::cached_kernel`.
+
+6. A raw `ScaledSquareSum` buffer is two scalar buffers, and its combine is
+   branchless.  LC buffers need a registered element type, so
+   `details::LinearReductionStorage<T>` keeps `norm_scale_partials` /
+   `norm_square_partials` (and the two result scalars) instead of a
+   `DeviceVector<ScaledSquareSum<T>>` — the T3.3 precedent of splitting a reference
+   struct buffer.  The reference's `ScaledSquareSumOp` branches on the two scales,
+   which a device value cannot do (RULE M2), so the port combines with
+   `min`/`max` + `ratio = (hi == lo) ? 1 : lo/hi` + a component-wise `select`,
+   which reproduces all three finite cases (including the `0 vs 0` one, where the
+   selected ratio is 1) and only turns the reference's NaN-propagation case into a
+   finite operand — a diagnostic-only difference, since PCG tests `dot`.
+   Measured: the norm of `{1e200, 1, 1e-200}` (whose naive square sum is `1e400`,
+   i.e. inf in double) returns 1e200 within 1e-12 relative.
+
+7. The reductions return a `T` and therefore synchronise — mid-frame like T3.3's
+   read-back.  `dot`/`norm` follow the reference's host-facing contract and commit
+   + wait, read the single result scalar through the *caller's* `LStream`, and
+   re-open the frame if the caller had one (`read_back_scalar`, the same pattern as
+   converter.h's `read_back_count`).  The free-function spellings keep their
+   persistent storage in `LStream::cached_object` keyed per `LinearReductionStorage<T>`
+   so a primitive called inside an open frame still has live partials (§7.10).
+
+8. The PCG vector updates are FMA-contracted on the device, so an exact CPU
+   comparison is wrong for them.  `axpy` / `axpby` / `update_xr` / `update_p`
+   compute `y + a*x` (and friends); the GPU contracts that to one FMA while the
+   host model rounds twice, so the results differ in the last bit even for
+   well-conditioned inputs.  Compare them within 1e-15 relative, not `==`.
+   `fill`, `scale` (one multiply) and `copy` stay exact.
+
+9. `LinearReductionStorage`'s partials are carved, not resized.  A second call
+   with a larger vector must not free the partials a command still recorded in the
+   caller's open frame references, so the growth goes through `detail::carve`
+   (retire the displaced allocation) exactly like the algorithm primitives —
+   `LinearReductionStorage` carries its own `retired` list for that.
 
 Appendix — Verified LC API cheat-sheet (from T0.1)
 ## Appendix — Verified LC API cheat-sheet (from T0.1)

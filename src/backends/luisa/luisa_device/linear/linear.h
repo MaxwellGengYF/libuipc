@@ -32,6 +32,8 @@
 #include <luisa_device/linear/containers.h>
 #include <luisa_device/linear/views.h>
 #include <luisa_device/linear/converter.h>
+#include <luisa_device/linear/blas.h>
+#include <luisa_device/linear/spmv.h>
 
 namespace uipc::backend::luisa::luisa_device
 {
