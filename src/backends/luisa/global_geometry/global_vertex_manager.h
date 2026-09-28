@@ -21,9 +21,10 @@
  *    T3.1/T3.4 "split a struct buffer into scalar buffers" precedent.
  *  - The three optional cross-system slots (GlobalTrajectoryFilter,
  *    GlobalActiveSetManager, GlobalJointDofManager) are declared but always empty
- *    until those systems are ported (T4.2/T4.3/T5.x), so
- *    `require_discard_friction()` is a no-op for now; the alternative (inventing
- *    the systems) would diverge from the reference.
+ *    until those systems are ported (T4.3/T5.x); GlobalJointDofManager is now
+ *    resolved (T4.2), so `require_discard_friction()` is a no-op only for the two
+ *    systems that do not exist yet; the alternative (inventing the systems) would
+ *    diverge from the reference.
  *********************************************************************/
 #include <type_define.h>
 #include <sim_system.h>

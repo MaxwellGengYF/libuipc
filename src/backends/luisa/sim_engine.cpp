@@ -6,10 +6,17 @@
 
 #include <backends/common/module.h>
 
-// T4.1: the engine drives the global geometry managers (see init_scene()).
+// T4.1/T4.2: the engine drives the engine-aware systems (see init_scene() /
+// do_advance()); the include order mirrors the reference's sim_engine_do_init.cu.
 #include <global_geometry/global_vertex_manager.h>
 #include <global_geometry/global_body_manager.h>
 #include <global_geometry/global_simplicial_surface_manager.h>
+#include <animator/global_animator.h>
+#include <external_force/global_external_force_manager.h>
+#include <pipeline/ipc_pipeline_flag.h>
+#include <pipeline/al_ipc_pipeline_flag.h>
+#include <time_integrator/time_integrator_manager.h>
+
 
 namespace uipc::backend::luisa
 {
@@ -57,9 +64,9 @@ void SimEngine::do_init(InitInfo& info)
 
     m_state = SimEngineState::BuildSystems;
     build_systems();
-    // T4.1: the reference resolves its engine-aware topo systems inside build(),
+    // T4.1/T4.2: the reference resolves its engine-aware systems inside build(),
     // i.e. still in the BuildSystems state.
-    build_geometry_systems();
+    build_engine_systems();
     m_state = SimEngineState::None;
 
     dump_system_info();
@@ -76,23 +83,56 @@ void SimEngine::build_systems()
     backend::SimEngine::build_systems();
 }
 
-void SimEngine::build_geometry_systems()
+void SimEngine::build_engine_systems()
 {
     // Mirrors SimEngine::build() of the reference backend
     // (src/backends/cuda/engine/sim_engine_do_init.cu):
-    //   m_global_vertex_manager = &require<GlobalVertexManager>();
-    //   m_global_body_manager   = &require<GlobalBodyManager>();
-    //   m_global_simplicial_surface_manager = find<GlobalSimplicialSurfaceManager>();
-    // All three are always registered, so require<> is used for the two the
-    // reference requires and find<> for the surface manager (like the reference).
+    //   require<>: GlobalVertexManager, GlobalBodyManager, TimeIntegratorManager,
+    //              LineSearcher, GlobalLinearSystem, NewtonToleranceManager
+    //   find<>   : GlobalSimplicialSurfaceManager, GlobalDyTopoEffectManager,
+    //              GlobalContactManager, GlobalTrajectoryFilter, GlobalAnimator,
+    //              GlobalExternalForceManager, GlobalDiffSimManager,
+    //              AffineBodyDynamics, ..., GlobalActiveSetManager
+    // Only the systems T4.1/T4.2 ported are resolved here; the rest are the
+    // subject of Phase 5/6/8 and are simply absent from the graph (the reference
+    // guards every optional one with `if(ptr)`, so the behaviour is identical).
     m_global_vertex_manager = &require<GlobalVertexManager>();
     m_global_body_manager   = &require<GlobalBodyManager>();
+    m_time_integrator_manager = &require<TimeIntegratorManager>();
+
     m_global_simplicial_surface_manager = find<GlobalSimplicialSurfaceManager>();
+    m_global_animator                   = find<GlobalAnimator>();
+    m_global_external_force_manager     = find<GlobalExternalForceManager>();
+}
+
+void SimEngine::set_pipeline_type()
+{
+    // The reference does this at the top of init_scene(): exactly one of the two
+    // pipeline flag systems exists, because each is created by a
+    // SimSystemCreator specialization that tests the scene config's
+    // `contact/constitution` value.
+    auto alipc = find<ALIPCPipelineFlag>();
+    auto ipc   = find<IPCPipelineFlag>();
+    if(alipc)
+    {
+        logger::info("Pipeline: Augmented Lagrangian IPC");
+        m_pipeline_type = PipelineType::AugmentedLagrangian;
+    }
+    else if(ipc)
+    {
+        m_pipeline_type = PipelineType::Basic;
+    }
+    else
+    {
+        throw SimEngineException("No valid pipeline flag found in the scene!");
+    }
 }
 
 void SimEngine::init_scene()
 {
     m_state = SimEngineState::InitScene;
+
+    set_pipeline_type();
 
     // 1. Before the common scene initialization: the body manager hands out the
     //    global body ranges that the vertex reporters use while filling body_ids.
@@ -113,6 +153,21 @@ void SimEngine::init_scene()
     {
         m_global_simplicial_surface_manager->init();
     }
+    // (3.1 Forwards: GlobalDyTopoEffectManager, GlobalContactManager -> T4.3+)
+    if(m_global_animator)
+    {
+        m_global_animator->init();
+    }
+    if(m_global_external_force_manager)
+    {
+        m_global_external_force_manager->init();
+    }
+    // (GlobalActiveSetManager -> Phase 8; LineSearcher / GlobalLinearSystem -> Phase 8)
+    if(m_time_integrator_manager)
+    {
+        m_time_integrator_manager->init();
+    }
+    // (NewtonToleranceManager -> Phase 8)
 
     event_rebuild_scene();
     m_state = SimEngineState::None;
@@ -142,16 +197,119 @@ void SimEngine::event_write_scene()
     }
 }
 
-void SimEngine::do_advance()
+void SimEngine::step_animation_and_external_forces()
 {
-    LogPatternGuard guard("Luisa");
-    world().scene().solve_pending();
+    // Verbatim port of the reference's SimEngine::step_animation_and_external_forces()
+    // (src/backends/cuda/engine/sim_engine.cu): external-force reporters accumulate
+    // into shared dynamics buffers, so the previous frame is cleared *before* user
+    // animation mutates the force attributes and the freshly animated values are
+    // consumed *after* the animation step, both before the DOF prediction.
+    if(m_global_external_force_manager)
+    {
+        m_global_external_force_manager->clear();
+    }
 
-    m_current_frame++;
+    if(m_global_animator)
+    {
+        m_global_animator->step();
+    }
+
+    if(m_global_external_force_manager)
+    {
+        m_global_external_force_manager->step();
+    }
+}
+
+void SimEngine::advance()
+{
+    // Scope note (T4.2): the reference's advance() is a Newton/line-search
+    // pipeline (advance_ipc.cu) that only exists once the solver systems are
+    // ported (Phase 8). What is ported here is the frame prologue and epilogue
+    // that the T4.2 systems participate in, in the reference's exact order:
+    //
+    //   ++frame
+    //   RebuildScene event + solve_pending()
+    //   0. Process External Changes : update_attributes() + bounding box
+    //   1. record_prev_positions()
+    //   2. Predict Motion           : step_animation_and_external_forces()
+    //                                 time_integrator_manager->predict_dof()
+    //   4. Newton loop              : compute_animation_substep_ratio()
+    //   5. Update Velocity          : time_integrator_manager->update_state()
+    ++m_current_frame;
     m_newton_iter      = 0;
     m_line_search_iter = 0;
 
     logger::info("do_advance() called, frame = {}", m_current_frame);
+
+    // Rebuild Scene
+    {
+        m_state = SimEngineState::RebuildScene;
+        event_rebuild_scene();
+        // After the rebuild_scene event, the pending creation or deletion can be
+        // solved.
+        world().scene().solve_pending();
+    }
+
+    // 0. Process External Changes
+    if(m_global_vertex_manager)
+    {
+        m_global_vertex_manager->update_attributes();
+        [[maybe_unused]] AABB bbox = m_global_vertex_manager->compute_vertex_bounding_box();
+
+        // 1. Record the friction candidates' reference state at the frame start
+        m_global_vertex_manager->record_prev_positions();
+    }
+
+    // 2. Predict Motion => x_tilde = x + v * dt
+    m_state = SimEngineState::PredictMotion;
+    // MUST step animation before predicting dof: some animations provide
+    // information for the DOF prediction.
+    step_animation_and_external_forces();
+    if(m_time_integrator_manager)
+    {
+        m_time_integrator_manager->predict_dof();
+    }
+
+    // 4. Nonlinear-Newton iteration. The reference recomputes the animation
+    //    substep ratio at the top of every iteration and refuses to converge
+    //    while the animation has not reached its target
+    //    (`animation_reach_target()`), i.e. at least the newton_iter = 0
+    //    bookkeeping happens in every frame. The solver loop itself is Phase 8,
+    //    so the shell performs that single iteration-0 step here; without it the
+    //    ratio would stay at the 0 that GlobalAnimator::step() resets it to.
+    if(m_global_animator)
+    {
+        m_global_animator->compute_substep_ratio(0);
+        logger::info("Animation Substep Ratio: {}", m_global_animator->substep_ratio());
+    }
+
+    // 5. Update Velocity => v = (x - x_0) / dt
+    m_state = SimEngineState::UpdateVelocity;
+    if(m_time_integrator_manager)
+    {
+        m_time_integrator_manager->update_state();
+    }
+
+    logger::info("<<< End Frame: {}", m_current_frame);
+}
+
+void SimEngine::do_advance()
+{
+    LogPatternGuard guard("Luisa");
+
+    switch(m_pipeline_type)
+    {
+        case PipelineType::Basic:
+        case PipelineType::AugmentedLagrangian:
+            // The AL pipeline differs from the basic one only in the systems it
+            // drives (active set / AL contact), none of which are ported yet; the
+            // ported frame structure is identical for both.
+            advance();
+            break;
+        default:
+            UIPC_ERROR_WITH_LOCATION("Unknown pipeline type");
+            break;
+    }
 }
 
 void SimEngine::do_sync()

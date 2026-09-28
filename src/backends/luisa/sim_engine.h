@@ -3,10 +3,13 @@
  * @file sim_engine.h
  * @brief LuisaCompute backend engine.
  *
- * T1.4 delivers the shell (state machine, event collections, system graph and
- * LC runtime bring-up). The full advance pipeline (newton / line search /
- * linear solve) is assembled in Phase 8 (T8.4); `do_advance()` here only runs
- * the registered scene events and advances the frame counter.
+ * T1.4 delivered the shell (state machine, event collections, system graph and
+ * LC runtime bring-up). T4.1 added the engine-aware global geometry managers and
+ * T4.2 adds the pipeline flag resolution and the per-frame lifecycle of the
+ * systems ported in T4.2 (animator, external forces, time integrators). The full
+ * advance pipeline (newton / line search / linear solve) is still assembled in
+ * Phase 8 (T8.4); `do_advance()` here runs the reference frame prologue and
+ * epilogue around the ported systems and advances the frame counter.
  *********************************************************************/
 #include <type_define.h>
 #include <sstream>
@@ -19,12 +22,21 @@ namespace uipc::backend::luisa
 class GlobalVertexManager;
 class GlobalBodyManager;
 class GlobalSimplicialSurfaceManager;
+class TimeIntegratorManager;
+class GlobalAnimator;
+class GlobalExternalForceManager;
 
 class SimEngine final : public backend::SimEngine
 {
     friend class SimSystem;
 
   public:
+    enum class PipelineType
+    {
+        Basic,
+        AugmentedLagrangian
+    };
+
     SimEngine(EngineCreateInfo* info);
     ~SimEngine() override;
 
@@ -34,6 +46,10 @@ class SimEngine final : public backend::SimEngine
     [[nodiscard]] SimEngineState state() const noexcept { return m_state; }
     [[nodiscard]] SizeT          newton_iter() const noexcept { return m_newton_iter; }
     [[nodiscard]] SizeT          line_search_iter() const noexcept { return m_line_search_iter; }
+
+    /// T4.2: which pipeline the scene config selected (`contact/constitution`).
+    /// Mirrors the reference's `m_pipeline_type` + `set_pipeline_type()` check.
+    [[nodiscard]] PipelineType pipeline_type() const noexcept { return m_pipeline_type; }
 
   private:
     void  do_init(InitInfo& info) override;
@@ -48,11 +64,14 @@ class SimEngine final : public backend::SimEngine
     Json  do_frame_stats() const override;
 
     void build_systems();
-    // T4.1: resolve the engine-aware geometry managers (the reference's
+    // T4.1/T4.2: resolve the engine-aware systems (the reference's
     // `SimEngine::build()` does the same require<>/find<> calls right after
     // build_systems()). They must be resolved while the state is BuildSystems.
-    void build_geometry_systems();
+    void build_engine_systems();
     void init_scene();
+    void set_pipeline_type();
+    void advance();
+    void step_animation_and_external_forces();
     void event_init_scene();
     void event_rebuild_scene();
     void event_write_scene();
@@ -73,6 +92,17 @@ class SimEngine final : public backend::SimEngine
     GlobalVertexManager*            m_global_vertex_manager            = nullptr;
     GlobalBodyManager*              m_global_body_manager              = nullptr;
     GlobalSimplicialSurfaceManager* m_global_simplicial_surface_manager = nullptr;
+
+    // T4.2 systems the reference engine also owns. `TimeIntegratorManager` is
+    // required (the reference `require<>`s it); the animator and the external
+    // force manager are optional (`find<>`: the animator only exists when the
+    // scene has a Constraint constitution, and the force manager only has work
+    // when a reporter registered).
+    TimeIntegratorManager*      m_time_integrator_manager      = nullptr;
+    GlobalAnimator*             m_global_animator              = nullptr;
+    GlobalExternalForceManager* m_global_external_force_manager = nullptr;
+
+    PipelineType m_pipeline_type = PipelineType::Basic;
 
     SizeT m_current_frame = 0;
     SizeT m_newton_iter   = 0;

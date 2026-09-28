@@ -1078,6 +1078,118 @@ not a choice.
    * `GlobalVertexManager` has no velocity buffer at all (velocities live in the
      dynamics systems), so a vertex-attribute round-trip test covers them.
 
+### 7.14 Patterns established in T4.2 (implicit geometry, animator, external force, joint dof, flags)
+src/backends/luisa/{implicit_geometry,animator,external_force,joint_dof_system,time_integrator,pipeline}/*
+port the reference's half plane + its two reporters, animator/global_animator/utils.h,
+global_external_force_manager/external_force_reporter, global_joint_dof_manager/joint_dof_reporter,
+time_integrator + time_integrator_manager + bdf1/bdf2_flag and ipc/al_ipc_pipeline_flag, plus the
+engine shell wiring. The rules below are what the port turned out to depend on.
+
+1. **The reference's `init_scene()` order makes the half plane report 0 bodies.** The
+   reference calls `GlobalBodyManager::init()` in the "Before Common Scene Initialization"
+   step and `event_init_scene()` afterwards; the HalfPlane fills the instance arrays its
+   reporters read from an `on_init_scene()` action, i.e. in that second step. Consequences,
+   all verified (`half_plane_geometry_and_vertex_sets`, measured):
+   * `HalfPlaneBodyReporter` reports `h_positions.size()` — still 0 — so the half plane's
+     body slice is empty and only `body_offset()` (its would-be start) is set;
+   * `HalfPlaneVertexReporter` and the half-plane device buffers *are* filled (the
+     `GlobalVertexManager`/surface initialisation runs even later), so its vertices get
+     `body_ids = body_offset + i`, ids that lie beyond the reported body array — the same
+     values the reference produces, and nothing in the reference consumes them;
+   * the half-plane body reporter's iota kernel and the `self_collision().fill(0)` call are
+     therefore never dispatched for a real scene (they need `n > 0`). Keep them verbatim;
+     coverage of the same convention comes from the *vertex* reporter's kernel
+     (`coindices(i) = i`, `positions(i) = src_positions(i)`, `body_ids(i) = body_offset + i`),
+     which is exercised.
+   Do not "fix" this by reordering `init_scene()`: the ordering is the reference's and later
+   subsystems (ABD/FEM reporters, whose ranges *are* filled in step 1) depend on it.
+
+2. **The engine hooks T4.2 added, and the per-frame order they imply.** `SimEngine` now has
+   `build_engine_systems()` (renamed from T4.1's `build_geometry_systems()`: it also
+   `require<>`s the TimeIntegratorManager and `find<>`s the optional GlobalAnimator /
+   GlobalExternalForceManager, like the reference's `build()`), `set_pipeline_type()` (at the
+   top of `init_scene()`, `find<ALIPCPipelineFlag>()`/`find<IPCPipelineFlag>()`, throwing
+   `SimEngineException` when neither exists), `step_animation_and_external_forces()` (verbatim:
+   `external_force_manager->clear()` → `animator->step()` → `external_force_manager->step()`)
+   and an `advance()` carrying the reference's frame prologue/epilogue. Measured per-frame
+   order (asserted by the T4.2 test with an event log):
+   `vertex reporter attributes → force_clear → frontend animation callbacks → animator do_step
+   → force_step → integrator predict_dof → integrator update_state`.
+   Two consequences worth knowing:
+   * a reporter's per-frame attributes are one frame behind the animation: `update_attributes()`
+     runs in the prologue, the animation step later in the same frame, so after frame k the
+     *device* holds A(k-1) while the *scene* already holds A(k) (measured with exact keyframe
+     values);
+   * `SimEngineState` is set to `RebuildScene`/`PredictMotion`/`UpdateVelocity` around the
+     matching phases, exactly as the reference does.
+
+3. **The animator's substep ratio is reset, not accumulated.** `GlobalAnimator::step()` calls
+   the frontend `animator().update()` first and then sets `m_substep_ratio = 0` *before* fanning
+   out to the backend animators, so a backend animator observes `substep_ratio() == 0` inside
+   `do_step()` (measured). The reference then recomputes it at the top of every Newton iteration
+   as `min((iter + 1) / substep, 1)`; with no solver yet the shell performs the `iter = 0`
+   bookkeeping once per frame, so after a frame the ratio is `min(1 / substep, 1)` — e.g. `1.0`
+   with the default substep 1 and `0.25` after `scene.animator().substep(4)`. Replace that call
+   with the real loop in Phase 8.
+
+4. **The animator's `lerp` must be qualified — a flat spelling silently picks the wrong law.**
+   src/backends/cuda/animator/utils.h defines
+   `lerp(src, dst, alpha) { alpha = clamp(alpha, 0, 1); return src * (1 - alpha) + dst * alpha; }`
+   (the clamp is what *holds* the last keyframe past the end; `T{1} - alpha` with `T` first is
+   the reference's rounding). `lps::lerp` already exists (`a + (b - a) * t`, **no clamp**) and it
+   is found by ADL for every `lps::LVec`/`LMat` argument; partial ordering prefers a fully
+   generic `(A&&, B&&, T&&)` template over a constrained `(const LVec<T,N>&, ..., T)` one, so a
+   flat `uipc::backend::luisa::lerp` loses the overload resolution and a call site compiles to
+   the *unclamped* law (measured: `lerp(a_lvec, b_lvec, 2.0)` returned the extrapolated value).
+   The port therefore declares it in the nested namespace `uipc::backend::luisa::animator`;
+   Phase 5/6 constraint ports call `animator::lerp(...)`. It is a template over the numerics
+   layer (one overload for `LVec<T,N>`, one for `LMat<T,R,C>`, one generic scalar), so it needs
+   no registered buffer element type; the DSL instantiation
+   (`LVec<Var<double>,3>` + `Var<double>`) is exercised by the T4.2 test's device kernel.
+
+5. **Flag systems are scene predicates created by `SimSystemCreator` specialisations, and
+   `require<Flag>()` is the shutdown idiom.** `bdf1_flag.cpp`/`bdf2_flag.cpp`/
+   `ipc_pipeline_flag.cpp`/`al_ipc_pipeline_flag.cpp` and `global_animator.cpp` specialise
+   `template <> class backend::SimSystemCreator<luisa::X>` (at namespace `uipc::backend`, taking
+   the *base* `SimEngine&` and `dynamic_cast`ing to `luisa::SimEngine`) and return `nullptr` when
+   the scene config does not select them — the world visitor *is* available at that point
+   (`backend::SimEngine::do_init(internal::World&)` installs it before `build_systems()`).
+   A system that must not exist for the current scene declares `require<BDF1Flag>()` (etc.) in
+   its build hook: the `SimSystemException` is caught by `SimSystemCollection::build_systems()`,
+   the system is invalidated and every system requiring *it* is invalidated in turn. Verified
+   both ways (`half_plane_pipeline_and_flags`, `half_plane_animator_edge_cases`): with
+   `integrator/type = "bdf1"` only the BDF1-gated integrator is built, and `contact/constitution
+   = "al-ipc"` makes the engine report `PipelineType::AugmentedLagrangian`. The flag families are
+   per-*scene*, not per-frame: a dependency's flag never flips between frames.
+
+6. **Everything a test registers is active in every scene of the whole test binary.** All
+   luisa test sources are one executable, every `REGISTER_SIM_SYSTEM` is built for every
+   `World::init()`, and a reporter reports whatever its `do_report_*` walks — so a test-local
+   vertex/body/surface reporter that reports "every SimplicialComplex of the scene" changes the
+   *other* test files' expectations. Measured: `luisa_global_geometry_test.cpp`'s global arrays
+   grew from 8 to 16 entries (its 8 plus the new reporter's 8) and 23 of its checks failed.
+   Two rules follow:
+   * gate test reporters on a marker attribute the test creates on its own geometries
+     (`meta().create<IndexT>("test_<task>_scene", 1)`) and walk only marked geometries;
+   * the manager arrays are a concatenation of the reporters' *slices* in reporter-uid order, so
+     a test asserts on its own slice via the public accessors (`vertex_offset()`,
+     `vertex_count()`, `body_offset()`, `body_count()`) instead of assuming it owns the array,
+     and uses a subsequence search for the surface slices (the surface manager exposes no
+     per-reporter offsets).
+
+7. **`#include <sim_engine.h>` is ambiguous in a test TU.** The backend test target's include
+   path contains `src/backends/none` *before* `src/backends/luisa`, so a test that includes the
+   shell header by its bare name silently gets `uipc::backend::none::SimEngine` and
+   `luisa::SimEngine` stays incomplete (measured: C2027 at every `PipelineType` use). Use the
+   qualified `<backends/luisa/sim_engine.h>` (the `src` include dir is on the test target's
+   path, see §7.13 rule 7).
+
+8. **Ported-but-unreachable code is kept verbatim.** The half-plane body reporter's kernel
+   (rule 1), the joint-dof reporter base's `update_dof_attributes()` fan-out (the reference only
+   calls it from the state-restore path, never from the frame loop — the T4.2 test calls it
+   explicitly and checks the re-sync) and the `fill(0, &frame_stream())` zeroing all stay as
+   they are; the report lists what is therefore not exercised on the device.
+
 Appendix — Verified LC API cheat-sheet (from T0.1)
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 

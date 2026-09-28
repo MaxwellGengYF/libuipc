@@ -4,6 +4,9 @@
 #include <sim_engine.h>
 #include <uipc/common/range.h>
 #include <frame_stream.h>
+// T4.2: the reference's GlobalVertexManager::do_build() also resolves the
+// GlobalJointDofManager slot (now that the system is ported).
+#include <joint_dof_system/global_joint_dof_manager.h>
 
 #include <luisa_device/linear/algorithms.h>
 
@@ -231,14 +234,16 @@ void GlobalVertexManager::do_build()
     m_impl.d_hat_relative = d_hat_relative ? d_hat_relative->view()[0] : 0.0;
 
     // The reference also resolves three optional cross-system slots here:
-    //     m_impl.global_trajectory_filter  = find<GlobalTrajectoryFilter>();
-    //     m_impl.global_active_set_manager = find<GlobalActiveSetManager>();
-    //     m_impl.global_joint_dof_manager  = find<GlobalJointDofManager>();
-    // Those systems are not ported yet (T4.2/T4.3/T5.x) and `find<T>()` needs a
-    // complete, ISimSystem-derived T, so the slots stay empty: with them empty the
-    // reference's bodies are no-ops too (`if(auto& gtf = ...)`), i.e. the behaviour
-    // is identical until the systems land. See VertexAttributeInfo::
-    // require_discard_friction().
+    // m_impl.global_trajectory_filter  = find<GlobalTrajectoryFilter>();
+    // m_impl.global_active_set_manager = find<GlobalActiveSetManager>();
+    // m_impl.global_joint_dof_manager  = find<GlobalJointDofManager>();
+    // GlobalTrajectoryFilter and GlobalActiveSetManager are not ported yet
+    // (T4.3/T8.x) and `find<T>()` needs a complete, ISimSystem-derived T, so those
+    // slots stay empty: with them empty the reference's bodies are no-ops too
+    // (`if(auto& gtf = ...)`), i.e. the behaviour is identical until the systems
+    // land. GlobalJointDofManager *is* ported by T4.2, so its slot is resolved
+    // (the one addition to the T4.1 port; see the T4.2 report).
+    m_impl.global_joint_dof_manager = find<GlobalJointDofManager>();
 }
 
 void GlobalVertexManager::Impl::init()
