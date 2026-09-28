@@ -47,6 +47,7 @@ add_executable(luisa_device_tests
     "../standalone_main.cpp"
     "../luisa_device_tests.cpp"
     "../luisa_device_math_tests.cpp"
+    "../luisa_device_matrix_tests.cpp"
     "../zzz_runtime_shutdown.cpp"
     ${LUISA_DEVICE_SOURCES})
 target_include_directories(luisa_device_tests PRIVATE

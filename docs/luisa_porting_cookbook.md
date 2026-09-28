@@ -469,6 +469,81 @@ unscoped `enum { ... }` is not accepted as an operand of `Expr<uint>` arithmetic
   `scripts/luisa_check_compile.py <file> --syntax` (single-TU syntax/instantiation
   check that borrows the exact CMake flags from `build/compile_commands.json`).
 
+### 7.5 `matrix_ops.h` / `evd.h` / `svd.h` (T2.2)
+| Eigen / reference | `lc::math` |
+|---|---|
+| `m.determinant()` | `math::determinant(m)` / `m.determinant()` |
+| `m.inverse()` | `math::inverse(m)` / `m.inverse()` (2x2/3x3/4x4 closed form) |
+| `cuda_tool::eigen::inverse<T,N>(m)` | `math::inverse(m)` |
+| `cuda_tool::eigen::evd` / `evd_jacobi` | `math::evd(...)` / `math::jacobi_evd(...)` |
+| `cuda_tool::eigen::svd` / `math::qr_svd` | `math::svd(...)` / `math::qr_svd(...)` |
+| `cuda_tool::eigen::pd` | `math::pd(...)` / `math::polar_decomposition(...)` |
+| `utils/make_spd.h::make_spd` | `math::make_spd(H)` / `math::make_spd_inplace(H)` |
+
+* **The adjugate inverses are transcribed term-for-term** from
+  `cuda_tool/eigen/analytic_inverse.h`, including the left-to-right summation order
+  of the 4x4 entry formulas, so the floating-point result stays comparable with the
+  CUDA backend. `scratch/gen_adj4x4.py` regenerates and *proves* the 4x4 table
+  against an exact adjugate before writing any C++ -- hand-simplifying those sign
+  patterns is where the first version went wrong.
+* **`evd.h` uses fixed-sweep cyclic Jacobi**, not the reference's
+  `while (off-diagonal sum > 1e-6) { find max (p,q); rotate; }`: both the
+  termination test and the pivot search are *device* values there, which cannot
+  drive host control flow (RULE M2). 20 cyclic sweeps reach machine precision for
+  N <= 12 and the routine is branchless, so one implementation serves host and
+  device. `sort_eigensystem` is a device-safe odd-even transposition network (the
+  comparison *pattern* is host-fixed; the results only feed `select`s).
+* **`svd.h` implements one-sided Jacobi (Hestenes)** instead of porting the
+  Givens + implicit-shift QR of `algorithm/qr_svd.hpp`. That reference is driven by
+  device data at every decision (`while (|a_i| > tol)`, a 5-way `if / else if`
+  termination, `if (y2 == 0)`, `if (tau > 0)`, ...), so a transcription would need
+  `$if`/`$while` and would be device-only. One-sided Jacobi is fixed-sweep,
+  branchless, has relative accuracy on `sigma_min`, and is therefore *one*
+  implementation for both sides. The public surface (`svd`, `qr_svd`, `pd`,
+  `polar_decomposition`) and the signed-SVD convention are preserved.
+* **Signed-SVD convention.** The reference absorbs a reflection into the smallest
+  singular value: `U`, `V` proper rotations, `sigma(2)` possibly negative. Here `U`
+  is built as a right-handed frame (`u2 = cross(u0, u1)` => `det(U) = +1` by
+  construction) and the sign of the *third column of B* is carried by `sigma(2)`;
+  `V` is then flipped as a whole (`V(:,2) *= -1` **and** `sigma(2) *= -1`, which
+  leaves `U diag(sigma) V^T` unchanged). Getting this wrong silently breaks
+  `U diag(sigma) V^T == A` for `det(A) > 0` inputs -- check the *reconstruction*,
+  not just the singular values.
+* `make_spd` clamps eigenvalues with `select(lambda, 0, lambda < 0)` and skips the
+  eigenvector sort (irrelevant to the projection, and the sort is the most
+  expensive part of the generated IR).
+
+### 7.6 Four traps found while building this layer (each cost a debugging round)
+1. **`select(f, t, p)` is `p ? t : f`** -- *t* first, *f* second (LC has the same
+   order). The reverse reads naturally and silently swaps the branches:
+   `select(div(v, n), fallback, n > eps)` returns the *fallback* for healthy input.
+2. **No short-circuit `&&`/`||` for scalar DSL booleans.** LC's `&&` demands
+   *boolean vector* operands and fails with a static_assert telling you to use the
+   bitwise spellings -- write `(a <= b) & (c <= d)` and `!(a | b)`.
+3. **`math::select` must not accept containers.** LC's own `select` has a
+   custom-struct overload that also matches `LVec`/`LMat`, so a container overload of
+   ours is ambiguous -- or worse, silently builds a `Var<LVec<...>>` and blows up
+   inside `Type::of`. The layer's `select` is therefore scalar-only and host-only
+   (DSL scalars are served by LC's own, found via ADL), and containers are selected
+   element-wise:
+   ```cpp
+   auto axis = make_vec<storage_of_t<T>, 3>([&](int i) {
+       auto c0 = select(zero_of<T>(), u0(i), use0);
+       auto c1 = select(c0, u1(i), use1);
+       return select(c1, u2(i), use2);
+   });
+   ```
+4. **Dependent static members need `template`**: `LVec<T,3>::template Unit<0>()`
+   inside a template, otherwise MSVC parses `Unit < 0` as a comparison.
+
+### 7.7 Verifying a ported algorithm
+The fastest way to find a bug in this kind of branchless port is to **replicate the
+algorithm in Python** (`scratch/debug_svd*.py`) and assert orthonormality,
+reconstruction and eigen-residuals there. Both SVD bugs found in T2.2 (the rotation
+sign convention and the inverted `select`) were localised this way in minutes,
+whereas the C++ test only reported "check failed". Keep such a script for every
+non-trivial ported routine: it is cheap and it is reusable across back ends.
+
 ---
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 

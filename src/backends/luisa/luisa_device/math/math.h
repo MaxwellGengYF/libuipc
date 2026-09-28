@@ -465,6 +465,44 @@ template <typename L, typename R, typename X>
 }
 
 // ---------------------------------------------------------------------------
+//  Selection
+// ---------------------------------------------------------------------------
+/// Marker for the container types of this layer (LVec/LMat and their views).
+/// `select`/`ite` must not hand those to LC's own `select`, whose custom-struct
+/// branch would happily build a `Var<LVec<...>>`.  The specializations live in
+/// vec.h / mat.h.
+template <typename T>
+struct is_container_like : std::false_type
+{
+};
+template <typename T>
+inline constexpr bool is_container_like_v = is_container_like<std::remove_cvref_t<T>>::value;
+
+/// `p ? t : f` for *host* scalar operands.
+///
+/// Only the host case is provided: for DSL values LC's own `select` (found by
+/// ADL, as the DSL types live in `luisa::compute`) is already the right
+/// implementation, and providing a second candidate would make every such call
+/// ambiguous.  The constraints are therefore "no container, no DSL value".
+template <typename F, typename U, typename P>
+    requires(!is_container_like<F>::value && !is_container_like<U>::value
+             && !is_dsl_value_v<F> && !is_dsl_value_v<U> && !is_dsl_value_v<P>)
+[[nodiscard]] inline auto select(F&& f, U&& t, P&& p) noexcept
+{
+    using R = std::common_type_t<std::remove_cvref_t<F>, std::remove_cvref_t<U>>;
+    return p ? static_cast<R>(t) : static_cast<R>(f);
+}
+
+/// `p ? t : f` with the predicate first (GLSL/LC argument order).
+template <typename P, typename U, typename F>
+    requires(!is_container_like<F>::value && !is_container_like<U>::value
+             && !is_dsl_value_v<F> && !is_dsl_value_v<U> && !is_dsl_value_v<P>)
+[[nodiscard]] inline auto ite(P&& p, U&& t, F&& f) noexcept
+{
+    return select(std::forward<F>(f), std::forward<U>(t), std::forward<P>(p));
+}
+
+// ---------------------------------------------------------------------------
 //  Constants
 // ---------------------------------------------------------------------------
 template <typename T>

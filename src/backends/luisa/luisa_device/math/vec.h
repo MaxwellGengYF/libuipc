@@ -105,6 +105,20 @@ struct is_vec_array<VecArray<T, M>> : std::true_type
 template <typename V>
 inline constexpr bool is_vec_array_v = is_vec_array<std::remove_cvref_t<V>>::value;
 
+// Tell the scalar `select` to keep its hands off these types.
+template <typename T, int N>
+struct is_container_like<LVec<T, N>> : std::true_type
+{
+};
+template <typename T, int M>
+struct is_container_like<VecMap<T, M>> : std::true_type
+{
+};
+template <typename T, int M>
+struct is_container_like<VecArray<T, M>> : std::true_type
+{
+};
+
 /// Arithmetic or DSL scalar (but not a vector).
 template <typename S>
 inline constexpr bool is_scalar_like_v =
@@ -403,6 +417,16 @@ struct VecMap
         for(int i = 0; i < M; ++i)
             (*this)(i) = rhs(i);
         return *this;
+    }
+    void setZero() noexcept
+    {
+        for(int i = 0; i < M; ++i)
+            (*this)(i) = zero_of<T>();
+    }
+    void setConstant(const T& v) noexcept
+    {
+        for(int i = 0; i < M; ++i)
+            (*this)(i) = v;
     }
     template <typename U>
     VecMap& operator=(const VecMap<U, M>& rhs) noexcept

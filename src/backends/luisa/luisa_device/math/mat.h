@@ -97,6 +97,20 @@ struct is_mat_array<MatArray<T, BR, BC>> : std::true_type
 template <typename M>
 inline constexpr bool is_mat_array_v = is_mat_array<std::remove_cvref_t<M>>::value;
 
+// Tell the scalar `select` to keep its hands off these types.
+template <typename T, int R, int C>
+struct is_container_like<LMat<T, R, C>> : std::true_type
+{
+};
+template <typename T, int BR, int BC>
+struct is_container_like<MatMap<T, BR, BC>> : std::true_type
+{
+};
+template <typename T, int BR, int BC>
+struct is_container_like<MatArray<T, BR, BC>> : std::true_type
+{
+};
+
 /// Index of element (r, c) in column-major storage.
 [[nodiscard]] constexpr std::size_t mat_index(int r, int c, int rows) noexcept
 {
@@ -250,6 +264,10 @@ struct LMat
     {
         return MatArray<const T, R, C>{data.data(), 1, R};
     }
+
+    /// Determinant / inverse (square only) -- defined in matrix_ops.h (T2.2).
+    [[nodiscard]] auto determinant() const noexcept;
+    [[nodiscard]] LMat inverse() const noexcept;
 
     /// Transposed copy.
     [[nodiscard]] LMat<T, C, R> transpose() const noexcept
@@ -422,6 +440,24 @@ struct MatMap
             for(int r = 0; r < BR; ++r)
                 (*this)(r, c) = rhs(r, c);
         return *this;
+    }
+    void setZero() noexcept
+    {
+        for(int c = 0; c < BC; ++c)
+            for(int r = 0; r < BR; ++r)
+                (*this)(r, c) = zero_of<T>();
+    }
+    void setIdentity() noexcept
+    {
+        for(int c = 0; c < BC; ++c)
+            for(int r = 0; r < BR; ++r)
+                (*this)(r, c) = r == c ? one_of<T>() : zero_of<T>();
+    }
+    void setConstant(const T& v) noexcept
+    {
+        for(int c = 0; c < BC; ++c)
+            for(int r = 0; r < BR; ++r)
+                (*this)(r, c) = v;
     }
     template <typename U>
     MatMap& operator=(const MatMap<U, BR, BC>& rhs) noexcept
