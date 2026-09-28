@@ -56,7 +56,7 @@ add_subdirectory(core)
 add_subdirectory(common)
 add_subdirectory(sanity_check)
 
-if(UIPC_WITH_CUDA_BACKEND)
+if(UIPC_WITH_CUDA_BACKEND OR UIPC_WITH_LUISA_BACKEND)
     add_subdirectory(backends)
     add_subdirectory(sim_case)
     add_subdirectory(regression)

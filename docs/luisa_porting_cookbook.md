@@ -40,10 +40,10 @@ built install prefix; enabled by `UIPC_WITH_LUISA_BACKEND` (default OFF).**
 | Aspect | Decision |
 |---|---|
 | Integration mechanism | `find_package(LuisaCompute CONFIG)` — *not* `add_subdirectory`, *not* `FetchContent` |
-| Package prefix | `C:\dev\LuisaCompute\install` (override with `-DLUISA_COMPUTE_ROOT=<src-root>` → `<root>/install/lib/cmake/LuisaCompute`) |
+| Package prefix | `LUISA_COMPUTE_PREFIX` (default `<LUISA_COMPUTE_ROOT>/install`). **Use `C:/dev/LuisaCompute/install-msvc`** — LC must be built with MSVC, see §1.1 |
 | Consumed targets | `luisa::compute` (umbrella INTERFACE target; pulls core/runtime/dsl/ast/xir/ext/backends) |
 | LC version | 0.10.0 (`include/luisa/version.h`) |
-| LC backends built | `dx;cuda;vk` (LC option `LUISA_COMPUTE_ENABLE_*`) |
+| LC backends built | `cuda` only (`LUISA_COMPUTE_ENABLE_VULKAN=OFF`, `..._DX=OFF`, `..._GUI=OFF`) |
 | Device at runtime | `"cuda"` (LC-CUDA / NVRTC → PTX), selected from the engine config JSON (default `"cuda"`) |
 | Rebuild rule | LC install must post-date its sources. Rebuild with `cmake --build C:/dev/LuisaCompute/build && cmake --install C:/dev/LuisaCompute/build --prefix C:/dev/LuisaCompute/install` |
 | Compiler | LC is built with **clang++ (LLVM 19, MSVC ABI)**. Consumers must use a conformant preprocessor. |
@@ -56,19 +56,48 @@ libuipc build fast and the dependency *pinnable* (R1, R13).
 `add_subdirectory(${LUISA_COMPUTE_ROOT})`; a `FetchContent` pin is the last resort.
 The backend CMake isolates this choice behind `uipc_luisa_resolve_dependency()`.
 
-### 1.1 Toolchain / preprocessor gotcha
+### 1.1 Toolchain: LC must be built with the *same* ABI as libuipc
 
-`include/luisa/dsl/polymorphic.h` uses `__VA_OPT__`. MSVC only supports it with the
-conformant preprocessor:
+Two separate, hard requirements:
 
-```cmake
-# required on MSVC host compilers
-target_compile_options(luisa PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>)
-```
+1. **Conformant preprocessor.** `include/luisa/dsl/polymorphic.h` uses `__VA_OPT__`.
+   MSVC only supports it with `/Zc:preprocessor` (clang-cl/clang++ are fine).
+   The `luisa` target and its tests pass both `/utf-8` (see below) and
+   `/Zc:preprocessor`.
 
-LC release binaries used `clang++`; either `clang-cl`/`clang++` **or** MSVC +
-`/Zc:preprocessor` works. The install ships release-only import libs — build the
-consumer in **Release** to match.
+2. **Same compiler family for LC and its consumers (ABI).** A clang-built LC is
+   **not link-compatible with an MSVC consumer**: clang mangles deduced-`auto`
+   return types with an `?A?<auto>@@` placeholder
+   (e.g. `?device@Resource@compute@luisa@@QEBA?A?<auto>@@XZ`) while MSVC emits the
+   plain form (`?device@Resource@compute@luisa@@QEBA@XZ`). libuipc's headers hit
+   several such members (`Resource::device/handle/native_handle`,
+   `Device::backend_name`, `ShaderInvokeBase::_parallelize`, ...), so an MSVC
+   consumer fails with `LNK2019` on symbols that *are* exported.
+
+   Conversely libuipc's own core does **not** compile with clang-cl (clang rejects
+   the non-const `AutoAttributeCollection` mutations in
+   `src/core/geometry/simplicial_complex_attributes.cpp`).
+
+   **Therefore: build LuisaCompute with MSVC (cl.exe), matching libuipc.**
+
+   ```
+   cmake -S LuisaCompute -B build-msvc -G Ninja -DCMAKE_BUILD_TYPE=Release \
+         -DCMAKE_TOOLCHAIN_FILE=<vcpkg.cmake> -DVCPKG_INSTALLED_DIR=<vcpkg_installed> \
+         -DLUISA_COMPUTE_USE_SYSTEM_SPDLOG=ON \
+         -DLUISA_COMPUTE_ENABLE_VULKAN=OFF -DLUISA_COMPUTE_ENABLE_DX=OFF \
+         -DLUISA_COMPUTE_ENABLE_GUI=OFF -DLUISA_COMPUTE_BUILD_TESTS=OFF \
+         -Dspdlog_DIR=<vcpkg_installed>/x64-windows/share/spdlog \
+         -Dfmt_DIR=<vcpkg_installed>/x64-windows/share/fmt
+   ```
+
+3. **`/utf-8`.** Several luisa_device/backend headers carry non-ASCII characters
+   in comments (em dashes, arrows). Under a non-UTF-8 system code page (e.g. 936)
+   MSVC mis-decodes them and tokenization breaks in unrelated headers. Always
+   compile the `luisa` target and its tests with `/utf-8`.
+
+`LUISA_COMPUTE_ENABLE_VULKAN`/`DX` are off because their SPIR-V/HLSL compile steps
+invoke helper executables that fail to start under a vcpkg-modified environment;
+the backend only needs LC's CUDA backend (plan D6).
 
 ### 1.2 LC source fix applied locally
 

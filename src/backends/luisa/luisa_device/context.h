@@ -18,6 +18,7 @@
 #include <luisa/luisa-compute.h>
 
 #include <luisa_device/compat.h>
+#include <luisa_device/export.h>
 
 #include <memory>
 #include <string>
@@ -25,7 +26,7 @@
 
 namespace uipc::backend::luisa::luisa_device
 {
-class Runtime
+class UIPC_LUISA_DEVICE_API Runtime
 {
   public:
     static Runtime& instance();
@@ -62,7 +63,12 @@ class Runtime
 };
 
 // Convenience accessors (throw if the runtime was not initialized).
-[[nodiscard]] lcrt::Device& device();
-[[nodiscard]] lcrt::Stream& main_stream();
+[[nodiscard]] UIPC_LUISA_DEVICE_API lcrt::Device& device();
+[[nodiscard]] UIPC_LUISA_DEVICE_API lcrt::Stream& main_stream();
+
+// Absolute path of the running executable. LC derives its runtime / builtin-data
+// directories from the program path, so a backend loaded as a shared module
+// (which never sees argv[0]) needs this to bring the Context up correctly.
+[[nodiscard]] UIPC_LUISA_DEVICE_API std::string default_program_path();
 
 }// namespace uipc::backend::luisa::luisa_device

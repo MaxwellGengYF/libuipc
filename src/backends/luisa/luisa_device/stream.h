@@ -22,10 +22,11 @@
 #include <optional>
 
 #include <luisa_device/context.h>
+#include <luisa_device/export.h>
 
 namespace uipc::backend::luisa::luisa_device
 {
-class LStream
+class UIPC_LUISA_DEVICE_API LStream
 {
   public:
     explicit LStream(lcrt::Stream& stream = main_stream()) noexcept

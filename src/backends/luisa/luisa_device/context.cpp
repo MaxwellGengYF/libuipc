@@ -1,6 +1,13 @@
 #include <luisa_device/context.h>
 
 #include <stdexcept>
+#include <system_error>
+
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__linux__)
+#include <filesystem>
+#endif
 
 namespace uipc::backend::luisa::luisa_device
 {
@@ -75,6 +82,26 @@ lcrt::Device& device()
 lcrt::Stream& main_stream()
 {
     return Runtime::instance().main_stream();
+}
+
+std::string default_program_path()
+{
+#if defined(_WIN32)
+    // GetModuleFileNameA(NULL) returns the executable hosting this module.
+    char  buffer[MAX_PATH];
+    DWORD n = ::GetModuleFileNameA(nullptr, buffer, MAX_PATH);
+    if(n > 0 && n < MAX_PATH)
+    {
+        return std::string{buffer, n};
+    }
+    return {};
+#elif defined(__linux__)
+    std::error_code ec;
+    auto            resolved = std::filesystem::read_symlink("/proc/self/exe", ec);
+    return ec ? std::string{} : resolved.string();
+#else
+    return {};
+#endif
 }
 
 }// namespace uipc::backend::luisa::luisa_device

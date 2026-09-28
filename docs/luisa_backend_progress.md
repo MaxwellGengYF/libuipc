@@ -9,11 +9,11 @@
 |---|---|
 | Branch | `feature/luisa-backend` |
 | Base commit | `9c748a75` (main @ merge PR #497) |
-| Current milestone | **M0 — Spike & Inventory** (complete) → M1 in progress |
-| Last completed task | T0.2 |
+| Current milestone | **M1 — Foundation** (complete) → M2 Math layer next |
+| Last completed task | T1.4 |
 | Last commit | _see `git log --oneline --grep=luisa-backend`_ |
-| Milestone tags | `luisa-m0` |
-| Next action | T1.0 — backend skeleton + cookbook already authored; create `src/backends/luisa/**` |
+| Milestone tags | `luisa-m0`, `luisa-m1` |
+| Next action | T2.1 — LVec/LMat + scalar math (`src/backends/luisa/luisa_device/math/`) |
 | LC dependency | `find_package(LuisaCompute CONFIG)` @ `C:/dev/LuisaCompute/install`, LC 0.10.0, backend `cuda` |
 
 ### Environment facts (do not re-derive)
@@ -34,11 +34,11 @@ Status: ⬜ todo · 🟡 in-progress · ✅ done
 |---|---|---|---|---|---|---|
 | T0.1 | LC build & device spike | M0 | ✅ | _see tag luisa-m0_ | `scratch/lc_spike/build/lc_spike.exe cuda` → RC 0; `[ ok ] Kernel1D write`; `[ ok ] warp_active_sum + atomic_fetch_add` (sum exact); 32 `[DEVICE] warp[N] partial=` lines captured | Spike at `scratch/lc_spike/`; strategy in cookbook §1 |
 | T0.2 | muda/Eigen/CUB API inventory | M0 | ✅ | _see tag luisa-m0_ | `python scripts/luisa_inventory.py` → 8071 occurrences, 154 distinct, **0 unmapped**, exit 0 | `docs/luisa_api_inventory.md` |
-| T1.0 | Porting cookbook + backend skeleton | M1 | 🟡 | | cookbook written & authoritative (`docs/luisa_porting_cookbook.md`); skeleton dirs pending | |
-| T1.1 | Build integration (CMake+xmake) | M1 | ⬜ | | | |
-| T1.2 | luisa_device core runtime | M1 | ✅ | _T1.2 commit_ | `scratch/lc_spike/lc_spike2.exe cuda` → RC 0, 4/4 design checks (subview offsets, double atomics, Shared block reduce, runtime dispatch); `luisa_device_tests.exe cuda` exercises the layer | `src/backends/luisa/luisa_device/*`; R9 double-atomic gap closed in `atomic.h` |
-| T1.3 | Foundation unit tests | M1 | ✅ | _T1.3 commit_ | `luisa_device_tests.exe cuda` → **7 cases, 0 checks failed**, exit 0 (runtime_init, buffer_ops, device_var_scalar, parallel_for, stream_commands, atomic_and_reductions, kernel_print) | `apps/tests/backends/luisa/`; runs standalone now, registered in-tree via `uipc_add_test` in T1.1 |
-| T1.4 | Backend shell + SimSystem plumbing | M1 | ⬜ | | | |
+| T1.0 | Porting cookbook + backend skeleton | M1 | ✅ | d93050a4 | cookbook is the porting contract (`docs/luisa_porting_cookbook.md`); `src/backends/luisa/` skeleton mirrors the CUDA shell | |
+| T1.1 | Build integration (CMake+xmake) | M1 | ✅ | 718b9400 | ON: `cmake -DUIPC_WITH_LUISA_BACKEND=ON` → "Adding backend: [luisa]", `uipc_backend_luisa.dll` builds+links (MSVC). OFF: `-DUIPC_WITH_LUISA_BACKEND=OFF` → only `[none]`, `none` builds. No nvcc invoked. | LC resolved top-level via `cmake/uipc_luisa.cmake` (`LUISA_COMPUTE_PREFIX`) |
+| T1.2 | luisa_device core runtime | M1 | ✅ | 92322e82 | `scratch/lc_spike/lc_spike2.exe cuda` → RC 0, 4/4 design checks (subview offsets, double atomics, Shared block reduce, runtime dispatch); `luisa_device_tests.exe cuda` exercises the layer | `src/backends/luisa/luisa_device/*`; R9 double-atomic gap closed in `atomic.h` |
+| T1.3 | Foundation unit tests | M1 | ✅ | 92322e82 + M1 commit | `luisa_device_tests.exe cuda` → **7 cases, 0 checks failed**, exit 0 (runtime_init, buffer_ops, device_var_scalar, parallel_for, stream_commands, atomic_and_reductions, kernel_print) | `apps/tests/backends/luisa/`; runs standalone now, registered in-tree via `uipc_add_test` in T1.1 |
+| T1.4 | Backend shell + SimSystem plumbing | M1 | ✅ | 0b83a2e4 + M1 commit | `ctest -R backend_luisa --output-on-failure` → **1/1 passed** (label `gpu`); binary: **all tests passed, 28 assertions in 10 test cases**, exit 0. Covers module load via the public Engine API, shell init/advance/sync/retrieve, and find()/require() resolution with a real dependency edge. | |
 
 ### Execution note
 
@@ -58,7 +58,7 @@ T9.1–T9.4 (verification), T10.1–T10.2 (integration/CI).
 | Milestone | Tasks | Exit criteria | Status | Tag |
 |---|---|---|---|---|
 | M0 Spike & Inventory | T0.1, T0.2 | LC spike runs on GPU; dependency strategy decided; API inventory 100% mapped | ✅ | `luisa-m0` |
-| M1 Foundation | T1.0–T1.4 | Backend skeleton builds (CMake+xmake), loads; device core tests green; shell works | 🟡 | `luisa-m1` |
+| M1 Foundation | T1.0–T1.4 | Backend skeleton builds (CMake), loads; device core tests green; shell works | ✅ | `luisa-m1` |
 | M2 Math layer | T2.1–T2.3 | LVec/LMat + ops/SVD/distance host+device parity | ⬜ | `luisa-m2` |
 | M3 Linear algebra | T3.1–T3.4 | Containers, converter, SpMV, BLAS verified vs references | ⬜ | `luisa-m3` |
 | M4 Base systems | T4.1–T4.3 | Geometry/manager/animator systems build + unit-tested | ⬜ | `luisa-m4` |

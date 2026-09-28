@@ -25,7 +25,7 @@ namespace lud = uipc::backend::luisa::luisa_device;
 #if defined(UIPC_LUISA_TESTS_STANDALONE)
 #define UIPC_TEST_PROGRAM_PATH ::uipc_luisa_test::program_path()
 #else
-#define UIPC_TEST_PROGRAM_PATH "luisa_backend_tests"
+#define UIPC_TEST_PROGRAM_PATH lud::default_program_path()
 #endif
 
 namespace
@@ -264,4 +264,20 @@ TEST_CASE("kernel_print", "[luisa][device]")
     bool ok = true;
     for(auto v : host) ok = ok && std::abs(v - 1.0) < 1e-12;
     CHECK(ok);
+}
+
+// Explicit teardown.
+//
+// LuisaCompute's Context must be destroyed before the LC runtime modules are
+// unloaded; relying on the process-wide static destructor alone crashes during
+// DLL detach on Windows. This case is declared last so that Catch2 (which runs
+// cases in declaration order) tears the runtime down before main returns.
+TEST_CASE("zzz_runtime_shutdown", "[luisa][device]")
+{
+    auto& rt = lud::Runtime::instance();
+    if(rt.initialized())
+    {
+        rt.shutdown();
+    }
+    CHECK(!rt.initialized());
 }

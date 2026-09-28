@@ -37,7 +37,7 @@ add_executable(luisa_device_tests
 target_include_directories(luisa_device_tests PRIVATE
     "${UIPC_LUISA_BACKEND_DIR}"
     "${CMAKE_CURRENT_LIST_DIR}/..")
-target_compile_definitions(luisa_device_tests PRIVATE UIPC_LUISA_TESTS_STANDALONE=1)
+target_compile_definitions(luisa_device_tests PRIVATE UIPC_LUISA_TESTS_STANDALONE=1 UIPC_LUISA_DEVICE_EXPORT=1)
 # LC's default preprocessor requirements are inherited from the LC package.
 target_link_libraries(luisa_device_tests PRIVATE luisa::compute)
 

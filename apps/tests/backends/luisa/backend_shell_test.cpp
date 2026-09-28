@@ -45,22 +45,27 @@ TEST_CASE("shell_init_advance_retrieve", "[luisa][backend]")
     Engine engine{"luisa", shell_output_path()};
     World  world{engine};
 
-    auto scene = world.scene();
-    auto config = Scene::default_config();
-    config["gravity"] = Vector3{0.0, -9.8, 0.0};
-    config["contact"]["enable"] = false;
-    scene.config(config);
+    auto config                  = Scene::default_config();
+    config["gravity"]            = Vector3{0.0, -9.8, 0.0};
+    config["contact"]["enable"]  = false;
 
-    // Minimal geometry: a single tetrahedron.
-    std::vector<Vector3>  Vs = {Vector3{0, 0, 0},
-                                Vector3{1, 0, 0},
-                                Vector3{0, 1, 0},
-                                Vector3{0, 0, 1}};
+    Scene scene{config};
+
+    // Minimal geometry: a single tetrahedron carrying an affine-body constitution.
+    auto object = scene.objects().create("tet");
+
+    std::vector<Vector3>  Vs = {Vector3{0.0, 0.0, 0.0},
+                                Vector3{1.0, 0.0, 0.0},
+                                Vector3{0.0, 1.0, 0.0},
+                                Vector3{0.0, 0.0, 1.0}};
     std::vector<Vector4i> Ts = {Vector4i{0, 1, 2, 3}};
-    auto mesh = tetmesh(Vs, Ts);
+    auto                  mesh = tetmesh(Vs, Ts);
+    label_surface(mesh);
+    label_triangle_orient(mesh);
 
-    auto obj = scene.objects().create("tet");
-    obj->geometries().create(mesh);
+    AffineBodyConstitution abd;
+    abd.apply_to(mesh, 100.0_MPa);
+    object->geometries().create(mesh);
 
     // init -> build systems on the backend, bring up the LC runtime
     CHECK_NOTHROW(world.init(scene));

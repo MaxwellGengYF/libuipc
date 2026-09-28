@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.26)
 # set cmake include path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/uipc_utils.cmake)
+include(cmake/uipc_luisa.cmake)
 
 # =========================================================================
 # Project Version
@@ -95,6 +96,12 @@ uipc_config_vcpkg_install()
 # =========================================================================
 
 project(uipc VERSION ${UIPC_VERSION})
+
+# The LuisaCompute dependency is resolved at top level (after project()) so the
+# imported luisa::compute target is visible to both the backend and its tests.
+if(UIPC_WITH_LUISA_BACKEND)
+    uipc_luisa_resolve_dependency()
+endif()
 
 if(UIPC_BUILD_TESTS)
     enable_testing()
