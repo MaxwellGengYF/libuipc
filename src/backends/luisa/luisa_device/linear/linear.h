@@ -28,6 +28,7 @@
  *    host-visible device pointer.  Pass the handles as kernel arguments and index
  *    them inside the kernel (`view.value_at(i, r, c)`, `view.block(i)`).
  *********************************************************************/
+#include <luisa_device/linear/algorithms.h>
 #include <luisa_device/linear/containers.h>
 #include <luisa_device/linear/views.h>
 

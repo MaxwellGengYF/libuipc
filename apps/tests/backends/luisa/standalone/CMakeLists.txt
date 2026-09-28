@@ -41,7 +41,8 @@ find_package(LuisaCompute REQUIRED CONFIG
 set(UIPC_LUISA_BACKEND_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../../../src/backends/luisa")
 
 file(GLOB LUISA_DEVICE_SOURCES CONFIGURE_DEPENDS
-    "${UIPC_LUISA_BACKEND_DIR}/luisa_device/*.cpp")
+    "${UIPC_LUISA_BACKEND_DIR}/luisa_device/*.cpp"
+    "${UIPC_LUISA_BACKEND_DIR}/luisa_device/linear/*.cpp")
 
 add_executable(luisa_device_tests
     "../standalone_main.cpp"
@@ -50,6 +51,7 @@ add_executable(luisa_device_tests
     "../luisa_device_matrix_tests.cpp"
     "../luisa_device_distance_tests.cpp"
     "../luisa_device_linear_tests.cpp"
+      "../luisa_device_algorithms_tests.cpp"
     "../zzz_runtime_shutdown.cpp"
     ${LUISA_DEVICE_SOURCES})
 target_include_directories(luisa_device_tests PRIVATE

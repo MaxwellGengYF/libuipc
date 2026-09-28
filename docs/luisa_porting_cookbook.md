@@ -683,6 +683,75 @@ the span is empty, and `LBufferView::{copy_from,copy_to}` must return early for 
 zero-size (or unallocated) view instead of enqueuing a copy through the invalid
 native handle.
 
+### 7.10 Patterns established in T3.2 (device algorithm primitives)
+`src/backends/luisa/luisa_device/linear/algorithms.{h,cpp}` reimplements the CUB
+surface the reference backend uses (`DeviceRadixSort::SortPairs`,
+`DeviceScan::ExclusiveSum`, `DeviceRunLengthEncode::Encode`,
+`DevicePartition::Flagged`, `DeviceReduce::Sum/Min/Max`, `cub::WarpReduce`'s
+head-segmented reduction) on LC kernels. The rules below are what it depends on —
+the first three are traps that each cost a debugging round.
+
+1. **A compiled `Shader` held by a function-local static is destroyed *after*
+   `Runtime::shutdown()`** and destroying an LC resource whose device is already
+   gone aborts the process (`0xC0000409`, the teardown trap §7.4 documents). The
+   kernel caches of the primitives are therefore *deliberately leaked*
+   (`detail::cached_kernel<...>` returns a `Shader&` bound to a heap object), and
+   any long-lived `LStream` is leaked too. Measured before/after: the full test
+   suite printed "all tests passed" and then exited `0xC0000409` 3/3 runs; after
+   the leak it exits 0 3/3 and `ctest -R backend_luisa` passes.
+
+2. **A temporary buffer must outlive the commands that reference it.** LC's
+   `CommandList` stores *raw* resource handles, so a scratch buffer that dies while
+   the caller's frame list is still open leaves a dangling handle behind — the
+   failure is a crash at **commit**, not a wrong number. Two consequences:
+   * `LStream::cached_object(key, create, destroy)` (the one foundation addition of
+     T3.2) hands the primitives a per-stream temporary set, so a primitive called
+     without an explicit scratch is safe inside an open frame;
+   * `detail::carve` *retires* a buffer it has to grow (it keeps the old allocation
+     in the scratch's `retired` list) instead of letting `LDeviceBuffer::reserve`
+     drop it: a grown scratch must never invalidate a handle an already recorded
+     command still uses.
+   `~LStream` releases the cached objects only while the runtime is still alive.
+
+3. **`warp_prefix_count_bits` is *not* a segment label.** For "fold this warp's
+   slice of a segment" logic (`HeadSegmentedReduce`) the label has to be constant
+   for every lane of one segment and increase across segments; the exclusive ballot
+   count differs between a head lane and the rest of *its own* segment (the head
+   itself is counted for the later lanes). Use
+   `warp_prefix_count_bits(is_head) + select(0, 1, is_head)`.
+   Related, measured on the GPU by `scratch/t32_probe`: `warp_prefix_sum` is
+   *exclusive* over the active lanes and `+ v` is the inclusive form;
+   `warp_active_bit_mask(pred).x` is the 32-lane ballot (a `uint4`);
+   `warp_active_count_bits(pred)` is its popcount; `LC_WARP_ACTIVE_MASK` is
+   `__activemask()`, so **predicate the tail instead of branching** and dispatch a
+   rounded-up element count so that every warp is full and the "last lane" tricks
+   above stay valid.
+
+4. **A stable radix sort without `__match_any_sync`.** LC exposes no match-any, so
+   the within-warp rank of equal digits is a 32-iteration shuffle loop
+   (`warp_read_lane(digit, j)` + `select`), i.e. ~1 shuffle per element per pass —
+   measured acceptable. The rest of the pass is the standard two-level scheme, with
+   the histogram stored *transposed* as `histogram[digit * block_count + block]` so
+   that **one flat `exclusive_scan` yields both** the bucket offset
+   (`P[digit*nb]`) and the earlier-blocks count
+   (`P[digit*nb + block] - P[digit*nb]`); no per-digit scan is needed.
+
+5. **Device-bounded `$for` works and is the right tool for flat-block loops.**
+   `$for (c, 0u, components)` with `components` a kernel scalar argument compiles
+   and runs (verified by the probe), which lets one kernel serve every T3.1 block
+   shape (`segmented_reduce_blocks`, `permute_gather_strided`) instead of one
+   instantiation per (M, N).
+
+6. **`select(f, t, p)` is `p ? t : f` — and it silently returns the wrong branch.**
+   Every clamp/validity select in T3.2 is written with an explicit
+   `// p ? t : f` comment, and index clamping uses `lcrt::min/max` rather than a
+   select where possible. (Trap #1 of §7.6, hit again in the T3.2 probe.)
+
+7. **No `atomicMax/atomicMin` for `double` in CUDA.** The cross-warp branch of the
+   segmented reduce is an *atomic* combine (as in the reference), so only
+   `detail::Plus` is instantiated; a non-plus op needs a deterministic non-atomic
+   fold and is rejected with a readable `static_assert`.
+
 Appendix — Verified LC API cheat-sheet (from T0.1)
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
