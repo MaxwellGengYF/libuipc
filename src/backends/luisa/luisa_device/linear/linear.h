@@ -31,6 +31,7 @@
 #include <luisa_device/linear/algorithms.h>
 #include <luisa_device/linear/containers.h>
 #include <luisa_device/linear/views.h>
+#include <luisa_device/linear/converter.h>
 
 namespace uipc::backend::luisa::luisa_device
 {

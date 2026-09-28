@@ -752,6 +752,107 @@ the first three are traps that each cost a debugging round.
    `detail::Plus` is instantiated; a non-plus op needs a deterministic non-atomic
    fold and is rejected with a readable `static_assert`.
 
+### 7.11 Patterns established in T3.3 (matrix converter)
+src/backends/luisa/luisa_device/linear/converter.{h,cpp} ports
+`cuda::MatrixConverter<T,N>` (Triplet->BCOO, BCOO->BSR, Doublet->BCOO vector,
+ge2sym, sym2ge, reserve_ratio/loose_resize).  The nine rules below are what the
+port turned out to depend on; the CUB -> T3.2 mapping is in the converter.h
+header comment.
+
+1. A namespace-scope `operator==` inside `linalg` hides the DSL's.  RULE M1 says
+   LC's scalar operators live at global scope; the reference's
+   `MatrixConverterIntPair` has a namespace-scope `operator==`, and copying that
+   declaration into `luisa_device::linalg` made *every* unqualified comparison of
+   DSL scalars in the namespace fail to compile — `Var<uint32_t> == Var<uint32_t>`
+   reported C2678 ("no operator found") with the note that only
+   `linalg::operator==(const MatrixConverterIntPair&, ...)` was a candidate, plus
+   a cascade of C2672 inside `$if` conditions and `write()` calls.  Write such a
+   comparison as a hidden friend (inside the struct) so only ADL finds it:
+   `friend constexpr bool operator==(const A&, const A&)`.  This is the second
+   concrete instance of RULE M1 (the first was the numerics layer's arithmetic).
+
+2. `select`/`pick` evaluates *both* operands — keep the discarded one in range.
+   sym2ge chooses between the diagonal and the off-diagonal index arrays with
+   `pick(diag_index[i], offdiag_index[i - diag_count], is_lower)`.  The second
+   index underflows to a huge `uint32_t` when `i < diag_count`, and it is
+   *evaluated* (no short circuit), so the port clamps it:
+   `off_i = i - min(i, diag_count)`.  One instruction; without it the kernel reads
+   far out of bounds.
+
+3. `sort_pairs_by_key`'s payload is one *element*, not a block.  The reference's
+   `SortPairs(indices, indices_sorted, segments, segments_sorted, n)` on
+   `Eigen::Vector<T,N>` payloads maps to `sort_index_pairs` +
+   `permute_gather_strided<T>(..., components = N)`, because T3.2's
+   `sort_pairs_by_key` gathers its payload with `permute_gather`
+   (`components == 1`): with a flat multi-scalar payload it silently keeps only
+   the first component of every element (the doublet test caught it at once;
+   block size 1 is unaffected — it is the one shape where `sort_pairs_by_key` is
+   the right primitive).
+
+4. The reference's host read-back is a mid-frame synchronisation.  `int h_count =
+   count;` on a device count is needed to size the next step.  Port pattern
+   (`read_back_count`): remember `stream.frame_open()`, `synchronize()` (which
+   commits the open CommandList and waits), read the single element through
+   `stream.stream()`, then `begin()` again if the frame was open — the caller
+   keeps batching across the read.  Read through the *caller's* LC stream, not
+   `main_stream()`, so the ordering holds for any LStream.
+
+5. T3.2 gap found here: `segmented_reduce_blocks` filled only `out_size` scalars.
+   The primitive's identity fill covered `out_size` scalars instead of
+   `out_size * components`, so with `components > 1` the slots of a segment that
+   crosses a warp boundary — accumulated with `atomic_add` by its head warp (the
+   reference's `is_cross_warp` path) — kept whatever the buffer held.  Invisible on
+   a fresh, zero-initialised buffer (which is why T3.2's own test passed), wrong as
+   soon as the out buffer is reused or pre-filled: T3.3's "convert twice into the
+   same container" determinism check fails without the fix, as does the sentinel
+   probe `converter_segmented_reduce_blocks_out_fill` (3/4 assertions fail before,
+   4/4 pass after).  The reference fills the whole matrix buffer
+   (`BufferLaunch().fill<Matrix>(out, zero)` — all M*N scalars of every element);
+   the fix is `filled = out_size * components`.
+
+6. A reused scratch grows like the reference's `loose_resize`, but retires the old
+   allocation.  `reserve_ratio` is the reference's policy (`capacity < n ->
+   reserve(n * ratio)`); the port exposes the whole capacity once (so
+   `LDeviceBuffer::resize`'s value-initialisation of the tail is amortised) and
+   pushes the displaced `LBufferView::base()` into an `m_retired` list — a command
+   already recorded in the caller's open frame must not see its buffer freed (the
+   `detail::carve` argument of §7.10).  This is load-bearing in sym2ge + the
+   in-place sort, where one member holds a `sym_size` array and is then grown to
+   `general_size`.
+
+7. A "block copy" is a components loop or an LC copy command.  T3.1's flat layout
+   turns the reference's whole-block assignments into either a device-bounded
+   `$for (c, 0u, components)` (the reference's own kernels are the model) or — when
+   it is a pure copy — a recorded
+   `stream.record(dst.native().copy_from(src.native()))`.  Inside a conversion do
+   not use `LDeviceBuffer::fill`/`copy_from`: they submit on the *main* stream,
+   which is not batched into the caller's frame CommandList.  LC has no fill
+   command, so a fill that must be ordered inside the frame is a small local
+   kernel dispatched on the caller's stream.
+
+8. `sym2ge` needs *two* `select_if` calls to reproduce
+   `DevicePartition::Flagged`.  CUB's Flagged writes the selected elements to the
+   front *and* the unselected ones to the back of the same array; T3.2's
+   `select_if` writes only the selected prefix (the rest is untouched).  So the
+   [Diag | Upper] halves are produced with its two flavours
+   (`keep_when_zero = false` / `true`) into two arrays — same stable order, same
+   split point (the returned count), no dependence on stale contents.  While
+   there: the reference's split/shift uses `from.rows()`, which equals the diagonal
+   count only for a well-formed packed-upper matrix; the port uses the count the
+   partition actually returns, which is identical for every input the reference
+   accepts and well-defined otherwise.  Its output size formula
+   (`2 * (sym_size - rows) + rows`) is clamped to at least `sym_size`, because it
+   underflows for an empty input.
+
+9. The CPU model is the oracle, and "order-insensitive" needs exact values.  The
+   reference converter is CUDA-only (it cannot be host-included), so T3.3's oracle
+   is an independent CPU model written from the mathematical definition (group by
+   (row, col) and sum; count the blocks per row and prefix-sum; mirror the
+   off-diagonal blocks transposed).  A *bit-identical* result after shuffling the
+   input is only achievable with exactly representable values (small integers): a
+   float re-association changes the last bits, so the shuffled-input check uses
+   integer-valued blocks while the general cases are compared within 1e-6.
+
 Appendix — Verified LC API cheat-sheet (from T0.1)
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 

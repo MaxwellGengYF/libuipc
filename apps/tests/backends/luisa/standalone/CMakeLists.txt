@@ -50,7 +50,8 @@ add_executable(luisa_device_tests
     "../luisa_device_math_tests.cpp"
     "../luisa_device_matrix_tests.cpp"
     "../luisa_device_distance_tests.cpp"
-    "../luisa_device_linear_tests.cpp"
+      "../luisa_device_linear_tests.cpp"
+        "../luisa_device_converter_tests.cpp"
       "../luisa_device_algorithms_tests.cpp"
     "../zzz_runtime_shutdown.cpp"
     ${LUISA_DEVICE_SOURCES})

@@ -675,8 +675,18 @@ void segmented_reduce_dispatch(LStream& stream, const LCBufferView<Key>& keys_so
     const double   identity = reduce_identity<double>(kKind);
     if(out_size != 0u)
     {
-        stream.record(fill_double_shader()(out, static_cast<uint32_t>(out_size), identity)
-                          .dispatch(round_up(out_size, kScanBlockSize)));
+        // The identity fill must cover every *slot* of the block output, i.e.
+        // `out_size * components` scalars: a segment that crosses a warp boundary is
+        // accumulated with atomic_add by its head warp (the reference's is_cross_warp
+        // path), so *its* slots have to be identity-filled before the combine.  Filling
+        // only the first `out_size` scalars left such a segment adding onto whatever the
+        // (reused) buffer still held; the reference fills the whole matrix buffer
+        // (`BufferLaunch().fill<Matrix>(out, zero)`), i.e. all M*N scalars of every
+        // element.  Found by T3.3 while converting with components = N*N into a reused
+        // container.
+        const auto filled = static_cast<uint32_t>(out_size * components);
+        stream.record(fill_double_shader()(out, filled, identity)
+                          .dispatch(round_up(filled, kScanBlockSize)));
     }
     if(n == 0u || out_size == 0u)
         return;
