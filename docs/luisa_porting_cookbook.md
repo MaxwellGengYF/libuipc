@@ -544,6 +544,52 @@ sign convention and the inverted `select`) were localised this way in minutes,
 whereas the C++ test only reported "check failed". Keep such a script for every
 non-trivial ported routine: it is cheap and it is reusable across back ends.
 
+7.8 Patterns established in T2.3 (distance / CCD)
+* **Generated arithmetic is transcribed by a generator, never by hand.**
+  The reference's gradient/Hessian bodies are Symbolic-Math-Toolbox output
+  (`t17 = -v11 + v01;`). They are copied verbatim, only re-spelled through the
+  `detail::{add,sub,mul,div,neg}` trampolines (RULE M1). `scratch/gen_distance.py`
+  rewrites every `// >>>GENERATED:name>>>` … `// <<<GENERATED:name<<<` region
+  straight from the reference (`--check` verifies the tree is in sync), so the
+  arithmetic order cannot drift under hand editing. Typing the bodies by hand is
+  exactly where T2.2's first 4x4 adjugate went wrong.
+* **A `bool`-returning reference routine that reads device data needs two
+  flavours.** `need_mollify` and the four `*_ccd` (also the 8 broad phases) return
+  a predicate that is *device* data on the device path, and an `Expr<bool>` cannot
+  be a host `bool` (RULE M2). The pinned declaration keeps its `bool` return for
+  `T` arithmetic; a second, `requires(!std::is_arithmetic_v<T>)` overload returns
+  `bool_of_t<T>` (= `lcrt::Expr<bool>`) with an identical parameter list. Both call
+  one generic `_impl`, so the logic exists once. `bool_of_t` lives in
+  `distance_common.h`.
+* **Flag dispatch = host tables + predicated select, not branches.** A flag vector
+  is device data, so `if(dim == 2) …` has to become "evaluate every candidate, then
+  select". The reference's per-dim layouts (`pp_from_*`, `pe_from_pt`, `pe_from_ee`)
+  become host constant tables, and each terminal case is evaluated on the
+  *host-permuted* points (so it is literally the same canonical routine with the
+  same inputs) with its result selected by a mutually exclusive predicate. Cost is
+  `O(#cases)` extra IR instead of a branch; correctness is exact, because a select
+  passes its chosen operand through untouched.
+* **Predicated fixed-iteration loops (CCD).** `max_iter` is a *host* value in the
+  reference, so the loop stays host-bounded (`detail::ccd_iterations`). Everything
+  else is predicated on a `running` flag that a termination test clears; the state
+  update is multiplied by 0 while it is clear, so the state freezes and the extra
+  iterations are no-ops. The two `return`s are read off `running`/`hit` afterwards.
+  Cost: the loop is unrolled `max_iter` times at trace time — pass a
+  convergence-sized bound (not the reference's `constexpr Size_t max_iter = 1000`
+  budget) at a device call site.
+* **`pred_and` / `pred_or` for host/device-generic boolean chains.** LC requires
+  `&`/`|` for DSL scalars (trap #2), but on the host `bool & bool` *promotes to
+  `int`*, so a third operand mixes `int` and `bool` (MSVC C4805). Fold 3+-term
+  predicate chains through `math::distance::detail::pred_and/pred_or`.
+* **Comparing a large device dump against the host.** Give the generic routine
+  `load(j)` / `put(v)` callbacks so the host and the kernel walk an identical,
+  fixed dump order (the kernel's `put` just writes the next buffer slot), and make
+  the comparison `NaN`-aware: a degenerate configuration legitimately produces the
+  same non-finite value on both sides, while `0/0`-style garbage that *differs*
+  between the compilers (FMA contraction) is only tolerated for well-conditioned
+  inputs — keep exactly-degenerate configurations in the host reference-equivalence
+  tests, not in the device smoke.
+
 ---
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
