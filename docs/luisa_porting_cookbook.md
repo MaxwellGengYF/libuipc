@@ -78,6 +78,30 @@ was **not exported** from `luisa-ast.dll`, so any consumer calling `define_kerne
 (`device.compile<1>`) failed to link. Rebuilding LC from source (commit `112bf1daf`,
 "Fix build") exports the symbol and the spike links. **Always rebuild LC after updating it.**
 
+### 1.3 fmt/spdlog must be unified (one `fmt::v10` per process)
+
+LC bundles spdlog+fmt and `include/luisa/core/logging.h` includes `<spdlog/spdlog.h>`,
+which resolves to LC's bundled copy. libuipc gets fmt/spdlog from vcpkg. Both are
+fmt **v10**, so a translation unit that includes both (any ported backend file that
+uses libuipc's logging *and* LuisaCompute) sees two conflicting `fmt::v10`
+definitions and fails with hundreds of C7568/C2955 errors inside
+`luisa/ext/spdlog/fmt/bundled/{chrono,xchar,ostream}.h`.
+
+**Fix:** build LC with the *same* spdlog/fmt as libuipc:
+
+```
+cmake -S LuisaCompute -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkg.cmake> \
+      -DLUISA_COMPUTE_USE_SYSTEM_SPDLOG=ON \
+      -Dspdlog_DIR=<vcpkg_installed>/x64-windows/share/spdlog \
+      -Dfmt_DIR=<vcpkg_installed>/x64-windows/share/fmt
+cmake --build build -j && cmake --install build --prefix <root>/install
+```
+
+This makes `<spdlog/spdlog.h>` resolve to vcpkg's spdlog (header-only target
+`spdlog::spdlog_header_only`) so there is exactly one fmt in the process. Do **not**
+work around this by removing LC's `include/luisa/ext` from the include path — the LC
+logging header needs it.
+
 ---
 
 ## 2. Build & run recipes (Windows)

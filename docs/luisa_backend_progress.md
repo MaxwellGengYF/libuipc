@@ -21,6 +21,8 @@
 - Work dir: `C:\dev\libuipc`; LC source `C:\dev\LuisaCompute` (symlink `LuisaCompute/`), LC install `C:\dev\LuisaCompute\install`.
 - LC built with clang++ (LLVM 19, MSVC ABI) at `D:/TestUE/clang/bin/clang++.exe`; CMake `D:\cmake\bin\cmake`, Ninja, NVCC 12.9, GPU RTX 4060.
 - Build LC: `cmake --build C:/dev/LuisaCompute/build -j12 && cmake --install C:/dev/LuisaCompute/build --prefix C:/dev/LuisaCompute/install`.
+- **LC must be built with `-DLUISA_COMPUTE_USE_SYSTEM_SPDLOG=ON`** against libuipc's vcpkg spdlog/fmt (see cookbook §1.3), otherwise `fmt::v10` is defined twice and every backend TU fails to compile.
+- libuipc in-tree build: `CMAKE_TOOLCHAIN_FILE=C:/dev/vcpkg/scripts/buildsystems/vcpkg.cmake`, `-DUIPC_USING_LOCAL_VCPKG=ON -DUIPC_WITH_LUISA_BACKEND=ON`; vcpkg deps installed in `build/vcpkg_installed`.
 - The reference backend uses **`cuda_tool`**, not `muda` (see cookbook §0).
 - Windows shell notes: invoke `cmd /c` from **Python** (`subprocess`), not from MSYS bash (argument mangling); `set VSLANG=1033` for English diagnostics.
 
