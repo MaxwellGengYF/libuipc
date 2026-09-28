@@ -40,12 +40,21 @@ inline void jacobi_rotate(LMat<T, N, N>& M, LMat<T, N, N>& E, int p, int q) noex
     // Guarded classical formula, unified over both branches of the reference:
     //     t = 1 / (tau + sqrt(1 + tau^2))               (tau >= 0)
     //     t = -1 / (-tau + sqrt(1 + tau^2))             (tau <  0)
-    // <=> t = sign(tau) / (|tau| + sqrt(1 + tau^2))
+    // <=> t = sign(tau) / (|tau| + sqrt(1 + tau^2))  with **sign(0) := +1**.
+    //
+    // The sign convention matters: `tau == 0` (i.e. M(p,p) == M(q,q) with
+    // M(p,q) != 0) is the *45 degree* rotation (t = 1), not the identity.  A plain
+    // `sign(0) == 0` leaves M(p,q) un-annihilated, so the sweep sequence returns the
+    // diagonal as "eigenvalues" instead of the spectrum (found by T5.2 batch a:
+    // the SNK1 Hessian's 3x3 stretch block at an isotropic stretch F = s I is
+    // exactly of that shape, which made `ddEddF_spd` project the wrong modes).
     auto Mpq = M(p, q);
     auto tau = detail::div(detail::sub(M(q, q), M(p, p)), detail::mul(make_scalar<T>(2), Mpq));
 
     auto abs_tau = abs(tau);
-    auto t_raw   = detail::div(sign(tau),
+    // `select(f, t, p)` is `p ? t : f`:  tau < 0 ? -1 : +1
+    auto sgn     = select(one_of<T>(), make_scalar<T>(-1), tau < zero_of<T>());
+    auto t_raw   = detail::div(sgn,
                                detail::add(abs_tau, sqrt(detail::add(make_scalar<T>(1),
                                                                      detail::mul(tau, tau)))));
     // Mpq == 0  =>  the rotation must be the identity (t = 0); this also discards
