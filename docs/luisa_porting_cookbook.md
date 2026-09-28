@@ -964,6 +964,120 @@ are what the port turned out to depend on.
    (retire the displaced allocation) exactly like the algorithm primitives —
    `LinearReductionStorage` carries its own `retired` list for that.
 
+### 7.13 Patterns established in T4.1 (global geometry managers)
+src/backends/luisa/global_geometry/* ports the reference's
+global_{vertex,body,simplicial_surface}_manager + the three reporters, plus
+utils/offset_count_collection and utils/dump_utils.  The rules below are what the
+port turned out to depend on; the first one is a hard constraint of the device ABI,
+not a choice.
+
+1. **An Eigen type cannot be an LC buffer element.**  LC reflects a buffer element
+   type through `detail::TypeDesc<T>` (member_reflect), which requires
+   `std::is_aggregate_v<T>`; `Eigen::Matrix<double,3,1>` is not an aggregate, so
+   `device.create_buffer<uipc::Vector3>()` does not compile.  The ported backend
+   therefore stores every vector-valued attribute as `lps::LVec<T,N>`
+   (`uipc::backend::luisa::LVector2/3/2i/3i`, see src/backends/luisa/type_define.h):
+   a plain `std::array<T,N>`, i.e. the *same bytes* as the Eigen alias
+   (LVector3 == 24 B == Vector3, verified by static_assert).  The four element
+   types are registered as LC struct types with `LUISA_STRUCT(gg::LVector3, data){};`
+   in that header, with three ordering constraints:
+   * the aliases must be declared before the registration (the macro takes the
+     type as its first argument and an unparenthesised comma inside `LVec<T, N>`
+     would split its arguments);
+   * `LUISA_STRUCT` must be invoked at *global* scope (inside
+     `uipc::backend::luisa` the name `luisa` resolves to the enclosing backend
+     namespace, §7.2/compat.h) and needs the `{};` suffix (the macro ends with
+     `: luisa_compute_extension<S>`);
+   * never write `LVec<::luisa::compute::...>` — `<:` is the `[` digraph and the
+     tokeniser eats it (use the `lcrt` alias).
+   A `LUISA_STRUCT` type is *not* `is_custom_struct`, so `create_buffer<T>()` stays
+   available; host code converts with `to_luisa(Vector3)` / `to_eigen(LVector3)`
+   (identical layout, unrelated types: the explicit conversion is well defined, a
+   raw cast is not).  Inside a kernel an element reads as `Expr<LVector3>` whose
+   components are `element.data[i]`; `load_vec3()/store_vec3()` (type_define.h)
+   materialise it as `lps::LVec<Var<double>,3>` for the numerics layer.  Writing an
+   element needs a `Var<LVector3>`: `dst->write(i, some_lvec)` does not convert.
+
+2. **Ported systems have no stream parameter — they share one frame stream.**
+   cuda_tool submits on the default CUDA stream, so reference system code never
+   threads a stream through.  The port adds `uipc::backend::luisa::frame_stream()`
+   (src/backends/luisa/frame_stream.{h,cpp}): one deliberately leaked LStream over
+   `main_stream()`, shared by every ported system so that a frame opened by the
+   engine batches *all* of their work.  Until Phase 8 opens it, `frame_open()` is
+   false and every command is submitted immediately, exactly like cuda_tool.
+
+3. **A device read-back inside a system is a mid-frame synchronisation (§7.11
+   rule 4, restated for managers).**  `cuda_tool::copy_to` synchronises; an LC copy
+   recorded on the main stream would *not* be ordered after commands still sitting
+   in the caller's open frame CommandList, so the read-back must commit the frame
+   first (`LStream::synchronize()`), copy, wait, and re-open if the frame had been
+   open.  Used by the surface manager's `DeviceSelect::Flagged` count and by
+   `compute_axis_max_displacement()`.
+
+4. **A CUB reduce with a *vector* op has no counterpart: pack, then reduce
+   scalars.**  The AABB reduction folded `Vector3` values with `cwiseMin/cwiseMax`
+   and the |displacement| reduction folded the flat 3n array with a `MaxAbsOp`.
+   linalg's `device_reduce_*` is scalar-typed, so the port writes the components
+   transposed into one scratch array (`comps[c*n + i] = positions[i][c]`, a
+   `detail::carve`d per-stream temporary) and runs 3 min + 3 max (or one max over
+   per-element maxima) reductions.  min/max are exact and order-independent, so the
+   result is identical to CUB's; the reduce *identity* also defines the n == 0
+   case, which is why an empty scene yields `(+inf, -inf)` after the `AABB`'s cast
+   to float (the reference behaves the same way).
+
+5. **`DeviceSelect::Flagged` is `select_if(..., keep_when_zero = false)` plus a
+   count read-back**, and its count is `uint32_t` (T3.2), not the reference's `int`;
+   the manager stores it in an `LDeviceVar<uint32_t>` and casts on the host.
+
+6. **Measured: a leaked static Shader survives `Runtime::shutdown()` + `init()`.**
+   scratch/t41_probe/probe_shader.cpp dispatches one function-local-static compiled
+   Shader, shuts the runtime down, brings it up again (a new device) and
+   re-dispatches the same Shader: both rounds return the correct result (2/2).  So
+   the §7.10 compile-once caches stay valid when a process creates several engines
+   sequentially — every `~SimEngine` calls `Runtime::shutdown()`, and the T4.1 test
+   creates a fresh engine per scene (including the dump/recover test's second
+   engine).  This is what makes "dump in engine A, recover in engine B" testable.
+
+7. **Backend-internal tests need two build settings on MSVC.**  A DLL exports
+   nothing by default, so a test that uses the backend's *system* classes (the
+   managers and their reporter base classes) cannot link against the module until
+   the symbols are exported: src/backends/luisa/CMakeLists.txt sets
+   `WINDOWS_EXPORT_ALL_SYMBOLS ON` (the foundation layer keeps its own
+   `UIPC_LUISA_DEVICE_API` macro).  The test target also needs `<src>` on its
+   include path because the backend headers include `<backends/common/...>`
+   (apps/tests/backends/luisa/CMakeLists.txt, like apps/tests/common).
+
+8. **Frontend facts a system port needs** (discovered in T4.1):
+   * `geometry::Geometry::as<T>()` returns a raw `T*`, not a `S<T>`;
+   * `geometry::SimplicialComplex` has no assignment operator (deleted): build it
+     in place (a `[&]{...}()` immediately-invoked lambda returning by value);
+   * `core::Scene::geometries()` is not iterable — reporters walk
+     `world().scene().geometries()` (the `SceneVisitor` `span<S<GeometrySlot>>`);
+   * `VertexReporter::vertex_offset()` is the reporter's *slice* offset in the
+     global vertex array, not a per-geometry offset: a reporter that reports
+     several geometries (all of them do) must accumulate the per-geometry offsets
+     itself (prefix sum of the vertex counts);
+   * the per-vertex attributes the reference reporters fill (`coindices`,
+     `body_ids`, ...) are byte copies, so a test reporter can feed them with
+     `LBufferView::copy_from(span<const T>)` (H2D) exactly where a real reporter
+     copies device data;
+   * `config()["sanity_check"]["enable"] = false` keeps the frontend sanity
+     checkers out of a deliberately degenerate test scene;
+   * the frontend scene config accepts backend-specific keys that are not in
+     `Scene::default_config()`'s schema: `config["contact"]["d_hat_relative"] =
+     <double>` is created as a `Float` attribute and read back with
+     `find<Float>("contact/d_hat_relative")`, so the scene-relative d_hat override
+     is testable straight from the scene JSON;
+   * the manager's `*_bounding_box()/compute_*()` helpers are *private* (reference
+     parity): a test drives the reduction kernels through
+     `GlobalVertexManager::Impl`, which is a public nested class with public device
+     methods, injected with synthetic buffers and no engine at all;
+   * the reference's dump set is `positions` + `prev_positions` only; every other
+     buffer is re-established by init/reporters, so a dump/recover test must assert
+     "recovered" for those two and "fresh scene value" for the rest;
+   * `GlobalVertexManager` has no velocity buffer at all (velocities live in the
+     dynamics systems), so a vertex-attribute round-trip test covers them.
+
 Appendix — Verified LC API cheat-sheet (from T0.1)
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 

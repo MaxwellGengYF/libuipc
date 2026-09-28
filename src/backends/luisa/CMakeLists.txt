@@ -13,6 +13,16 @@ if(NOT TARGET luisa::compute)
 endif()
 
 uipc_add_backend(luisa)
+# T4.1: the backend's own unit tests link this module and use the backend's system
+# classes (the global geometry managers + their reporter base classes), which is
+# what `uipc_add_backend`'s "allowing backend-internal unit tests to link against
+# the same binary" promises. On MSVC a DLL exports nothing by default, so the
+# backend-internal symbols must be exported explicitly; WINDOWS_EXPORT_ALL_SYMBOLS
+# generates the .def from this target's objects (the foundation layer keeps its
+# own UIPC_LUISA_DEVICE_API export macro; this covers the system classes).
+if(WIN32)
+    set_target_properties(luisa PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
 
 # LuisaCompute must be PUBLIC: this backend's headers (luisa_device, type_define.h)
 # expose LC types, and on Windows a module's consumers need the LC import

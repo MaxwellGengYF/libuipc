@@ -6,6 +6,11 @@
 
 #include <backends/common/module.h>
 
+// T4.1: the engine drives the global geometry managers (see init_scene()).
+#include <global_geometry/global_vertex_manager.h>
+#include <global_geometry/global_body_manager.h>
+#include <global_geometry/global_simplicial_surface_manager.h>
+
 namespace uipc::backend::luisa
 {
 SimEngine::SimEngine(EngineCreateInfo* info)
@@ -52,6 +57,9 @@ void SimEngine::do_init(InitInfo& info)
 
     m_state = SimEngineState::BuildSystems;
     build_systems();
+    // T4.1: the reference resolves its engine-aware topo systems inside build(),
+    // i.e. still in the BuildSystems state.
+    build_geometry_systems();
     m_state = SimEngineState::None;
 
     dump_system_info();
@@ -68,10 +76,44 @@ void SimEngine::build_systems()
     backend::SimEngine::build_systems();
 }
 
+void SimEngine::build_geometry_systems()
+{
+    // Mirrors SimEngine::build() of the reference backend
+    // (src/backends/cuda/engine/sim_engine_do_init.cu):
+    //   m_global_vertex_manager = &require<GlobalVertexManager>();
+    //   m_global_body_manager   = &require<GlobalBodyManager>();
+    //   m_global_simplicial_surface_manager = find<GlobalSimplicialSurfaceManager>();
+    // All three are always registered, so require<> is used for the two the
+    // reference requires and find<> for the surface manager (like the reference).
+    m_global_vertex_manager = &require<GlobalVertexManager>();
+    m_global_body_manager   = &require<GlobalBodyManager>();
+    m_global_simplicial_surface_manager = find<GlobalSimplicialSurfaceManager>();
+}
+
 void SimEngine::init_scene()
 {
     m_state = SimEngineState::InitScene;
+
+    // 1. Before the common scene initialization: the body manager hands out the
+    //    global body ranges that the vertex reporters use while filling body_ids.
+    if(m_global_body_manager)
+    {
+        m_global_body_manager->init();
+    }
+
+    // 2. Common scene initialization phase.
     event_init_scene();
+
+    // 3. After the common scene initialization (same order as the reference).
+    if(m_global_vertex_manager)
+    {
+        m_global_vertex_manager->init();
+    }
+    if(m_global_simplicial_surface_manager)
+    {
+        m_global_simplicial_surface_manager->init();
+    }
+
     event_rebuild_scene();
     m_state = SimEngineState::None;
 }

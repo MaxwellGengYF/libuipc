@@ -14,6 +14,12 @@ target_link_libraries(backend_luisa PRIVATE uipc::backend::luisa)
 # The tests instantiate LC DSL templates directly, so they need LuisaCompute's
 # import libraries on their own link line (not only via the module).
 target_link_libraries(backend_luisa PRIVATE luisa::compute)
+# T4.1: the backend system tests include the backend's own headers
+# (<sim_system.h>, <global_geometry/...>), which transitively include
+# <backends/common/...>. Those resolve from <src>, which the backend target adds
+# as a PRIVATE include dir; the test target needs it on its own include path
+# (same as apps/tests/common).
+target_include_directories(backend_luisa PRIVATE "${PROJECT_SOURCE_DIR}/src")
 
 # LC headers need a conformant preprocessor on MSVC; /utf-8 keeps non-ASCII
 # comment characters in the sources from being misread under a non-UTF-8 code page.

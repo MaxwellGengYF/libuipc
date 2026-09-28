@@ -9,10 +9,48 @@
  * (the LuisaCompute analogue of cuda_tool).
  *
  * Pulled into host (.cpp) translation units, so it must stay lightweight.
+ *
+ * ---------------------------------------------------------------------------
+ * Device element types for vector-valued attributes (T4.1)
+ * ---------------------------------------------------------------------------
+ * The reference backend stores a `Vector3` (Eigen::Vector3d) attribute as a
+ * `cuda_tool::DeviceBuffer<Vector3>`; the mechanical mapping "T unchanged" does
+ * NOT survive the port, because an LC buffer element type must be *reflected* by
+ * LuisaCompute and Eigen's fixed-size types are not aggregates: LC's
+ * `detail::TypeDesc<T>` primary template builds the struct description from
+ * structured bindings and therefore `static_assert(std::is_aggregate_v<T>)`
+ * (luisa/ast/member_reflect.inl.h). `device.create_buffer<Eigen::Vector3d>()`
+ * accordingly does not compile (verified with scratch/t41_probe1.cpp:
+ * is_aggregate_v<Vector3> == false).
+ *
+ * The ported backend therefore stores the vector-valued attributes as the
+ * numerics layer's `lps::LVec<T,N>` -- a plain `std::array<T,N>` with the *same*
+ * bytes as the Eigen alias (LVec<double,3> == 24 B == Eigen::Vector3d) -- and
+ * registers the four instantiations the geometry managers need as LC struct
+ * types (below). Order matters in this header:
+ *   1. the aliases (the registration macro takes the type as its first argument,
+ *      and an unparenthesised comma inside `LVec<T, N>` would split it),
+ *   2. the `LUISA_STRUCT` registrations (a specialisation must be declared
+ *      before its first use, and the macro must be invoked at *global* scope:
+ *      inside `uipc::backend::luisa` the name `luisa` would resolve to the
+ *      enclosing backend namespace, see luisa_device/compat.h),
+ *   3. the kernel-side access helpers that use `Expr<LVector3>`.
+ *
+ * Consequences for ported code:
+ *  - `LBufferView<LVector3> positions()` replaces
+ *    `cuda_tool::CBufferView<Vector3>`; both sides of a copy must use the same
+ *    element type, so a reporter converts the host Eigen data with
+ *    `to_luisa(Vector3)` / `to_eigen(LVector3)` (identical bytes, unrelated
+ *    types: the explicit conversion is well defined, a raw cast would not be).
+ *  - Inside a kernel an element is read as `Expr<LVector3>`/written as
+ *    `Var<LVector3>`; its components are `element.data[i]`, and
+ *    `load_vec3()/store_vec3()` materialise it as an `lps::LVec<Var<Float>,3>`
+ *    so the numerics layer can be used on it.
  *********************************************************************/
 #include <uipc/common/type_define.h>
 
 #include <luisa_device/luisa_device.h>
+#include <luisa_device/math/vec.h>
 
 namespace uipc::backend::luisa
 {
@@ -35,4 +73,142 @@ using Matrix12x12 = uipc::Matrix12x12;
 // Device utility layer (short name used by ported sources).
 namespace lud = luisa_device;
 namespace lc  = luisa_device;
+
+// Numerics layer (short name used by ported device code).
+namespace lps = luisa_device::math;
+
+// LuisaCompute's engine namespace. `::luisa` is the *global* one: inside
+// `uipc::backend::luisa` an unqualified `luisa` resolves to the enclosing backend
+// namespace instead (luisa_device/compat.h). NOTE: never write
+// `LVec<::luisa::...>` -- the `<:` digraph would be tokenised as `[`.
+namespace lcrt = ::luisa::compute;
+
+// ---------------------------------------------------------------------------
+// Device element types (the ported backend's device ABI for Eigen vectors)
+// ---------------------------------------------------------------------------
+using LVector2  = lps::LVec<Float, 2>;
+using LVector3  = lps::LVec<Float, 3>;
+using LVector2i = lps::LVec<IndexT, 2>;
+using LVector3i = lps::LVec<IndexT, 3>;
+
+static_assert(sizeof(LVector2) == sizeof(Vector2));
+static_assert(sizeof(LVector3) == sizeof(Vector3));
+static_assert(sizeof(LVector2i) == sizeof(Vector2i));
+static_assert(sizeof(LVector3i) == sizeof(Vector3i));
+static_assert(alignof(LVector3) == alignof(Vector3));
+
+// Host <-> device element conversion (identical layout, unrelated types).
+[[nodiscard]] inline LVector2 to_luisa(const Vector2& v) noexcept
+{
+    return LVector2{v.x(), v.y()};
+}
+[[nodiscard]] inline LVector3 to_luisa(const Vector3& v) noexcept
+{
+    return LVector3{v.x(), v.y(), v.z()};
+}
+[[nodiscard]] inline LVector2i to_luisa(const Vector2i& v) noexcept
+{
+    return LVector2i{v.x(), v.y()};
+}
+[[nodiscard]] inline LVector3i to_luisa(const Vector3i& v) noexcept
+{
+    return LVector3i{v.x(), v.y(), v.z()};
+}
+[[nodiscard]] inline Vector2 to_eigen(const LVector2& v) noexcept
+{
+    return Vector2{v(0), v(1)};
+}
+[[nodiscard]] inline Vector3 to_eigen(const LVector3& v) noexcept
+{
+    return Vector3{v(0), v(1), v(2)};
+}
+[[nodiscard]] inline Vector2i to_eigen(const LVector2i& v) noexcept
+{
+    return Vector2i{v(0), v(1)};
+}
+[[nodiscard]] inline Vector3i to_eigen(const LVector3i& v) noexcept
+{
+    return Vector3i{v(0), v(1), v(2)};
+}
+}// namespace uipc::backend::luisa
+
+// ---------------------------------------------------------------------------
+// LuisaCompute struct registration of the element types
+//
+// `LUISA_STRUCT` has to be invoked at global scope and ends with
+// `: luisa_compute_extension<S>`, so the braces+semicolon are part of the
+// invocation (LC's own tests spell it `LUISA_STRUCT(S, a, b) {};`).
+// ---------------------------------------------------------------------------
+LUISA_STRUCT(uipc::backend::luisa::LVector2, data){};
+LUISA_STRUCT(uipc::backend::luisa::LVector3, data){};
+LUISA_STRUCT(uipc::backend::luisa::LVector2i, data){};
+LUISA_STRUCT(uipc::backend::luisa::LVector3i, data){};
+
+namespace uipc::backend::luisa
+{
+// ---------------------------------------------------------------------------
+// Kernel-side element access helpers
+// ---------------------------------------------------------------------------
+/// Materialise a device vector element as a mutable DSL vector (numerics layer).
+[[nodiscard]] inline lps::LVec<lcrt::Var<Float>, 3> load_vec3(
+    const lcrt::Expr<LVector3>& e) noexcept
+{
+    lps::LVec<lcrt::Var<Float>, 3> v;
+    v(0) = e.data[0];
+    v(1) = e.data[1];
+    v(2) = e.data[2];
+    return v;
+}
+
+[[nodiscard]] inline lps::LVec<lcrt::Var<Float>, 2> load_vec2(
+    const lcrt::Expr<LVector2>& e) noexcept
+{
+    lps::LVec<lcrt::Var<Float>, 2> v;
+    v(0) = e.data[0];
+    v(1) = e.data[1];
+    return v;
+}
+
+[[nodiscard]] inline lps::LVec<lcrt::Var<IndexT>, 2> load_vec2i(
+    const lcrt::Expr<LVector2i>& e) noexcept
+{
+    lps::LVec<lcrt::Var<IndexT>, 2> v;
+    v(0) = e.data[0];
+    v(1) = e.data[1];
+    return v;
+}
+
+[[nodiscard]] inline lps::LVec<lcrt::Var<IndexT>, 3> load_vec3i(
+    const lcrt::Expr<LVector3i>& e) noexcept
+{
+    lps::LVec<lcrt::Var<IndexT>, 3> v;
+    v(0) = e.data[0];
+    v(1) = e.data[1];
+    v(2) = e.data[2];
+    return v;
+}
+
+/// Store a DSL vector into a device vector element (a kernel-local Var).
+inline void store_vec3(lcrt::Var<LVector3>& dst,
+                       const lps::LVec<lcrt::Var<Float>, 3>& v) noexcept
+{
+    dst.data[0] = v(0);
+    dst.data[1] = v(1);
+    dst.data[2] = v(2);
+}
+
+inline void store_vec2i(lcrt::Var<LVector2i>& dst,
+                        const lps::LVec<lcrt::Var<IndexT>, 2>& v) noexcept
+{
+    dst.data[0] = v(0);
+    dst.data[1] = v(1);
+}
+
+inline void store_vec3i(lcrt::Var<LVector3i>& dst,
+                        const lps::LVec<lcrt::Var<IndexT>, 3>& v) noexcept
+{
+    dst.data[0] = v(0);
+    dst.data[1] = v(1);
+    dst.data[2] = v(2);
+}
 }// namespace uipc::backend::luisa

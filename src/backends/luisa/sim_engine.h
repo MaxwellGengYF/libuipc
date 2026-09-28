@@ -16,6 +16,10 @@
 
 namespace uipc::backend::luisa
 {
+class GlobalVertexManager;
+class GlobalBodyManager;
+class GlobalSimplicialSurfaceManager;
+
 class SimEngine final : public backend::SimEngine
 {
     friend class SimSystem;
@@ -44,6 +48,10 @@ class SimEngine final : public backend::SimEngine
     Json  do_frame_stats() const override;
 
     void build_systems();
+    // T4.1: resolve the engine-aware geometry managers (the reference's
+    // `SimEngine::build()` does the same require<>/find<> calls right after
+    // build_systems()). They must be resolved while the state is BuildSystems.
+    void build_geometry_systems();
     void init_scene();
     void event_init_scene();
     void event_rebuild_scene();
@@ -59,6 +67,12 @@ class SimEngine final : public backend::SimEngine
     SimActionCollection<void()> m_on_init_scene;
     SimActionCollection<void()> m_on_rebuild_scene;
     SimActionCollection<void()> m_on_write_scene;
+
+    // Engine-aware topo systems (T4.1); the reference SimEngine owns the same
+    // three pointers and calls their init() in init_scene().
+    GlobalVertexManager*            m_global_vertex_manager            = nullptr;
+    GlobalBodyManager*              m_global_body_manager              = nullptr;
+    GlobalSimplicialSurfaceManager* m_global_simplicial_surface_manager = nullptr;
 
     SizeT m_current_frame = 0;
     SizeT m_newton_iter   = 0;
