@@ -46,7 +46,7 @@ built install prefix; enabled by `UIPC_WITH_LUISA_BACKEND` (default OFF).**
 | LC backends built | `cuda` only (`LUISA_COMPUTE_ENABLE_VULKAN=OFF`, `..._DX=OFF`, `..._GUI=OFF`) |
 | Device at runtime | `"cuda"` (LC-CUDA / NVRTC → PTX), selected from the engine config JSON (default `"cuda"`) |
 | Rebuild rule | LC install must post-date its sources. Rebuild with `cmake --build C:/dev/LuisaCompute/build && cmake --install C:/dev/LuisaCompute/build --prefix C:/dev/LuisaCompute/install` |
-| Compiler | LC is built with **clang++ (LLVM 19, MSVC ABI)**. Consumers must use a conformant preprocessor. |
+| Compiler | LC is built with **MSVC (cl.exe)** — see §1.1. Consumers must use a conformant preprocessor. |
 
 **Why not `add_subdirectory`:** LC is large (glslang, SPIRV-Tools, …); building it inside
 every libuipc configure would multiply CI cost. An installed, importable package keeps the
@@ -151,6 +151,28 @@ cmake -S scratch\lc_spike -B scratch\lc_spike\build -G Ninja -DCMAKE_BUILD_TYPE=
 cmake --build scratch\lc_spike\build
 scratch\lc_spike\build\lc_spike.exe cuda
 ```
+
+### 2.1 Helper scripts (use these instead of retyping the recipes)
+All three go through `cmd /c` + `vcvars64.bat` (never MSYS bash, which mangles
+`cmd //c` arguments) and set `VSLANG=1033`.
+
+```bat
+:: in-tree: build + run the backend test target (uipc_test_backend_luisa.exe)
+python scripts/luisa_build.py build backend_luisa
+python scripts/luisa_build.py run
+python scripts/luisa_build.py ctest
+
+:: standalone luisa_device harness (LC only, no vcpkg libraries)
+python scripts/luisa_standalone.py cuda
+
+:: single-TU syntax / template-instantiation check with the exact CMake flags
+:: borrowed from build/compile_commands.json
+python scripts/luisa_check_compile.py <source.cpp> --syntax
+```
+
+`luisa_check_compile.py` is the fast inner loop: it surfaces template
+instantiations (including the DSL ones, which are ordinary host code) in a few
+seconds instead of a full build + link.
 
 ---
 
@@ -281,6 +303,14 @@ reference unit tests) *and* **DSL `T`** (`Float`/`Double`). Storage is a plain a
 **Rule M2.** `sym/*.inl` bodies are pure element-wise arithmetic. Port them
 **mechanically**: `Eigen::Vector<T,N>`→`LVec<T,N>`, `Eigen::Matrix<T,R,C>`→`LMat<T,R,C>`,
 `std::`→`lps::`. Do not rewrite the math.
+**Resolved in T2.1** (see §7 for the concrete contract): the shim namespace is
+`uipc::backend::luisa::luisa_device::math`, with the short alias
+`uipc::backend::luisa::luisa_device::lps`, and the DSL element type is
+`lcrt::Var<double>` (**not** `Expr` — `Expr` deletes copy assignment). Two further
+rules came out of that work and apply to *every* ported kernel: RULE M1 (LC's DSL
+scalar operators live at global scope, so a surrounding namespace that declares its
+own operators shadows them — use `math::detail::{add,sub,mul,div,neg}` there) and
+RULE M2 (no `Expr<bool>`/`Expr<uint>` may leak into host control flow).
 
 ### 3.6 Linear algebra (Phase 3)
 
@@ -322,7 +352,7 @@ cuSPARSE/cuBLAS/CUB).
 | Extension | `.cu` → `.cpp`; device-only helpers → `.h`/`.inl` |
 | Namespace | `uipc::backend::luisa` (was `uipc::backend::cuda`) |
 | Device util namespace | `uipc::backend::luisa::luisa_device` (was `…::cuda_tool`) |
-| Math namespace | `uipc::backend::luisa::luisa_device::math` (alias `lc::math` in backend code) |
+| Math namespace | `uipc::backend::luisa::luisa_device::math` (aliases: `lps` inside `luisa_device`, `lc::math` in backend code) — see §7 |
 | LINEAR namespace | `uipc::backend::luisa::luisa_device::linalg` |
 | Launch qualifier | the `UIPC_HOST/UIPC_DEVICE/UIPC_GLOBAL` macros are **removed**; kernels are DSL lambdas |
 | Buffer view param | `LBufferView<T>` / `LCBufferView<T>` |
@@ -338,8 +368,108 @@ cuSPARSE/cuBLAS/CUB).
 - [ ] Unit test added under `apps/tests/backends/luisa/` (+ sim case where applicable).
 - [ ] New patterns appended to this cookbook.
 
----
+## 7. Numerics layer (`luisa_device/math`) — patterns established in T2.1
+The device has no separate compilation: a kernel body is ordinary host C++ that
+*records IR*, so a numeric routine is written **once**, as a template over the
+scalar type. `UIPC_GENERIC Foo(...)` becomes `template <typename T> Foo(...)`, and
+the scalar type is either
 
+| instantiation | meaning |
+|---|---|
+| `double` | host evaluation (reference / unit tests) |
+| `lcrt::Var<double>` | device evaluation (a DSL local variable) |
+
+`uipc::Float` is `double`, so ported device code keeps **double precision on the
+GPU**, exactly like the CUDA backend.
+
+### 7.1 `LVec<T,N>` / `LMat<T,R,C>` (`math/vec.h`, `math/mat.h`)
+```cpp
+// host                                  // device (inside a kernel lambda)
+using Vec3 = lmath::LVec<double, 3>;     using DVec3 = lmath::LVec<lcrt::Var<double>, 3>;
+using Mat9 = lmath::LMat<double, 9, 9>;  using DMat9 = lmath::LMat<lcrt::Var<double>, 9, 9>;
+```
+* Element type is **`Var`, never `Expr`**: LC's `Expr` deletes copy assignment
+  (`Expr &operator=(Expr) = delete`), so a container of `Expr` could not be
+  assigned. `Var` is a mutable DSL local and *is* assignable.
+* Storage is a plain `std::array<T,N>` **column-major** (`index(r,c) == c*R + r`),
+  i.e. memcpy/Eigen compatible; the *constructor* is row-major, like Eigen's
+  `Matrix(a, b, c, ...)`.
+* Default construction is **zero** (Eigen leaves it uninitialised). For the DSL
+  this is what `Var`'s default initialiser does anyway, so
+  `Vector9 ret; ret.segment<3>(0) = ...;` ports 1:1.
+* Everything Eigen returns as a *block expression* comes back as a lightweight
+  **strided view** that is assignable and implicitly convertible to a value:
+  ```cpp
+  auto dEda1 = ret.segment<3>(0);  dEda1 = expr;   // writes through to ret
+  H.block<3, 3>(0, 3) = M;                         // 9x9 tile assembly
+  A.diagonal().array() += f;                       // `.array()` is element-wise
+  ```
+  A view holds a raw element pointer plus a stride. That is safe here *because*
+  the enclosing `LVec`/`LMat` is a **host** object holding expression handles, so
+  a pointer into it behaves like a pointer into a host array. Usual caveat: a view
+  must not outlive its parent; a `const` parent — or an rvalue such as `(A * B)` —
+  yields a **copy** instead of a view.
+* Defined: indexing `v(i)` / `m(r,c)`, `x()/y()/z()/w()`, arithmetic (`+ - * /`,
+  scalar and matrix/vector products, outer product `a * b.transpose()`),
+  `transpose`, `block<>`, `head<>/tail<>`, `row/col/diagonal`, `segment<>`,
+  `dot`, `cross`, `norm`, `squaredNorm`, `normalized`, `sum`, `trace`,
+  `maxCoeff/minCoeff`, `Zero/Ones/Identity/Constant/Unit<I>`, `asDiagonal`,
+  `Map(ptr)`, and `.array()` element-wise algebra.
+* Deliberately **absent** here: `determinant`, `inverse`, `make_spd`, SVD — those
+  belong to T2.2 (`matrix_ops.h`, `svd.h`).
+
+### 7.2 RULE M1 — LC's DSL scalar operators live at **global** scope
+`luisa/dsl/operators.h` declares the arithmetic/comparison operators for DSL values
+in the **global namespace** (reachable only by unqualified lookup that actually
+reaches global scope, and no built-in candidate exists for a DSL type). Therefore:
+* Any header that declares *its own* operators inside a namespace that encloses the
+  call site **shadows** them: unqualified `expr_a + expr_b` then fails with
+  `C2676: 'const Var<double>' does not define this operator`.
+* Inside the numerics layer this is solved once, in `math/math.h`, by routing
+  **every** arithmetic operation on a possibly-DSL *scalar* through
+  `math::detail::{add,sub,mul,div,neg}`, which forwards to `::operator OP(...)` for
+  DSL values and to the built-in operators for host values.
+* The assumption is asserted (`static_assert(requires(lcrt::Var<double> a,
+  lcrt::Var<double> b) { ::operator+(a, b); })`) so an upstream change fails loudly
+  there instead of subtly at a call site.
+* Ported code elsewhere is unaffected: `uipc::backend::luisa` and the system
+  namespaces declare no such operators, so ordinary lookup reaches global scope.
+  **If a new namespace ever declares its own arithmetic operators, DSL arithmetic
+  inside it breaks** — use the same trampolines there.
+
+### 7.3 RULE M2 — no DSL boolean or index may leak into host control flow
+An `Expr<bool>` cannot be a C++ `if` condition, and an `Expr<uint>` cannot index a
+host container. In generic code comparisons are therefore performed only by the DSL
+intrinsics (`lcrt::min/max/clamp/sign/select`), never by `?:` or `<` on the device
+path; bounds are host `int`/`uint32_t` constants or come from `$for`/`dispatch_x()`.
+Related: use plain `uint32_t` constants for byte/slot offsets inside kernels — an
+unscoped `enum { ... }` is not accepted as an operand of `Expr<uint>` arithmetic.
+
+### 7.4 Testing (`apps/tests/backends/luisa/`)
+* **Host/device equivalence by construction.** Write the computation once as
+  ```cpp
+  template <typename S>
+  Result compute(const LVec<S, 3>& a, const LVec<S, 3>& b);
+  ```
+  instantiate it in a host reference loop (`S = double`) *and* inside the kernel
+  (`S = lcrt::Var<double>`), then compare the resulting buffers bit-for-bit. This
+  is already one unit of the M9 equivalence harness.
+* Eigen parity cases are guarded with `#if __has_include(<uipc/common/type_define.h>)`
+  (not merely `<Eigen/Core>`), so the same source still builds in the standalone
+  harness, which links no libuipc. `Eigen::Vector::cross` / `asDiagonal` also need
+  `<Eigen/Geometry>`.
+* Catch2 forbids `&&` inside an assertion — wrap the whole expression in an extra
+  pair of parentheses: `CHECK((a && b));`.
+* **Test-case order matters.** `zzz_runtime_shutdown` tears LC down explicitly
+  (without it Windows exits with 0xC0000409) and must run last. Catch2 runs cases
+  in the sorted source-glob order, so the teardown lives alone in
+  `zzz_runtime_shutdown.cpp`; never name another test file so that it sorts after.
+* Helpers: `scripts/luisa_build.py {build|run|ctest}`,
+  `scripts/luisa_standalone.py [backend]`, and
+  `scripts/luisa_check_compile.py <file> --syntax` (single-TU syntax/instantiation
+  check that borrows the exact CMake flags from `build/compile_commands.json`).
+
+---
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

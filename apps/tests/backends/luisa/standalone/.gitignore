@@ -1,0 +1,3 @@
+# Throwaway build trees for the standalone harness (see CMakeLists.txt).
+build/
+build-*/

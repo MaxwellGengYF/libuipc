@@ -9,42 +9,16 @@
  * Builds in-tree (Catch2 via uipc_add_test) or standalone (see
  * luisa_test_shim.h and apps/tests/backends/luisa/standalone/CMakeLists.txt).
  *********************************************************************/
-#include "luisa_test_shim.h"
-
-#include <luisa_device/luisa_device.h>
+#include "luisa_test_runtime.h"
 
 #include <cmath>
 #include <cstdint>
 #include <numeric>
 #include <vector>
 
-namespace lud = uipc::backend::luisa::luisa_device;
-
-// LC derives its runtime/builtin-data directory from the program path, so the
-// tests must pass a real one (argv[0]) rather than a placeholder string.
-#if defined(UIPC_LUISA_TESTS_STANDALONE)
-#define UIPC_TEST_PROGRAM_PATH ::uipc_luisa_test::program_path()
-#else
-#define UIPC_TEST_PROGRAM_PATH lud::default_program_path()
-#endif
-
-namespace
-{
-// The Runtime is process-wide; initialize it once on first use.
-lud::Runtime& runtime(const char* backend = "cuda")
-{
-    auto& rt = lud::Runtime::instance();
-    if(!rt.initialized())
-    {
-        rt.init(backend, UIPC_TEST_PROGRAM_PATH);
-    }
-    return rt;
-}
-}// namespace
-
 TEST_CASE("runtime_init", "[luisa][device]")
 {
-    auto& rt = runtime();
+    auto& rt = test_runtime();
     CHECK(rt.initialized());
     // idempotent
     rt.init("cuda", UIPC_TEST_PROGRAM_PATH);
@@ -57,7 +31,7 @@ TEST_CASE("runtime_init", "[luisa][device]")
 
 TEST_CASE("buffer_ops", "[luisa][device]")
 {
-    runtime();
+    test_runtime();
 
     lud::LDeviceBuffer<double> buf;
     CHECK(buf.size() == 0u);
@@ -118,7 +92,7 @@ TEST_CASE("buffer_ops", "[luisa][device]")
 
 TEST_CASE("device_var_scalar", "[luisa][device]")
 {
-    runtime();
+    test_runtime();
     lud::LDeviceVar<double> v;
     v.copy_from(42.0);
     lud::main_stream().synchronize();
@@ -127,7 +101,7 @@ TEST_CASE("device_var_scalar", "[luisa][device]")
 
 TEST_CASE("parallel_for", "[luisa][device]")
 {
-    runtime();
+    test_runtime();
 
     constexpr uint32_t N = 4096u;
     lud::LDeviceBuffer<double> out;
@@ -159,7 +133,7 @@ TEST_CASE("parallel_for", "[luisa][device]")
 
 TEST_CASE("stream_commands", "[luisa][device]")
 {
-    runtime();
+    test_runtime();
 
     constexpr uint32_t N = 1024u;
     lud::LDeviceBuffer<double> a, b;
@@ -194,7 +168,7 @@ TEST_CASE("stream_commands", "[luisa][device]")
 
 TEST_CASE("atomic_and_reductions", "[luisa][device]")
 {
-    runtime();
+    test_runtime();
 
     constexpr uint32_t N = 8192u;
     lud::LDeviceBuffer<double> values;
@@ -244,7 +218,7 @@ TEST_CASE("atomic_and_reductions", "[luisa][device]")
 
 TEST_CASE("kernel_print", "[luisa][device]")
 {
-    runtime();
+    test_runtime();
     lud::LDeviceBuffer<double> buf;
     buf.resize(4u);
 
@@ -264,20 +238,4 @@ TEST_CASE("kernel_print", "[luisa][device]")
     bool ok = true;
     for(auto v : host) ok = ok && std::abs(v - 1.0) < 1e-12;
     CHECK(ok);
-}
-
-// Explicit teardown.
-//
-// LuisaCompute's Context must be destroyed before the LC runtime modules are
-// unloaded; relying on the process-wide static destructor alone crashes during
-// DLL detach on Windows. This case is declared last so that Catch2 (which runs
-// cases in declaration order) tears the runtime down before main returns.
-TEST_CASE("zzz_runtime_shutdown", "[luisa][device]")
-{
-    auto& rt = lud::Runtime::instance();
-    if(rt.initialized())
-    {
-        rt.shutdown();
-    }
-    CHECK(!rt.initialized());
 }

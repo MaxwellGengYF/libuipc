@@ -1,8 +1,5 @@
-# Scratch area: throwaway build trees, logs and captured runs for the LC spike.
-*.log
-*.exe
-*.dll
-*.lib
-*.pdb
-*.obj
-build/
+# Scratch area: throwaway build trees, logs, probes and captured runs for the
+# LuisaCompute port. Everything here is disposable -- the reusable helpers live in
+# scripts/luisa_*.py.
+*
+!.gitignore

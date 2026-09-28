@@ -96,28 +96,9 @@ struct Registrar
         }                                                                    \
     } while(false)
 
-int main(int argc, char** argv)
-{
-    std::setvbuf(stdout, nullptr, _IONBF, 0);  // unbuffered: keep output on crash
-    if(argc > 0 && argv && argv[0]) { ::uipc_luisa_test::program_path() = argv[0]; }
-    const char* backend = (argc > 1 && argv[1]) ? argv[1] : "cuda";
-    std::printf("== luisa backend tests (standalone) backend=%s ==\n", backend);
-    int total = 0;
-    for(auto& c : ::uipc_luisa_test::cases())
-    {
-        ++total;
-        const int before = ::uipc_luisa_test::failures();
-        std::printf("-- %s\n", c.name.c_str());
-        c.fn();
-        if(::uipc_luisa_test::failures() == before)
-        {
-            std::printf("   [ok]\n");
-        }
-    }
-    const int failed = ::uipc_luisa_test::failures();
-    std::printf("== %d cases, %d checks failed ==\n", total, failed);
-    return failed == 0 ? 0 : 1;
-}
+// The standalone `main` lives in standalone_main.cpp (compiled only when
+// UIPC_LUISA_TESTS_STANDALONE is defined) so that any number of test sources can
+// share this header. In-tree, Catch2's catch_main supplies `main`.
 
 #else// in-tree: Catch2
 
