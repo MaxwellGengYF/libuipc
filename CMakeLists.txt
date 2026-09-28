@@ -35,6 +35,11 @@ set(UIPC_USD_INSTALL_DIR "" CACHE PATH
 option(UIPC_WITH_CUDA_BACKEND "Build with CUDA backend" ON)
 option(UIPC_WITH_CUDA_LEGACY_COLLISION
        "Build legacy CUDA broad-phase trajectory filters" ON)
+option(UIPC_WITH_LUISA_BACKEND
+       "Build with the LuisaCompute backend (requires LuisaCompute; no nvcc)" OFF)
+# LuisaCompute source root; its install prefix is expected at <root>/install.
+set(LUISA_COMPUTE_ROOT "C:/dev/LuisaCompute" CACHE PATH
+    "LuisaCompute source root used by the luisa backend (install at <root>/install)")
 # if MAC OS, disable CUDA backend
 if(APPLE)
     # Force OFF

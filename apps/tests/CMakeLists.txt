@@ -35,6 +35,10 @@ function(uipc_add_test name)
         set(is_gpu_test ON)
     endif()
 
+      if(UIPC_WITH_LUISA_BACKEND AND name STREQUAL "backend_luisa")
+          set(is_gpu_test ON)
+      endif()
+
     if(is_gpu_test)
         set_tests_properties(uipc.${name} PROPERTIES
             LABELS "gpu"

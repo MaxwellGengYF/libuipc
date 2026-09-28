@@ -9,6 +9,7 @@ option("github_actions", {default = false})
 
 option("backend_cuda", {default = true, description = "Build with CUDA backend"})
 option("cuda_legacy_collision", {default = true, description = "Build legacy CUDA broad-phase trajectory filters"})
+option("backend_luisa", {default = false, description = "Build with the LuisaCompute backend (no nvcc)"})
 option("usd", {default = false, description = "Build with OpenUSD support"})
 option("vdb", {default = false, description = "Build with OpenVDB support"})
 
