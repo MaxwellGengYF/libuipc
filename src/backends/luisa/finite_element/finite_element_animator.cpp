@@ -10,9 +10,11 @@
  * T5.3 — FiniteElementAnimator (reference:
  * src/backends/cuda/finite_element/finite_element_animator.cu).
  *
- * Ported in full except the two T5.4 pieces named in the header's scope note
- * (`Impl::assemble`'s definition and
- * `FiniteElementAnimatorLinearSubsystemReporter`).
+ * T5.3 ported everything except the two T5.4a pieces the header's scope note
+ * names; T5.4a adds them at the bottom of this file
+ * (`FiniteElementAnimator::assemble`'s definition and
+ * `FiniteElementAnimatorLinearSubsystemReporter`), so the file is now complete
+ * against the reference.
  *
  * Notes:
  *  * `Impl::init` sorts the constraints by uid and builds the uid→index map, then
@@ -251,15 +253,65 @@ void FiniteElementAnimator::ReportExtentInfo::check(std::string_view name) const
 namespace uipc::backend::luisa
 {
 // ---------------------------------------------------------------------------
-// T5.4 continues here: `FiniteElementAnimatorLinearSubsystemReporter`
-// (reference: the FEMLinearSubsystemReporter-derived class at the bottom of
-// finite_element_animator.cu, reporting the constraint gradient/Hessian extents
-// and calling `animator->assemble(info)`) plus the definition of
-// `FiniteElementAnimator::assemble(FEMLinearSubsystemReporter::AssembleInfo&)`.
-// Both need `FEMLinearSubsystem::AssembleInfo`'s accessor definitions and the
-// linear subsystem's Impl members, which T5.4 owns (see finite_element_animator.h
-// and fem_linear_subsystem.h).  Nothing here ODR-uses them, so T5.3 links.
+// T5.4a: `FiniteElementAnimator::assemble` (declared in T5.3, deliberately left
+// undefined) and `FiniteElementAnimatorLinearSubsystemReporter` (the reference's
+// second class at the bottom of finite_element_animator.cu).
+//
+// `assemble` is the reference's pure fan-out over the constraints, in the
+// *unsorted* `constraints.view()` order with each constraint's own `m_index`
+// (the sorted index the offset tables are keyed by) -- the same order `step()`
+// and the extent fan-out use.
 // ---------------------------------------------------------------------------
+void FiniteElementAnimator::assemble(FEMLinearSubsystemReporter::AssembleInfo& info)
+{
+    // compute the gradient and hessian
+    for(auto constraint : m_impl.constraints.view())
+    {
+        ComputeGradientHessianInfo this_info{&m_impl,
+                                             constraint->m_index,
+                                             info.dt(),
+                                             info.gradients(),
+                                             info.hessians(),
+                                             info.gradient_only()};
+        constraint->compute_gradient_hessian(this_info);
+    }
+}
+
+class FiniteElementAnimatorLinearSubsystemReporter final : public FEMLinearSubsystemReporter
+{
+  public:
+    using FEMLinearSubsystemReporter::FEMLinearSubsystemReporter;
+
+    SimSystemSlot<FiniteElementAnimator> animator;
+
+    void do_build(BuildInfo& info) override
+    {
+        (void)info;
+        animator = require<FiniteElementAnimator>();
+    }
+
+    void do_init(InitInfo& info) override { (void)info; }
+
+    void do_report_extent(ReportExtentInfo& info) override
+    {
+        SizeT gradient_count =
+            animator->m_impl.constraint_gradient_offsets_counts.total_count();
+        info.gradient_count(gradient_count);
+
+        SizeT hessian_count = 0;
+        if(!info.gradient_only())
+            hessian_count =
+                animator->m_impl.constraint_hessian_offsets_counts.total_count();
+        info.hessian_count(hessian_count);
+    }
+
+    void do_assemble(AssembleInfo& info) override
+    {
+        animator->assemble(info);
+    }
+};
+
+REGISTER_SIM_SYSTEM(FiniteElementAnimatorLinearSubsystemReporter);
 
 class FiniteElementAnimatorLineSearchSubreporter final : public FEMLineSearchSubreporter
 {

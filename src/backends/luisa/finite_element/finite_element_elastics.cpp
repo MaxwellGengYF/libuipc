@@ -2,6 +2,7 @@
 #include <finite_element/finite_element_constitution.h>
 #include <finite_element/finite_element_extra_constitution.h>
 #include <finite_element/fem_line_search_subreporter.h>
+#include <finite_element/fem_linear_subsystem_reporter.h>
 #include <utils/report_extent_check.h>
 
 /*************************************************************************************************
@@ -85,10 +86,8 @@ lla::LTripletMatrixView<Float, 3, 3> FiniteElementElastics::ComputeGradientHessi
 }
 
 // ---------------------------------------------------------------------------
-// T5.3: the energy half of the reference's two fan-outs.
-// `Impl::assemble(...)` and `FiniteElementElasticsLinearSubsystemReporter` below
-// are T5.4's -- they need `FEMLinearSubsystem::AssembleInfo`'s accessor
-// definitions and the linear subsystem's Impl members, which T5.4 owns.
+// T5.3: the energy half of the reference's two fan-outs.  (T5.4a adds the
+// assembly half further down.)
 // ---------------------------------------------------------------------------
 void FiniteElementElastics::Impl::compute_energy(FEMLineSearchReporter::ComputeEnergyInfo& info)
 {
@@ -113,6 +112,79 @@ void FiniteElementElastics::Impl::compute_energy(FEMLineSearchReporter::ComputeE
                 offset,
                 constitutions.size() + extras.size());
 }
+
+// ---------------------------------------------------------------------------
+// T5.4a continues here: the *assembly half* of the reference's two fan-outs.
+// T5.3 ported the energy half (`compute_energy` + the line-search subreporter);
+// `Impl::assemble` and `FiniteElementElasticsLinearSubsystemReporter` complete
+// the file.  Nothing in the constitution headers changed: the fan-out reaches
+// them through `FiniteElementConstitution::compute_gradient_hessian`, exactly as
+// the reference does.
+// ---------------------------------------------------------------------------
+void FiniteElementElastics::Impl::assemble(FEMLinearSubsystem::AssembleInfo& info)
+{
+    auto constitutions = fem().constitutions.view();
+    auto extras        = fem().extra_constitutions.view();
+
+    auto offset = 0;
+
+    for(auto&& [I, c] : enumerate(constitutions))
+    {
+        ComputeGradientHessianInfo this_info{
+            this, I, info.gradient_only(), info.dt(), info.gradients(), info.hessians()};
+
+        c->compute_gradient_hessian(this_info);
+    }
+    offset += constitutions.size();
+
+    for(auto&& [I, c] : enumerate(extras))
+    {
+        ComputeGradientHessianInfo this_info{
+            this, offset + I, info.gradient_only(), info.dt(), info.gradients(), info.hessians()};
+        c->compute_gradient_hessian(this_info);
+    }
+    offset += extras.size();
+
+    UIPC_ASSERT(offset == constitutions.size() + extras.size(),
+                "offset mismatching, offset = {}, expected = {}",
+                offset,
+                constitutions.size() + extras.size());
+}
+
+class FiniteElementElasticsLinearSubsystemReporter final : public FEMLinearSubsystemReporter
+{
+  public:
+    using FEMLinearSubsystemReporter::FEMLinearSubsystemReporter;
+
+    SimSystemSlot<FiniteElementElastics> elastics;
+
+    FiniteElementElastics::Impl& el() { return elastics->m_impl; }
+
+    void do_build(BuildInfo& info) override
+    {
+        (void)info;
+        elastics = require<FiniteElementElastics>();
+    }
+
+    void do_init(InitInfo& info) override { (void)info; }
+
+    void do_report_extent(ReportExtentInfo& info) override
+    {
+        auto grad_count = el().constitution_gradient_offsets_counts.total_count();
+        info.gradient_count(grad_count);
+        SizeT hess_count = 0;
+        if(!info.gradient_only())
+            hess_count = el().constitution_hessian_offsets_counts.total_count();
+        info.hessian_count(hess_count);
+    }
+
+    void do_assemble(AssembleInfo& info) override
+    {
+        el().assemble(info);
+    }
+};
+
+REGISTER_SIM_SYSTEM(FiniteElementElasticsLinearSubsystemReporter);
 
 class FiniteElementElasticsLineSearchSubreporter final : public FEMLineSearchSubreporter
 {
@@ -144,10 +216,4 @@ class FiniteElementElasticsLineSearchSubreporter final : public FEMLineSearchSub
 };
 
 REGISTER_SIM_SYSTEM(FiniteElementElasticsLineSearchSubreporter);
-
-// ---------------------------------------------------------------------------
-// T5.4 continues here: `FiniteElementElasticsLinearSubsystemReporter`
-// (reporting the constitution gradient/Hessian extents and calling
-// `el().assemble(info)`) and `FiniteElementElastics::Impl::assemble(...)`.
-// ---------------------------------------------------------------------------
 }  // namespace uipc::backend::luisa

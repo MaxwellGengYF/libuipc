@@ -22,20 +22,14 @@
  *     this file: it is the only `Constraint`-type constitution the ported frontend
  *     can write into a FEM geometry's `constraint_uids` in this task.
  *
- * SCOPE NOTE (T5.3): two pieces of the reference's `FiniteElementAnimator` are
- * deferred, on purpose, because they need the T5.4 assembly plumbing:
- *   - `Impl::assemble(FEMLinearSubsystemReporter::AssembleInfo&)` is *declared*
- *     here but not defined: its body calls
- *     `AssembleInfo::{gradients,hessians,dt,gradient_only}()`, and those four are
- *     declared-but-undefined in T5.1's `fem_linear_subsystem.h` scaffold (T5.4
- *     defines them next to the Impl members they read).  Nothing ODR-uses it in
- *     T5.3 (there is no linear subsystem yet), so the class links; T5.4 adds the
- *     definition.
- *   - `FiniteElementAnimatorLinearSubsystemReporter` (the reference's second class
- *     at the bottom of the .cu, and with it the `REGISTER_SIM_SYSTEM`) is T5.4's:
- *     it only exists to feed `Impl::assemble`.  The *line-search* subreporter
- *     (`FiniteElementAnimatorLineSearchSubreporter`) is ported here, because the
- *     line-search path is complete.
+ * SCOPE NOTE (T5.3, closed by T5.4a): the reference's `assemble()` was *declared*
+ * here but not defined in T5.3, because its body calls
+ * `AssembleInfo::{gradients,hessians,dt,gradient_only}()` and those four were
+ * declared-but-undefined in T5.1's `fem_linear_subsystem.h` scaffold; nothing
+ * ODR-used it then, so the class linked.  **T5.4a defines it** (and the
+ * `FiniteElementAnimatorLinearSubsystemReporter` that drives it) at the bottom of
+ * finite_element_animator.cpp, next to the line-search subreporter T5.3 had
+ * already ported.  The declaration below is unchanged.
  * Everything else -- the uid→index map, the geometry-range offsets, the energy /
  * gradient / Hessian extents and `compute_energy` -- is the reference's.
  *********************************************************************/
@@ -200,7 +194,7 @@ class FiniteElementAnimator final : public Animator
     void compute_energy(FEMLineSearchSubreporter::ComputeEnergyInfo& info);  // only be called by FiniteElementAnimatorLineSearchSubreporter
 
     friend class FiniteElementAnimatorLinearSubsystemReporter;
-    // T5.4 defines this next to its assembly plumbing (see the scope note above).
+    // defined in finite_element_animator.cpp (T5.4a; see the scope note above)
     void assemble(FEMLinearSubsystemReporter::AssembleInfo& info);  // only be called by FEMLinearSubsystem
 
     Impl m_impl;

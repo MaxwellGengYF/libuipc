@@ -1985,6 +1985,187 @@ depend on; the first five are the ones a later task will hit again.
     over synthetic buffers, and `fem_dynamics_device_vs_host` proves they agree with their
     host instantiation bitwise (measured 61/61 bitwise, worst abs 0.0).
 
+### 7.19 Patterns established in T5.4a (FEM linear subsystem & the global linear system's assembly half)
+M5 batch **T5.4a** ports `linear_system/global_linear_system.{h,cpp}` (+
+`global_linear_system_function.h`), `linear_system/diag_linear_subsystem.{h,cpp}`,
+`linear_system/local_preconditioner.{h,cpp}`,
+`finite_element/fem_dytopo_effect_receiver.{h,cpp}`,
+`finite_element/fem_linear_subsystem.{h,cpp}` (+ `fem_linear_subsystem_function.h`), the
+*assembly half* of `finite_element_elastics.{h,cpp}` (the fan-out + its reporter) and
+`FiniteElementAnimator::assemble` + `FiniteElementAnimatorLinearSubsystemReporter`.  The rules
+below are what the port turned out to depend on; the first one is the split the brief calls the
+crux of the task.
+
+1. **`GlobalLinearSystem` is ported as "everything except the solve path", and the split is a
+   *reachability* decision, not a style one.**  In the reference the assembly is only ever
+   triggered by `solve()` (`_update_subsystem_extent` -> `_assemble_linear_system` ->
+   `_assemble_preconditioner` -> `solve_linear_system`), and `solve()` needs `IterativeSolver`,
+   `LinearPCG` (+ the CUDA-graph fused variant), `GlobalPreconditioner`,
+   `OffDiagLinearSubsystem` and `CurrentFrameDiffDofReporter` — none of which exist in this
+   backend.  Ported **now**: the whole public surface (every nested `*Info`, the friend set,
+   `add_*()`, `dof_count()`, `last_solve_iterations()`, `compute_gradient()`, `ctx()`, the type
+   aliases) and `Impl::{init, build_linear_system, _update_subsystem_extent,
+   _assemble_linear_system, _assemble_preconditioner, distribute_solution, accuracy_statisfied,
+   compute_gradient, diag_norm, mass_norm}` + the `*Info::extent/dof_offset/dof_count`
+   definitions.  **Deferred to T8.3, declared-but-undefined** (each with a `SCOPE NOTE (T8.3)` in
+   `global_linear_system.h` and `global_linear_system.cpp`): `solve()`,
+   `Impl::solve_linear_system/apply_preconditioner/spmv/spmv_dot/matrix_data_ptrs`,
+   `_dump_A_b`/`_dump_x`, the two `SimEngine`-only norm entries `diag_norm`/`mass_norm`, the
+   `need_debug_dump`/`debug_dump_path` config read (so `do_build()` is an empty body — it is a
+   pure-virtual override) and the graph-stability key `triplet_count_dev` (its only consumer is
+   `spmv_dot`), which is why `build_linear_system()` does *not* upload the nnz count.  The
+   off-diag branches (`OffDiagLinearSubsystem` is T8.3's type; T5.1 rule 13 forbids a placeholder)
+   are marked at each site and unreachable, and `SimEngine` is **not** wired (the reference's
+   `do_init` require+init and the `advance()`-side solve stay T8.4/T8.3) — the engine's own
+   comment already reserves it: "GlobalLinearSystem -> Phase 8".
+2. **A nested `*Info`/`Impl` class is the test hook when the engine is not wired — plus exactly
+   one access deviation.**  `GlobalLinearSystem::Impl` and `FEMLinearSubsystem::Impl` are *public*
+   nested classes with public members, so a test can instantiate its own `Impl`, register the
+   *real* subsystem into its `diag_subsystems` collection and drive `Impl::init()` /
+   `_update_subsystem_extent()` / `_assemble_linear_system()` / `compute_gradient()` on the real
+   systems (the `fem_linear_layout` case does exactly that and reads
+   `subsystem_triplet_offsets_counts.counts()[0] == 31`).  The one thing that is *not* reachable
+   that way is the real `GlobalLinearSystem`'s own `Impl`, so the port declares
+   **`GlobalLinearSystem::init()` public** (the reference keeps it private + `friend class
+   SimEngine`; T5.1's rule 9 forbids widening the friend list, and a test-only friend or hook
+   would be worse).  `dof_count()` needs it (`UIPC_ASSERT(m_impl.initialized, ...)` **aborts**,
+   not throws), and with it `dof_count()`, the geometry `dof_offset`/`dof_count` meta attributes
+   and `compute_gradient()` all become reachable.  Everything else keeps the reference's access
+   levels; `solve()` and the engine wiring stay private/T8.3.
+3. **The assembly kernels are factored into `fem_linear_subsystem_function.h`, generic over the
+   view flavour *and* the scalar type.**  Same recipe as T5.2's `utils/matrix_assembler.h` and
+   T5.3's `*_detail` namespaces: the kernel lambda builds the device views and calls one
+   `fem_linear_subsystem_detail::*` routine (`clear_fixed_gradient_row`, `fix_hessian_row`,
+   `scatter_gradient_row`, `scatter_dytopo_gradient_row`, `copy_dytopo_hessian_row`,
+   `retrieve_solution_row`, `diag_block_norm_row`, `mass_block_norm_row`), which the unit test
+   also instantiates with `storage::memory` views over host arrays.  Two consequences worth
+   remembering:
+   * the routines take the `is_fixed` accessor as a **callable** (`is_fixed_at(i)`): the host
+     flavour indexes a host array, the device flavour reads a buffer, and both are
+     `[&](auto&& i) { return ...; }` at the call site;
+   * a *read* must go through `read(i)`/`read_element(v, i)`, never `v(i)`: the non-const
+     flavour's `operator()` hands out an *assignable proxy*, so `zero_of<decltype(mass(i))>()`
+     fails to compile (measured C3313/C2440) — `mass.read(i)` is the value.
+4. **Branchless where the predicate is device data — but a *store* can be load-bearing, so
+   `diag_norm` returns the guards instead.**  `if(is_fixed(i)) return;` becomes "scatter exactly
+   0" (the reference's own k1 zeroes those rows anyway), and "write `Zero()`/`Identity()`
+   depending on `i != j`" becomes one element-wise select of two candidates.  The **one place
+   that must not be branchless** is `diag_norm`: several triplets of one row address the same
+   `diag_blocks_norm` segment, so a non-diagonal thread that wrote back the value it read would
+   race with the diagonal thread's store.  `diag_block_norm_row` therefore *returns*
+   `{index, value, out_of_window, is_diagonal}` and the caller gates the store (`$if` in the
+   shipped kernel, an `if` on the host) — and it *clamps* the returned index into
+   `[0, segment_count)`, because the reference's grid is sized by the triplet count while the
+   segment window is the subsystem's dof window (cookbook §7.12 rule 2).
+5. **The dof layout (`uid` order, offsets) and the extent budget are factored host routines.**
+   `global_linear_system_detail::plan_dof_layout(uids, dof_counts)` is the reference's
+   `std::ranges::sort(..., by uid)` + exclusive scan, and
+   `fem_linear_subsystem_detail::plan_extent(vertex_count, gradient_only, has_complement,
+   reporter_grad_counts, reporter_hess_counts, dytopo_grad, dytopo_hess)` is
+   `Impl::report_extent`'s arithmetic (`[KineticG | OtherG ... | DyTopoG]` /
+   `[KineticH | OtherH ... | DyTopoH]`), with `check_gradient_only(gradient_only)` as the
+   reference's issue-#295 assertion turned into a *predicate* (a test may not call the aborting
+   `UIPC_ASSERT`).  The shipped `Impl::init`/`report_extent` call them **and** assert their result
+   equals the reference-order accumulation, so the two definitions cannot drift.  Measured on the
+   two-body scene: hessian blocks 8 (kinetic) + 2x10 (elastics) + 0 (animator) + 3 (the test's
+   mock) = **31**, dofs 24 — and the real chain reports 31.
+ **Watch the uid collision for this one**: the shared test binary registers T5.1's *mock* dim-3
+ constitution with ARAP's uid (9), and the method hands a `(dim, uid)` geometry group to the
+ *first* system registered with that uid.  Measured: in a *full-suite* run ARAP owned no
+ geometry in a scene that applied `ARAP`, the elastics reporter reported **1** Hessian block
+ instead of 20, and the hand-derived 31 became 12 (the layout case *failed*, which is how it was
+ found -- T5.1 rule 12 / T5.2 rule 12).  The scene cases therefore apply `StableNeoHookean`
+ (uid 10, unique), which keeps the hand-derived numbers valid in both the filtered and the full
+ run.
+6. **`AssembleInfo::{gradients,hessians}()` is the fan-out slice, and the hessian slice is empty
+   in gradient-only mode.**  `gradients()` = `reporter_gradients.view().subview(offset, count)`
+   with `(offset, count)` from the reporter's entry in `reporter_gradient_offsets_counts`;
+   `hessians()` slices the subsystem's Hessian window the same way.  A reporter must report
+   `hessian_count == 0` when `gradient_only()` (both the subsystem and
+   `FEMLinearSubsystemReporter::report_extent` assert it), so `subview(0, 0)` on the
+   *default-constructed* (null-handle) hessian view is the call a gradient-only chain makes — it
+   is legal (`LBufferView::subview(0, 0)` does not throw) and the Hessian stage is predicated
+   away.
+7. **A reporter's write needs the *slice* handles, not the view's.**  `AssembleInfo` hands out a
+   *view* whose `row_indices()`/`values()` are still the whole-buffer handles and whose
+   `triplet_index_offset()`/`subvector_offset()` carry the slice: the writer does
+   `view.row_indices().subview(offset, count)` and `view.values().subview(offset * 9u, count *
+   9u)` (T5.3's kinetic kernel is the same idiom) and then builds the device view with
+   `from_handles_full(..., triplet_index_offset = 0, ...)` so the routine's local index space is
+   the slice.  The test-local reporter in `luisa_fem_linear_test.cpp` does exactly that and writes
+   its two doublets/three triplets through `write_element_gradient`/`write_element_hessian` — the
+   same routines a constitution runs.
+8. **`write_element_gradient`/`write_element_hessian` are the fan-out write with the `upper_LR`
+   swap, and their offset parameter must be generic.**  They are thin, test-reachable wrappers
+   over T5.2's `DoubletVectorAssembler`/`TripletMatrixAssembler` (`segment<N>`/`half_block<N>`), so
+   a 5-tet mesh assembles into a `DeviceTripletMatrix` through the *ported* assembly code: 10
+   `(row, col, Float[3][3])` triples per tet, at *global* vertex indices, ascending `(row, col)`
+   (the swap), 50 triplets for 5 tets -> `ge2sym` (a no-op for an already upper-packed input,
+   which is why `triplet_count()` is unchanged) -> `convert` -> 23 unique blocks (5 of them
+   exactly zero, which the oracle reproduces) -> `rbk_sym_spmv`.  The offset parameter is
+   `const OffsetT&`, not `IndexT`: the host passes an `int32_t`, a kernel passes its
+   `Var<int32_t>` slice offset (measured C2672 with a fixed `IndexT`).
+9. **`MatrixConverter` + `Spmv` are the end-to-end oracle, and the dense model must be built in a
+   *different* order.**  `converter.ge2sym(A)` keeps `row <= col` entries in stable order (it does
+   not double anything: the mirroring is `Spmv`'s symmetric convention, `a * B * x_j` into row `i`
+   plus `a * B^T * x_i` into row `j` for `i != j`), so a dense `A = sum_e H_e` built with plain
+   Eigen in element order and multiplied by the same `x` must equal the SpMV result.  Measured on
+   the five-tet mesh (24 dofs, `|y|max` 2.66e2): worst **1.34e-15** relative, and the assembled
+   COO blocks match the hand-derived sums to **2.18e-16**; the device triplet write equals the
+   host instantiation **bitwise** (worst 0.0).
+10. **The extent path and the *gradient* assembly are what a scene can prove; the Hessian
+    assembly needs the test-local `Impl`.**  With the engine not wired, `compute_gradient()` is
+    the only public entry that runs `Impl::assemble` on the *real* reporters: it reports extents
+    with `gradient_only = true`, runs `_assemble_kinetic` (the kinetic doublets) +
+    `_assemble_reporters` (the elastics/animator reporters -> the constitution fan-out) and then
+    the shared scatters + the fixed-row clear.  Its observable is the assembled gradient, and it
+ matches the frontend's own laws (kinetic `m (x - x~)` from T5.3 rule 1 + the element gradients
+ scattered at the element's global vertex indices + the mock reporter's known writes) to
+ **5.20e-15** relative at `max |g| = 1.008e+01`, with the fixed vertex *exactly* 0.  Two things
+ make that number non-vacuous, and both cost one round to learn:
+ * **deform the state first** (through `FiniteElementStateAccessorFeature`, T5.3 rule 2).  At
+   the rest state `F == I` a well-behaved hyperelastic gradient is *exactly* zero (checked for
+   both ARAP and SNH: `dE/dF = mu F - mu F^-T + lambda log(J) F^-T = 0` at `F = I`), so the
+   constitution term would be invisible and the comparison would pin only the kinetic term.
+   Seeding `x -> x + (0.03(i+1), -0.02 i, 0.01(i+2))` makes it load-bearing;
+ * **read the *stored* moduli, not `apply_to`'s arguments.**  `StableNeoHookean::apply_to`
+   reparameterises them (`snh_mu = 4 mu / 3`, `snh_lambda = lambda + 5 mu / 6`, see
+   src/constitution/stable_neo_hookean.cpp); an oracle that feeds `moduli.mu()`/`lambda()` into
+   `snh_3d_detail::tet_gradient` is off by **1.84e-2** relative -- 13 orders of magnitude above
+   the bound, and the failure *pattern* (a per-element constant offset, identical for two
+   *congruent* tets) is what identifies it as an input error rather than a formula error (T5.2
+   rule 26's 'a constant ratio is never rounding').
+ Use `compute_gradient()`: it is the cheapest end-to-end evidence for a fan-out chain, and it
+ needs nothing but `init()` + one `advance()` (frame 0 is not usable -- `set_dof_info` asserts
+ `frame > 0`).
+11. **`frame()` is *not* on the backend `SimEngine`; it comes from `core::IEngine`.**  The
+    reference's `sim_engine->frame()` therefore compiles unchanged in the port even though neither
+    backend's `SimEngine` declares it (`get_frame()` is the private override) — no mapping was
+    needed, but `Impl::assemble`'s `set_dof_info(frame, ...)` is the line to check when a future
+    task touches the frame counter.
+12. **What T5.4a could not verify (recorded so T8.3/T5.4b do not assume it).**  The assemble ->
+    solve path (`solve()`, `build_linear_system`'s converter step, `distribute_solution`,
+    `apply_preconditioner`, `spmv`, `diag_norm`/`mass_norm` *as shipped kernels*),
+    `_assemble_linear_system`'s submatrix windows, the dytopo-effect branch (contact is disabled
+    in every scene of this backend, so `FEMDyTopoEffectReceiver` is ported but
+    `_assemble_dytopo_effect` never runs) and `_assemble_preconditioner`'s global branch.  Their
+    *bodies* are covered by the factored routines' device-vs-host case (198 dumped values, bitwise;
+    106 non-zero) except the submatrix-window arithmetic, which is T8.3's to exercise.
+13. **The `upper_LR` swap is *not* a cheap perturbation target any more.**  Disabling it in
+    `utils/matrix_assembler.h` changes the *constitution* kernels' IR (every constitution
+    assembles through `half_block`), so the ARAP gradient/Hessian shader is re-JIT'd: the
+    `[fem_linear]` run did not finish in **15 minutes** (T5.2 measured 962 s for that one shader).
+    For a non-vacuity perturbation of the assembly, break something in *this* batch's own factored
+    routines (the fixed-mask select in `scatter_gradient_row` costs ~48 s including the rebuild
+    and fails exactly the named assertions).
+14. **The MSVC `luisa_check_compile.py` inner loop needs `--filter /backends/luisa/` for a
+    *backend* TU.**  The script borrows the flags of `luisa_device_tests.cpp` (the *test* target)
+    by default, and that target's include order puts `src/backends/none` **before**
+    `src/backends/luisa`, so a backend source's `#include <sim_engine.h>` resolves to the `none`
+    backend's header and every `SimEngine` use reports C2027 "incomplete type" (a false positive:
+    the real build is fine).  `python scripts/luisa_check_compile.py <backend-src> --syntax
+    --filter /backends/luisa/` is the invocation to use.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
