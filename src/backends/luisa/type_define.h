@@ -181,6 +181,7 @@ static_assert(alignof(LMatrix2x2) == alignof(Float));
 {
     return Vector6{v(0), v(1), v(2), v(3), v(4), v(5)};
 }
+
 [[nodiscard]] inline LMatrix3x3 to_luisa(const Matrix3x3& m) noexcept
 {
     LMatrix3x3 r;

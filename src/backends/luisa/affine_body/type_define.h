@@ -61,6 +61,10 @@ namespace uipc::backend::luisa
 using Matrix3x12  = uipc::Matrix<Float, 3, 12>;
 using Matrix12x3  = uipc::Matrix<Float, 12, 3>;
 using Matrix24x24 = uipc::Matrix<Float, 24, 24>;  // joint/constraint Hessians (T6.3/T6.4)
+// T6.3b2: the prismatic joint-limit constitution keeps one *pair* state per entry
+// (`ref_qs`, the reference's `DeviceBuffer<Vector24>` = `[q_l ; q_r]`), the same
+// "device element type with no home in the port" situation as T6.3b1's `LVector6`.
+using Vector24    = uipc::Matrix<Float, 24, 1>;
 
 // ---------------------------------------------------------------------------
 //  Device element types
@@ -69,6 +73,7 @@ using LVector12    = lps::LVec<Float, 12>;
 using LMatrix12x12 = lps::LMat<Float, 12, 12>;
 using LMatrix3x12  = lps::LMat<Float, 3, 12>;
 using LMatrix12x3  = lps::LMat<Float, 12, 3>;
+using LVector24    = lps::LVec<Float, 24>;
 
 static_assert(sizeof(LVector12) == sizeof(Vector12));
 static_assert(sizeof(LMatrix12x12) == sizeof(Matrix12x12));
@@ -78,6 +83,37 @@ static_assert(sizeof(LMatrix12x3) == sizeof(Matrix12x3));
 // byte size and the (column-major) storage order take part in the buffer ABI.
 static_assert(alignof(LVector12) == alignof(Float));
 static_assert(alignof(LMatrix12x12) == alignof(Float));
+static_assert(sizeof(LVector24) == sizeof(Vector24));
+static_assert(alignof(LVector24) == alignof(Float));
+
+/// Host <-> device crossing for the joint-limit pair state (the T6.3b1 `LVector6`
+/// precedent, byte-identical to Eigen's `Vector24`).
+///
+/// TRAP (measured, T6.3b2): this overload may **not** be reached through
+/// `copy_host_to_device` (global type_define.h) — that helper's `to_luisa(v)` is a
+/// *dependent unqualified* call whose candidate set is the declarations visible at
+/// its own definition point (the global `to_luisa` overloads) plus ADL, and
+/// `Vector24` is an `Eigen::Matrix` alias whose associated namespace is `Eigen`, so
+/// this later-declared overload is not a candidate there.  Eigen's converting
+/// constructor then makes *every* earlier overload viable (Eigen's size check is a
+/// static_assert inside the constructor body, not SFINAE), and the call is
+/// **C2668 ambiguous**.  A *direct* call in a TU that includes this header does see
+/// this overload and resolves by exact match; `AffineBodyPrismaticJointLimit`'s
+/// `do_init` therefore converts element-wise by hand.
+[[nodiscard]] inline LVector24 to_luisa(const Vector24& v) noexcept
+{
+    LVector24 r;
+    for(int i = 0; i < 24; ++i)
+        r(i) = v(i);
+    return r;
+}
+[[nodiscard]] inline Vector24 to_eigen(const LVector24& v) noexcept
+{
+    Vector24 r;
+    for(int i = 0; i < 24; ++i)
+        r(i) = v(i);
+    return r;
+}
 
 // ---------------------------------------------------------------------------
 //  Generic (host `double` or DSL `Var<double>`) views of the two ABD aggregates
@@ -135,6 +171,8 @@ LUISA_STRUCT(uipc::backend::luisa::LVector12, data){};
 LUISA_STRUCT(uipc::backend::luisa::LMatrix12x12, data){};
 LUISA_STRUCT(uipc::backend::luisa::LMatrix3x12, data){};
 LUISA_STRUCT(uipc::backend::luisa::LMatrix12x3, data){};
+// T6.3b2: the prismatic joint-limit's per-entry pair state (`[q_l ; q_r]`).
+LUISA_STRUCT(uipc::backend::luisa::LVector24, data){};
 LUISA_STRUCT(uipc::backend::luisa::ABDJacobi, x_bar){};
 LUISA_STRUCT(uipc::backend::luisa::ABDJacobiDyadicMass,
              m_mass,
@@ -263,6 +301,16 @@ inline void store_vec12(lcrt::Var<LVector12>&                    dst,
 {
     for(int i = 0; i < 12; ++i)
         dst.data[i] = v(i);
+}
+
+/// T6.3b2: the joint-limit's pair state (24 dofs).
+[[nodiscard]] inline lps::LVec<lcrt::Var<Float>, 24> load_vec24(
+    const lcrt::Expr<LVector24>& e) noexcept
+{
+    lps::LVec<lcrt::Var<Float>, 24> v;
+    for(int i = 0; i < 24; ++i)
+        v(i) = e.data[i];
+    return v;
 }
 
 [[nodiscard]] inline lps::LMat<lcrt::Var<Float>, 12, 12> load_mat12x12(

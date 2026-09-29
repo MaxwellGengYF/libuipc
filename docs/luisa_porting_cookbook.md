@@ -3434,6 +3434,260 @@ The rules below are the ones where a joint is *not* just another constitution.
     error** (a parallel batch of GPU compilers had just run), not a defect: the immediate
     re-run passed.  Budget for it when several JIT-heavy runs are launched back to back.
 
+### 7.26 Patterns established in T6.3b2 (ABD joints, batch 2: prismatic, driving, external force, limit)
+
+Scope: the reference's `affine_body_prismatic_joint.{h,cpp}` (uid 20, with its dof reporter
+and time integrator), the *driving* `affine_body_driving_prismatic_joint` (uid 21, an
+`InterAffineBodyConstraint`), the external-force pair
+`affine_body_prismatic_joint_external_force.{h,cpp}` (uid 667, constraint + reporter) and the
+joint limit `affine_body_prismatic_joint_limit.{h,cpp}` (uid 669, a second
+`InterAffineBodyConstitution` gated on `extra_constitution_uids`), plus
+`joint_limit_penalty.h` and the shared arithmetic header
+`affine_body_prismatic_joint_function.h`.  Two generated bodies:
+`sym/affine_body_prismatic_joint.inl` (F01, J01T_G01, J01T_H01_J01, E01, dE01dF01, ddE01ddF01,
+E23, dE23dQ, ddE23ddQ — 1707 statements) and `sym/affine_body_driving_prismatic_joint.inl`
+(F01_q, J01T_G01, J01T_H01_J01, Distance, dxdF01, ddxdF01, E01, dE01dF01, ddE01ddF01 —
+1159).  Test file `apps/tests/backends/luisa/luisa_abd_joint_b_test.cpp`: 8 cases, 402
+assertions.
+
+1. **One header/.cpp pair per uid — keep the joint's own dof reporter / time integrator in
+   the joint's pair.**  The reference has one file per *uid*, so the split here is the
+   reference's own (unlike T6.3b1's fixed/spherical pair): `AffineBodyPrismaticJoint` (20)
+   registers the `AffineBodyPrismaticJointDofReporter` and the
+   `AffineBodyPrismaticJointTimeIntegrator` in the *same* file as the constitution, the
+   driving (21), the external force (667) and the limit (669) get one pair each, and every
+   `REGISTER_SIM_SYSTEM` appears exactly once.  The two shared layers are the arithmetic
+   header (all four systems' laws) and the branchless `joint_limit_penalty.h`.
+
+2. **The prismatic `F01`'s *first three rows* are minus `Ft`.**  Measured, not assumed: the
+   joint's `Ft` is the difference of the two bodies' attachment points, and the pair vector
+   is `F01 = [-Ft ; A_i t_i ; A_j t_j]` — the `Ft` block is the *negated* one (the reference's
+   `rest_c` enters the joint chain with the opposite sign to the driving chain's).  Getting it
+   wrong keeps the *energy* comparison passing (E does not see `F01`'s sign) while G/H break
+   at rel 1.0, i.e. exactly the §7.25 rule 9 species of transcription risk.
+
+3. **`J01` is *constant* for the prismatic joint — and the banner has to be written from a
+   measurement, not from the law's shape.**  `F01` is affine in `q`, so `dF01/dq` does not
+   depend on the state; the file banner initially claimed the opposite and was corrected
+   after the *analytic* J01 was checked against a finite-difference Jacobian
+   (`scratch/t63b2_jac.py`: 1.9e-10 with the correct 9x24 layout, dev 1.0 for the tempting
+   "body-local `12 + 3k + m`" spelling — the same trap as §7.25 rule 9, now caught before a
+   line of C++ was written).  A constant Jacobian is also why the closed-forms case can pin
+   `J01` at 1.3e-10 (10x the FD bound) instead of at 1e-12.
+
+4. **The driving joint negates its *third* block — give it its own `J01q_of`.**
+   `F01_q = [-Ft ; A_i T_i ; -(A_j T_j)]`, so the 9x24 map is *not* the prismatic one, and
+   neither is the limit chain's (its `Distance` is a scalar of the same pair data).  Reusing
+   `J01_of` for the driving or for the limit cost 0.07-1.83 relative error in the oracles —
+   measured, then fixed by three explicitly named Jacobian helpers (`J01_of`, `J01q_of`,
+   `Distance`'s own), each pinned against its own FD.
+
+5. **The driving's `Distance` is the *half* of the axis difference, and its absolute value
+   needs its own derivative chain.**  `Distance = a·(b - c)/2` (a = the `rest_t` axis, b/c =
+   the two attachment points) and the limit consumes `x = |Distance| + offset` with
+   `dx_dq` = `d|Distance|/dq`; the chain E -> dE -> d2E was re-derived by hand in the test
+   and compared against the ported `compute_absolute_distance{,_derivative,_hessian}`
+   (residuals 1.11e-16 / 1.11e-16 device-vs-host, 9.3e-11 in the oracle), so the *scalar*
+   law, its gradient and its Hessian are all pinned independently of the generated bodies.
+
+6. **The expression-level oracle first, and the two new non-diagonality flags it produced.**
+   Both generated bodies were re-parsed and evaluated numerically
+   (`scratch/t63b2_oracle.py`) against hand laws written out *there*: scalars ~2e-16, F01 /
+   F01_q 3.3e-16, the fan-outs 1.4e-10-3.1e-10, `ddE01ddF01`/`ddE23ddQ` 1.3e-8-5.2e-8, the
+   limit chain 9.3e-11 — and two *shape* flags worth recording before any C++ exists:
+   `dpj.ddE01ddF01_nondiag 1.15`, `dpj.ddxdF01_nondiag 0.5` (the element tensors are *not*
+   diagonal, which is what makes rule 10's clamp observable).
+
+7. **`joint_limit_penalty.h` is branchless on purpose — with the branchy reference kept as
+   the *test's* oracle.**  The reference's early `return`s (`if(inside) {...}`, the `w == 0`
+   special case, the `dE_dx != 0` guard) have no DSL equivalent: LC's `Expr<bool>` cannot
+   drive a host-and-device `if`, so the port is a `select`-only transcription (RULE M2).
+   The differential proof is the *assertion* that all 11 branch combinations reproduce the
+   branchy reference written out in the test: worst |dE| / |dE_dx| / |d2E_dx2| = 0.0
+   (bitwise) — i.e. the ported select tree and the reference's control flow are the same
+   function, and the test is the only place the *un*-ported form can be evaluated.
+
+8. **A guard that is value-free is a guard to *drop*, and to *document*.**  The reference's
+   `if(dE_dx != 0)` wrap around the limit Hessian's `dE_dx * dE_dx^T` term is value-free:
+   the test evaluates `|H(0)|` for exactly the state the guard rejects and measures 0.0 (the
+   term is a product of two `dE_dx`s, so the guard only skips an exact zero).  The port keeps
+   the guard-free arithmetic and says so in the header — the deviation is recorded *with* the
+   measurement that makes it a non-deviation.
+
+9. **The uid table and the ownership *proof*.**  This batch claims 20 (prismatic joint), 21
+   (driving constraint), 667 (external-force constraint **and** its reporter — the shared
+   constraint/reporter registry, T5.4b's 671 precedent) and 669 (limit constitution).  The
+   uid-ownership case does not merely query the names: it asserts, per geometry, that the
+   limit-bearing geometry's base uid is 20 with `extra_constitution_uids = {669}` and that
+   the geometry's constraint set is `{21, 667}` — a perturbation of the registry then flips
+   the *diagnostic itself* to `uid669 = ANOTHER SYSTEM`, i.e. the pin is non-vacuous.
+   Reserved before this batch: 8, 16, 25, 26, 28, 666, 671.
+
+10. **`kMakeSpdSweeps` IS observable for these joints — this is §7.25 rule 19 flipped, and
+    the sweep count is now *pinned by the test*.**  The element Hessians clamped on this
+    path (the joint's 9x9 `ddE01ddF01`/`ddE23ddQ`, the driving's 9x9, the limit's `d2E_dx2
+    dx_dq dx_dq^T` term) are non-diagonal and *indefinite* in 200/200 sampled states (min eig
+    -5.597 for the raw 24x24, -4.082 for the element H01), so `make_spd` is a real projection:
+    `||H_raw - H_shipped|| = 3.137e-1`, and the 0-vs-8-sweep distance is **3.454 / 2.765 /
+    0.955** (joint / driving / limit) while 8-vs-20 is 0.0.  The closed-forms case therefore
+    *pins* `sweeps == 8` (a `kMakeSpdSweeps 8 -> 0` perturbation is caught here, unlike in
+    T6.3b1), and the finite-difference case asserts **both** ends: dev(H_raw, FD) = 1.8e-10
+    (the transcribed arithmetic) and dev(H_shipped, FD) = 3.7e-1 (the projection) — a raw-Hessian
+    check alone would silently accept a broken clamp, and a shipped-Hessian check alone a
+    broken law.
+
+11. **Isolate a *constraint*'s contribution by differencing two animator-stepped worlds.**
+   A constraint's extents only exist after `InterAffineBodyAnimator::step()` has run, so
+   differencing the same scene with and without the driving geometry (as §7.25 rule 11 did
+   for constitutions) is the only oracle needed: the assembled joint-side budget is 224
+   triplets / 14 blocks (2 joint + 12 limit) *before* the animator steps and the driving adds
+   its own 6 blocks after, and the *differenced* driving contribution matches the hand-derived
+   blocks at dev 9.346e-15 (48 keys), gradient rel 1.579e-15 (|b_driving| 4.502558e+04) and
+   the cross-body hand-derived check at 5.093e-11.
+
+12. **Driving a constraint's kernels *directly* needs a bare animator `Impl` — and the
+   hessian *budget* is in 12x12 blocks while the view's payload is 144 doubles.**  The
+   `GradientHessianInfo` the animator hands over is `subview(offset, count)` of the view,
+   sliced by the constraint's own `constraint_hessian_offsets_counts` table, so the test
+   builds an `InterAffineBodyAnimator::Impl` (public), fills the table with `counts()[0] = 3 *
+   n_pairs` (3 *blocks* per pair: (i,i), the off-diagonal, (j,j)) and calls
+   `do_compute_gradient_hessian`; the resulting triplets are compared 12x12 against
+   `H.block(...)`, with the row/col indices the *raw body ids* (`bids`), not the assembled
+   COO's `body * 4 + a` sub-blocks.  Measured trap: reading the payload as the assembled
+   layer's 9-double 3x3 triplets (the §7.22 rule 8 unpacking) gave dev exactly 1.037 and only
+   3 of 3 keys — the assembled COO and the reporter's view use *different* triplet payloads,
+   and the budget table is in blocks.  After the fix: gradient 6.766e-16, Hessian 3.066e-16.
+
+13. **`select_container(f, t, p)` means `p ? t : f` — the argument order is a silent,
+   whole-block bug.**  The driving kernel's `constrained == 0` select was written as
+   `select_container(zero_H, H, constrained == 0)`, which zeroes the Hessian for exactly the
+   *constrained* pairs: the assembled contribution of a whole constraint became zero (the
+   differenced assembled blocks dev 1.0, the differenced gradient rel 1.0 with |produced|
+   0.0 against |b_driving| 4.502558e+04, the scene's cross-body worst 3.560e+04) while the
+   *energy* kernel — whose select had been written the other way — kept matching at 4.0e-16,
+   so the failure looked like a numerics problem in the Hessian.  The two lessons: spell the
+   helper's polarity in the call site or assert it (`scratch` probe: `f=0,t=1,p=1 -> 1`), and
+   keep at least one *differenced* diagnostic (rule 11) that cannot be satisfied by a
+   zero contribution.
+
+14. **The external-force pair is a constraint (uid 667) plus a reporter (uid 667) with a
+   *symmetrized* axis pair.**  `symmetrized_axes` returns the two body-local axes the pair
+   force is built from and `force_pair` returns `(F_i, F_j)`; the test asserts `t_i`, `t_j`,
+   `F_i`, `F_j` against its own hand oracle on both the host path and the device round
+   (dev <= 1e-12, measured ~1e-16), which is what makes the 667 sharing safe: the reporter
+   inherits nothing the constraint's numbers do not already fix.
+
+15. **The joint-limit's `ref_qs` needs a registered 24-vector: add `LVector24` to
+   `affine_body/type_define.h`, and convert it *element-wise* in `do_init`.**  The limit's
+   per-geometry state is a 24-vector (the pair dofs) and the LC buffer layer only accepts
+   registered types, so `LVector24`/`Vector24`/`to_luisa`/`to_eigen`/`load_vec24` went into
+   the *affine-body* type header (not the global one — §7.21's rule on scope).  Uploading it
+   with `copy_host_to_device` fails to compile (C2668: a dependent unqualified call in an
+   earlier template cannot see the later overload while Eigen's converting constructor makes
+   all the older overloads viable) — the working spelling is an element-wise loop in
+   `do_init`.
+
+16. **Consume *every* slot of a device-vs-host bag, and assert the stride.**  The
+   device-vs-host round packs each state's whole output bag into one flat buffer
+   (`kRoundStride = 1862` doubles for 16 states here); the host side must consume the
+   distance block's 24-entry `dx_dq` payload even when another check already covers it.  A
+   missing 24-slot shifted every later field by exactly one block and the *later* deviations
+   read O(1) (limit E 5.815e+03, penalty 1.1e4, force 1.5) while everything *before* the gap
+   stayed at 1e-16 — the classic layout-mismatch signature, and the reason the case now ends
+   with `T63B2_CHECK(c, kk == kRoundStride)`.  After the fix: 0.0 / 3.66e-16 / 4.25e-16.
+
+17. **A device-vs-host round is per-routine and *not* bitwise.**  The generic host routines
+   and the generated kernels are the same statements, but `lps::pow` lowers to `lcrt::pow`
+   and `make_spd`'s sweeps reassociate, so the case asserts a per-routine bound (1e-12) and
+   *records* the measurement (prismatic 4.4e-16/4.6e-16/5.4e-15, driving
+   2.2e-16/4.0e-16/5.7e-15, distance 1.1e-16, limit 0.0/3.7e-16/4.3e-16, penalty 0.0,
+   external force ~1e-16) — §7.17 rule 34 / §7.24 rule 15's discipline, now for a
+   constraint + a constitution + an external-force pair in the same case.
+
+18. **Regression shape of this batch, and the cold-JIT budget.**  `run "[abd_joint_b]"`:
+   402 assertions / 8 cases; `run "~[abd_joint_b]"`: 761456/175 (the pre-batch baseline
+   exactly); the whole suite: 761858/183; `[abd_base]`/`[abd_linear]`/`[abd_dynamics]`/
+   `[abd_constitution]`/`[abd_joint_a]`: 2143/7 · 495/7 · 547/7 · 523/7 · 223/8; ctest 1/1;
+   standalone 69/0; generator `--check --selfcheck` rc 0.  A *cold* `[abd_joint_b]` run costs
+   ~26 min of Luisa JIT (the piecewise-constant Hessians make eight cases of fresh kernels),
+   and **any** edit to a ported or generated kernel source re-pays it for the cases that use
+   that kernel — so perturb with the *owning case* filter and re-verify the whole filter
+   afterwards (the reverted sources hit the warm cache and run in seconds).
+
+19. **Non-vacuity: four perturbations on four axes** (`scratch/t63b2_perturb.py`, the
+   T6.3b1 driver pattern: patch -> build -> run -> revert -> sha256 -> re-verify).
+   P1 the generated exponent (`sym/affine_body_prismatic_joint.inl`, the first
+   `lps::pow(..., 2.0)` -> 3.0) — the *transcribed-arithmetic* axis;
+   P2 the driving's `kMakeSpdSweeps` 8 -> 0 — the *clamping* axis (observable here, rule
+   10);
+   P3 `ascending -> always true` in `write_pair_half_hessian` — the *ordering/plumbing* axis
+   (the scene deliberately holds a descending pair, §7.25 rule 12);
+   P4 the driving `select_container` argument order (rule 13) — the *kernel-input* axis, i.e.
+   the exact bug this batch paid for.
+   Every one of them must exit the owning case with rc 42 and at least one `FAILED:` line,
+   and the reverted tree must rebuild with 0 warnings and run the whole `[abd_joint_b]`
+   filter green again (sha256-verified byte-identical revert).  Measured signatures (all four
+   rc 42): P1 -> 3 failures, `closed (40 states)` H 6.016e-01 and `ddE01ddF01` 1.734e+00 (the
+   *laws*, not the plumbing); P2 -> 5 failures, and the sweep pin itself *moves* — `0-vs-8`
+   drops 2.765 (driving) to 0.000 while `8-vs-20` picks it up; P3 -> 6 failures, the
+   differenced COO's `worst |entry|` jumps 5.821e-11 -> 6.775e+04 and the direct-drive
+   Hessian shows a **4th** produced key (the descending pair's off-diagonal block lands on
+   the wrong key); P4 -> 2 failures, the direct-drive Hessian dev is exactly 1.000 (the whole
+   24x24 zeroed) while the *assembled* COO stays at 5.821e-11 — the driving's contribution in
+   the pre-step world is invisible to the assembly case, which is why the direct-drive harness
+   (rule 12) and the scene's post-`advance()` differencing (rule 11) are both needed.
+
+20. **The tooling incident worth a rule: a heredoc can rewrite an entire file with its
+   newlines mangled.**  A `python - <<'PY'` block whose source contains the C++ newline
+   escape (backslash + `n`) had every such escape — *and* every real newline of the file it
+   rewrote — turned into the two characters `/n`, leaving a 188 KB single-line file, while
+   other backslash escapes survived.  Recovery recipe, in order: (a) keep a `.bak` copy the
+   moment a file-rewriting probe is about to run; (b) restore with a *state scanner*
+   (code / string / char / line-comment / block-comment) that maps `/n` back to a newline,
+   with exactly two exceptions — a separator seen *inside* a string or char literal must have
+   been the escape (a real newline cannot occur inside a literal), and a separator whose
+   neighbours are identifier characters (or `ident` + `/ident`) is genuine prose (measured:
+   `src/backends/none`, `zero/negative`, `rest_t/n/b` inside `///` comment lines);
+   (c) re-run the *whole* battery — the byte-identical green result (402/8 here) is the proof
+   that the repair did not silently change a single statement.  Prevention: never write a
+   backslash-`n` inside a heredoc (use `chr(10)`), prefer the `edit`/`write` tools for file
+   surgery, and prefer line-index or whitespace-tolerant (`\s+`/`re.S`) patches over
+   multi-line literals copied from a display (the display strips the common indentation, so
+   an "exact" anchor built by eye will not match).
+
+21. **Parent verification of this batch — two further perturbation axes, and a harness fact.**
+    Beyond the agent's four axes (a generated exponent; the driving `kMakeSpdSweeps 8 -> 0`; the
+    hessian's `upper_LR`; the driving `select_container` order) the parent perturbed, on
+    *different* axes, and reverted each byte-identically:
+    (a) **the external-force sign axis** — `symmetrized_axes`' `t_i = -t_j` -> `t_i = t_j`:
+    rc 42 with 7 failures spanning the FD (lines 2252/2255/2260), the scene (3365-3367) and the
+    device-vs-host (3915) cases; (b) **the joint-limit's cross-constitution lookup** — `JointUID`
+    20 -> a literal `26`: the reference-faithful host assert *"AffineBodyPrismaticJointLimit must
+    be attached on base prismatic joint"* fires, and then the harness **aborts the process**
+    (rc 3221226505 = 0xC0000409) rather than reporting a Catch2 failure. That abort is a
+    pre-existing property of the test harness (the same code and shape as T6.3b1's once-seen
+    teardown flake), so a broken cross-lookup cannot silently pass — but it also means a
+    *deliberate* failure of a `UIPC_ASSERT` in `do_build`/`do_init` shows up as "the run is not
+    green", not as a named Catch2 assertion.  Note the cost asymmetry: a perturbation that changes
+    a *kernel* source (e.g. a function header included by the joint's TU) invalidates the PTX
+    cache and re-JITs for ~25 min here, while a host-only constant (the limit's `JointUID`) is
+    warm — budget accordingly when choosing a perturbation axis.
+22. **Anchor-matching lesson (reinforces rule 20's whitespace warning).**  The reference and the
+    port both *column-align* their `static constexpr U64` blocks, so a declaration reads
+    `static constexpr U64   JointUID     = ...` with run-length padding.  A patch anchored on
+    `"U64 JointUID = ..."` silently finds **zero** matches and — if the assert is skipped — a
+    follow-up run can measure the *stale* binary instead of the perturbation (that happened here:
+    one attempted axis reported "caught" from an unrelated earlier build).  Always match declarations
+    with a whitespace-tolerant pattern (`\s+`), and treat "build rc != 0" as *inconclusive*, never
+    as evidence.
+23. **The parent's independent re-run (frozen tree, after every perturbation was reverted).**
+    `[abd_joint_b]` 402/8 rc 0; `~[abd_joint_b]` 761456/175 rc 0 (the pre-batch baseline exactly);
+    the full suite 761858/183 rc 0; `[abd_base]`/`[abd_linear]`/`[abd_dynamics]`/
+    `[abd_constitution]`/`[abd_joint_a]` 2143/7 · 495/7 · 547/7 · 523/7 · 223/8; ctest 1/1 passed;
+    standalone 69 cases / 0 checks failed; the generator `--check --selfcheck` rc 0; and the stray
+    `_hf_probe.obj` a device-vs-host probe left in the repository root was removed before the
+    commit (check `git status` for stray artefacts — the build dir is ignored, the root is not).
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
