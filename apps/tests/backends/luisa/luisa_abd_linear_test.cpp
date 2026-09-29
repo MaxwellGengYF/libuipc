@@ -431,10 +431,22 @@ namespace t61b
 /// `SoftTransformConstraint` and `AffineBodyFixedJoint`, i.e. the same
 /// knowing-reuse arrangement T6.1a's `T61ABDMockConstitution` uses for uid 1:
 /// the reference's own numbering has no free slot (`ConstitutionTabular::insert`
-/// resolves through `ConstitutionUIDCollection::find(uid)`), and T6.4/T6.3b will
-/// claim them with the real bodies.
+/// resolves through `ConstitutionUIDCollection::find(uid)`), and T6.4 will claim
+/// 16 with its real constraint.
+///
+/// T6.3b1 REGISTERED THE REAL uid-25 *inter-body constitution*
+/// (`uipc::backend::luisa::AffineBodyFixedJoint`), so 25 is no longer free on the
+/// *constitution* side either: `T61bInterConstitution` moved to uid 28 (see
+/// `kMockInterConstitutionUID`), while the *constraint* uid 25 stays -- the animator's
+/// registry is a different one and the real joint (an `InterAffineBodyConstitution`,
+/// not a constraint) never registers there.
 inline constexpr U64 kSoftTransformUID = 16;
-inline constexpr U64 kFixedJointUID    = 25;
+inline constexpr U64 kFixedJointUID = 25;
+/// The test-local mock *inter-body* constitution's uid, moved here from 25 by T6.3b1
+/// (the full argument is at `claim_mock_inter_uid` below; the declaration lives in
+/// *this* block because `T61bInterConstitution`'s definition precedes the block that
+/// carries the doc comment).
+inline constexpr U64 kMockInterConstitutionUID = 28;
 
 [[nodiscard]] inline bool scene_has_marker(backend::WorldVisitor& world)
 {
@@ -1170,7 +1182,7 @@ class T61bInterConstitution final : public gg::InterAffineBodyConstitution
     static inline lud::LDeviceBuffer<gg::LVector12>     s_gradient;
 
   protected:
-    U64 get_uid() const noexcept override { return kFixedJointUID; }
+    U64 get_uid() const noexcept override { return kMockInterConstitutionUID; }
 
     void do_build(BuildInfo& info) override
     {
@@ -1762,6 +1774,42 @@ inline void claim_mock_uid(SimplicialComplex& sc)
     view(*cuid).front() = kMockConstitutionUID;
 }
 
+/// The test-local mock *inter-body* constitution's uid (`T61bInterConstitution`).
+///
+/// T6.3b1 MOVED THIS CLAIM from uid 25 to uid **28**: T6.3b1 registers the real
+/// `uipc::backend::luisa::AffineBodyFixedJoint` at uid 25, and the *inter-body*
+/// manager hands a uid's geometry group to the **last** equal-uid entry of its
+/// uid-sorted registration list -- whose order is `SimEngine::build_systems()`'s
+/// demangled-type-name sort, i.e. this file's `t61b::T61bInterConstitution` ('t')
+/// *before* `uipc::backend::luisa::...` ('u').  Measured before the move:
+/// `[abd_linear]`'s `abd_linear_chain` failed with
+/// `T61bInterConstitution::geo_info_count == 0u` (the mock's slice was empty) while
+/// the joint's own records held the geometry.
+///
+/// A scene of *this* file must keep its joint geometry in the mock's group, because
+/// the file's oracle is the subsystem's *assembly*: the mock's
+/// `do_compute_gradient_hessian` writes nothing, so the constitution term of the
+/// assembled block stays exactly zero (as it was when the mock claimed uid 25 and no
+/// backend joint existed).  28 is `AffineBodyD6Joint`: frontend-registered (so
+/// `ConstitutionTabular::insert` resolves it) and `InterAffineBody`-typed (so the
+/// manager's creation gate still sees the type), and grep-proven unused by every
+/// backend system -- the reference has no `ConstitutionUID = 28` under
+/// `src/backends/cuda` either -- and by every test.
+///
+/// (the constant itself is declared in the first `namespace t61b` block, next to
+/// `kFixedJointUID`, because `T61bInterConstitution::get_uid` precedes this block)
+
+/// Route the joint geometry into the mock inter-body constitution's group (the
+/// frontend's `AffineBodyFixedJoint::create_geometry` wrote uid 25).  The geometry
+/// keeps its `constraint_uids = {25}`: the *animator* filters by constraint uid
+/// (a different registry), so `T61bInterConstraint` still receives it.
+inline void claim_mock_inter_uid(SimplicialComplex& sc)
+{
+    auto cuid = sc.meta().find<U64>(builtin::constitution_uid);
+    UIPC_ASSERT(cuid, "t61b: the joint geometry has no `constitution_uid`");
+    view(*cuid).front() = kMockInterConstitutionUID;
+}
+
 /// `kBodyCount` marked ABD cubes (identity affine rest+deformed state) plus, when
 /// `with_constraints`, the frontend `SoftTransformConstraint` on every instance
 /// (uid 16 -> the test-local `T61bConstraint`) and a fixed-joint geometry (uid 25
@@ -1820,6 +1868,9 @@ inline void claim_mock_uid(SimplicialComplex& sc)
                                                span<S<geometry::SimplicialComplexSlot>>(r_slots),
                                                span<IndexT>(r_ids),
                                                span<Float>(ratios));
+        // T6.3b1: keep this file's joint geometry in the *mock* inter-body
+        // constitution's group (uid 28) -- see `kMockInterConstitutionUID`.
+        claim_mock_inter_uid(joint_geo);
         joint_geo.meta().create<IndexT>(kMarker, 1);
         // the inter-body *animator* walks the joint geometry's `constraint_uids`
         joint_geo.meta().create<VectorXu64>(builtin::constraint_uids, VectorXu64{});

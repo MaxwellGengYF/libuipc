@@ -102,6 +102,11 @@ using LMatrix3x3 = lps::LMat<Float, 3, 3>;
 // metric inverse (`inv_B_matrices`), exactly like the reference's
 // `DeviceBuffer<Matrix2x2>`.
 using LMatrix2x2 = lps::LMat<Float, 2, 2>;
+// T6.3b1: the ABD joints store their per-joint rest frames as one 6-vector per
+// quantity (`rest_cs` / `rest_ts` / `rest_ns` / `rest_bs` -- the two bodies'
+// body-local attachment points / x- / y- / z-frame directions), i.e. the
+// reference's `DeviceBuffer<Vector6>`.
+using LVector6 = lps::LVec<Float, 6>;
 
 static_assert(sizeof(LVector2) == sizeof(Vector2));
 static_assert(sizeof(LVector3) == sizeof(Vector3));
@@ -109,6 +114,8 @@ static_assert(sizeof(LVector2i) == sizeof(Vector2i));
 static_assert(sizeof(LVector3i) == sizeof(Vector3i));
 static_assert(alignof(LVector3) == alignof(Vector3));
 static_assert(sizeof(LVector4i) == sizeof(Vector4i));
+static_assert(sizeof(LVector6) == sizeof(Vector6));
+static_assert(alignof(LVector6) == alignof(Float));
 // LMat's storage is a plain column-major std::array<T,R*C>, i.e. the same bytes
 // as Eigen's Matrix<double,3,3> (72 B) -- which is what makes the FEM dump files
 // portable between the two backends.
@@ -163,6 +170,16 @@ static_assert(alignof(LMatrix2x2) == alignof(Float));
 [[nodiscard]] inline Vector4i to_eigen(const LVector4i& v) noexcept
 {
     return Vector4i{v(0), v(1), v(2), v(3)};
+}
+// T6.3b1: the ABD joints' per-joint 6-vectors (two 3-vectors side by side:
+// [first | second], the reference's `rest_*s.segment<3>(0)` / `.segment<3>(3)`).
+[[nodiscard]] inline LVector6 to_luisa(const Vector6& v) noexcept
+{
+    return LVector6{v(0), v(1), v(2), v(3), v(4), v(5)};
+}
+[[nodiscard]] inline Vector6 to_eigen(const LVector6& v) noexcept
+{
+    return Vector6{v(0), v(1), v(2), v(3), v(4), v(5)};
 }
 [[nodiscard]] inline LMatrix3x3 to_luisa(const Matrix3x3& m) noexcept
 {
@@ -230,6 +247,8 @@ LUISA_STRUCT(uipc::backend::luisa::LVector2i, data){};
 LUISA_STRUCT(uipc::backend::luisa::LVector3i, data){};
 // T5.1: the FEM method's `tets` and `Dm3x3_invs` element types.
 LUISA_STRUCT(uipc::backend::luisa::LVector4i, data){};
+// T6.3b1: the ABD joints' per-joint rest-frame 6-vectors.
+LUISA_STRUCT(uipc::backend::luisa::LVector6, data){};
 LUISA_STRUCT(uipc::backend::luisa::LMatrix3x3, data){};
 // T5.2 (batch b): the shell membrane constitutions' 2x2 per-triangle inverse of
 // the rest shape matrix.
@@ -276,6 +295,16 @@ namespace uipc::backend::luisa
     v(0) = e.data[0];
     v(1) = e.data[1];
     v(2) = e.data[2];
+    return v;
+}
+
+/// T6.3b1: the ABD joints' per-joint rest-frame 6-vector (two 3-vectors).
+[[nodiscard]] inline lps::LVec<lcrt::Var<Float>, 6> load_vec6(
+    const lcrt::Expr<LVector6>& e) noexcept
+{
+    lps::LVec<lcrt::Var<Float>, 6> v;
+    for(int i = 0; i < 6; ++i)
+        v(i) = e.data[i];
     return v;
 }
 

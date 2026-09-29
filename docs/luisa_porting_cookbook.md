@@ -3126,6 +3126,314 @@ The rules below are what the port turned out to depend on.
    After the reverts the same command is green again (523 assertions, rc 0) and the
    three files are byte-identical to the tested ones (the driver checks that too).
 
+### 7.25 Patterns established in T6.3b1 (ABD joints, batch 1: fixed + spherical)
+
+M6 batch **T6.3b1** ports the first two of the four ABD *joints* into
+`src/backends/luisa/affine_body/constitutions/`: `affine_body_fixed_joint.{h,cpp}`
++ `affine_body_fixed_joint_function.h` + the generated
+`sym/affine_body_fixed_joint.inl` (uid **25**) and the spherical joint's five
+siblings (uid **26**), plus the generator regions and the test
+`apps/tests/backends/luisa/luisa_abd_joint_a_test.cpp` (tag `[abd_joint_a]`, 8 cases,
+223 assertions) — nine new files, no edits to any existing backend file except the
+one additive type (`LVector6` in the global `type_define.h`, rule 1's note below).
+`scratch/gen_abd_cons_a.py` grew two regions and the independent expression-level
+(oracle) is `scratch/t63b1_oracle.py`.  Sub-milestone
+`T6.3b2` (`T6.3b` was split) owes prismatic uid 20 + revolute uid 18 with their dof
+reporters, time integrators, driving constraints (21/19), external-force constraints
+(667/668), the two joint limits (669/670) and the remaining five `sym/*.inl`.
+The rules below are the ones where a joint is *not* just another constitution.
+
+1. **A joint is a plain `InterAffineBodyConstitution` with a *pair* fan-out, and the
+   whole file split of T6.3a carries over unchanged.**  Four hooks
+   (`do_build`/`do_init`/`do_report_*_extent`/`do_compute_*`), the class in the
+   header, the kernels + `REGISTER_SIM_SYSTEM` in the `.cpp`, the arithmetic in
+   `*_function.h` as `abd_{fixed,spherical}_joint_detail::body_{energy,gradient,hessian}`
+   over the scalar `S`, and the `sym/*.inl` transcribed by the generator.  What is
+   *new* is only the shape of the fan-out: per joint the reference reports
+   `gradient_count(2 * n)` (a **two-body doublet**, `DVA.segment<2>(2 * I).write({bids0,
+   bids1}, G24)`) and `hessian_count(HalfHessianSize * n)` with
+   `HalfHessianSize = 2 * (2 + 1) / 2 == 3` (the **upper triangle of a 2x2 block of
+   `TMA.half_block<2>(3 * I).write(indices, H24)`), i.e. 2 doublets and
+   3 triplets per joint — not the constitutions' one-block-per-body.  The batch's one
+   *additive* edit outside its nine files is the joint's device element type:
+   `LVector6 = lps::LVec<Float,6>` (+ `to_luisa`/`to_eigen`/`load_vec6`) in
+   `src/backends/luisa/type_define.h` — the reference's `DeviceBuffer<Vector6>` rest
+   rows have no home without it, and the port had no 6-vector element type.
+
+2. **The two joint laws, and the frames the reference stores for them.**  With the
+   pair state `q = [ti ; A_i ; tj ; A_j]` (12 dofs each, `A(i,j) = q(3 + 3i + j)`, and
+   note the *pair* layout: body i occupies 0..11 and body j 12..23, so **`A_j` starts
+   at 15** — `q(12..14)` is `tj`; getting that off by three is rule 9):
+   `Ft = A_i ci_bar + ti - (A_j cj_bar + tj)` (3-vector, the *ball* constraint) and
+   `Fr = [A_i t - A_j t_j ; A_i n - A_j n_j ; A_i b - A_j b_j]` (9-vector, the frame
+   mismatch), with `E = 1/2 kappa (||Ft||^2 + ||Fr||^2)`; the **spherical** joint keeps
+   `Ft` alone.  The rest data is the frontend's per-vertex convention:
+   `rest_cs = [ci_bar | cj_bar]` (the two *body-local* attachment points, taken
+   verbatim from the `l_position`/`r_position` vertex attributes when the frontend
+   wrote them, otherwise `LT.inverse() * Ps[i]` from the scene vertex) and
+   `rest_ts`/`rest_ns`/`rest_bs` = `[L_i^{-1} e_x | L_j^{-1} e_x]` etc.  The port keeps
+   the reference's member names, its `list<>`/`move_to`/`copy_from` staging, and the
+   one non-obvious aliasing: `LT.rotation()` on an
+   `Eigen::Transform<Float,3,Eigen::Affine>` is **`computeRotationScaling()`**, i.e. a
+   *polar decomposition* (rule 3).
+
+3. **FINDING — the joint's rest frames come from the *polar* rotation of the body's
+   initial transform, not from its linear part.**  Eigen's `Transform<Mode>::rotation()`
+   is `linear()` only for `Mode == Isometry`; for `Affine` it
+   `computeRotationScaling`s, so a *stretched* initial state still contributes a
+   non-zero rotation term at the scene's own state.  Measured on this batch's scene
+   (body 0's transform = `R(0.6, axis) * diag(1.25, 0.9, 1.1)`):
+   the kernel's `rest_t` came out `0.83706680 -0.28299237 -0.46822482` = the polar
+   value while the linear-part value is `0.66965344 -0.31443597 -0.42565893`; with the
+   polar frames the joint's fixed energy reproduces the kernel's `1.11354993e+04`
+   exactly (the linear-part convention gives `8.79784244e+03`, i.e. `Er == 0`).
+   A *test oracle* must therefore spell the frame source as `U V^T` of the SVD (the
+   test's `polar_rotation`), which is what the scene case's
+   `h_rest_*` comparison (`worst |rest - hand| = 0.000e+00`) pins.  Do **not**
+   "fix" the reference's `LT.rotation()`.
+
+4. **The joint Hessians are *constant* (the laws are quadratic), so the FD sweep has
+   no truncation error and the round-off falls with h.**  `G = kappa (J_t^T Ft + J_r^T Fr)`
+   with *constant* Jacobians, so `H = kappa (J_t^T J_t + J_r^T J_r)` does not depend on
+   the state at all.  Measured over 40 states: gradient FD `2.1e-10` (fixed and
+   spherical), Hessian `9.8e-11` (h = 1e-6), `9.8e-13` (1e-4), `1.1e-13` (1e-3),
+   `8.7e-15` (1e-2) — the *opposite* of the constitutive families' growth-with-h and
+   the reason the batch asserts `worst_h(1e-2) <= worst_h(1e-6)` instead of "the sweep
+   rises"; asymmetry `2.1e-16` (fixed) / `0.0` (spherical: `J_t^T J_t` is an exactly
+   symmetric rank-3 fan-out).  The test also pins the state-independence directly
+   (`H(q) == H(q')` bitwise for two random states) — none of the constitutive
+   families can say that.
+
+5. **The rule-34 basis question, answered *negative* for these two laws (and pinned as
+   such).**  Unlike the ABD ARAP (§7.24 rule 5, whose shipped Hessian is the
+   `transpose_permutation()`-conjugate of its own `dEdq` derivative), the joints'
+   generated fan-outs take their `H9x9`/`Ht3x3` in the **same** `Fr`/`Ft` order their
+   `dEdF` siblings write, so the *plain* central-difference comparison is the
+   agreement — measured `9.8e-11`/`1.3e-10` at h = 1e-6 with **no** permutation.  The
+   case also re-derives the closed form from the hand-built Jacobians
+   (`kappa (J_t^T J_t + J_r^T J_r)`, worst `1.4e-17` spherical) so the reader can see
+   that the two statements are the same basis, not a rounding coincidence.
+
+6. **`make_spd` is applied to both *element* Hessians, 9x9 then 3x3, *before* their
+   fan-outs — a no-op for `kappa > 0`, the whole block for `kappa < 0`.**  The
+   reference's `fixed_joint.cu` calls `make_spd(ddEdFr_val)` and
+   `make_spd(ddEdFt_val)` (and the spherical one `make_spd(ddEdFt_val)`), and both
+   element Hessians are exactly `kappa I` — so the clamp is invisible until a user
+   passes a negative `strength_ratio`, where the shipped `H` collapses to `0` while
+   `E` and `G` keep their unclamped (negative-energy) values.  Measured: `kappa = -3`,
+   `max|H| = 0.0` while `|G| = 2.139e+00` and `E = -2.259e+00`; and the shipped H is
+   *not* `dG/dq` there (deviation `1.000e+00`, asserted so it cannot be mistaken for
+   round-off).  The port keeps `kMakeSpdSweeps = 8` (§7.17 rule 31's plateau) and the
+   test measures it against the layer default (20 sweeps) → `0.0` difference.
+
+7. **The degenerates are *exact* zeros, unlike the SVD families'.**  The joint laws
+   contain no division and no SVD, so `E`, `G` and `H` are finite in **every** state
+   (including a reflection: `E = 1.12125`, `|G| = 2.25`, all finite, from the same
+   polynomial) and a coincident rest pair gives `E == 0.0` **and** `max|G| == 0.0`
+   *bitwise*.  Two pins that are easy to get wrong by hand:
+   * `A_i = A_j = 0` does **not** zero the `A`-blocks of `G`: `dFt(k)/dA_i(k,m) =
+     ci_bar(m)` gives `(J_t^T Ft)(3 + 3k + m) = ci_bar(m) Ft(k)`, i.e. a
+     `ci_bar (x) Ft` outer product (and `-cj_bar (x) Ft` on the right body) — measured
+     `worst dev 0.000e+00` against that closed form, `|G_Ab| = 1.2`;
+   * `kappa = 0` zeroes everything including the clamped `H` (the element Hessians are
+     the zero matrix).
+   A 1e12 coefficient with 1e-6 rest frames stays finite: there is no conditioning
+   cliff to pin.
+
+8. **The generator regions are the *whole* `.inl`, not the "interesting" functions.**
+   The T6.3b brief listed three function names per joint (`Fr, JrT_Gr, JrT_Hr_Jr` /
+   `Ft, JtT_Gt, JtT_Ht_Jt`), but the transcriber's contract is *one region == one
+   sentinel pair == every generated function in it* — the trivial energy/derivative
+   laws (`Er, dEdFr, ddEdFr, Et, dEdFt, ddEdFt`) are SymEigen output too and must be
+   transcribed beside the fan-outs.  The two `REGIONS` entries therefore list **12** and
+   **6** names.  Per-region statement counts (all scalar):
+   fixed `Fr 9, JrT_Gr 24, JrT_Hr_Jr 738, Er 1, dEdFr 9, ddEdFr 81, Ft 3, JtT_Gt 24,
+   JtT_Ht_Jt 834, Et 1, dEdFt 4, ddEdFt 10` (1738 total); spherical `Ft 3, JtT_Gt 24,
+   JtT_Ht_Jt 834, Et 1, dEdFt 4, ddEdFt 10` (876).  `--check --selfcheck` is rc 0 and
+   idempotent (tree identity after un-transforming, plus 200 random scalar inputs per
+   scalar statement).
+
+9. **The *pair* dof layout is the new "off by one" trap: `A_j` starts at 15, not 12.**
+   `q = [ti(0..2); A_i(3..11); tj(12..14); A_j(15..23)]`.  The hand-derived Jacobians
+   are
+   `J_t(k, k) = 1, J_t(k, 12 + k) = -1, J_t(k, 3 + 3k + m) = ci_bar(m),
+   J_t(k, 15 + 3k + m) = -cj_bar(m)` and
+   `J_r(3a + k, 3 + 3k + m) = (d_a)_m, J_r(3a + k, 15 + 3k + m) = -(e_a)_m`
+   (`d_a` = t/n/b, `e_a` = t_j/n_j/b_j; the row index `3a + k` is the group/component
+   pair and the *column* is the `A`-*row* `k` — that is what makes the generated
+   `JrT_Gr`'s `R(3) = G(0) t(0) + G(3) n(0) + G(6) b(0)` come out right).  Writing
+   `12 + 3k + m` (the *body*-local offset instead of the pair offset) produced a
+   *silently plausible* wrong oracle — the E comparison still passed (E does not use
+   the Jacobians) while `G` was off by `1.17` and `H` by `0.52`; the two minutes spent
+   comparing the hand Jacobians against a finite-difference Jacobian of the
+   hand-derived law in Python (`scratch/t63b1_jac.py`) is the cheapest way to catch it.
+
+10. **The expression-level oracle (before any C++), and what it settled.**  The two
+   generated bodies were re-parsed and evaluated numerically (`scratch/t63b1_oracle.py`,
+   the §7.17 rule 30c technique) against hand-derived laws that were written out
+   independently *there* — worst relative residuals over 20 random states:
+   `Fr 3.3e-16`, `Ft 2.6e-16`, `Er 2.2e-16`, `Et 2.2e-16`, `dEdFr/dEdFt/ddEdFr/ddEdFt
+   0.0` (bitwise), `JrT_Gr 1.5e-10`, `JtT_Gt 2.1e-10`, `JrT_Hr_Jr 2.5e-10`,
+   `JtT_Ht_Jt 2.8e-10` — the fan-out residuals are the *FD Jacobian's* truncation
+   (`h = 1e-6`), not the transcription's.  The four fan-outs are compared against
+   `J^T G` / `J^T H J` built from a **central-difference Jacobian of the hand-derived
+   law**, so the *structure* of the fan-out (not only the scalar laws) is pinned
+   before a line of C++ exists.  This is the batch's non-vacuity proof beside the
+   generator's own `--selfcheck`.
+
+11. **The assembly fan-out is checked by *differencing two real assemblies*.**
+   Building the same 2-body scene with and without the joint geometries and
+   differencing the two `triplet_A`/`b` dumps (via a test-local
+   `GlobalLinearSystem::Impl`, §7.22 rule 12) isolates the joint's contribution
+   *without* needing an oracle for the ARAP body term — a much smaller oracle than
+   T6.3a's.  Measured: the extent budget `base 32 triplets / 2 blocks` vs
+   `joint 176 / 11` (the three joints add `3 * 3 * 16 = 144` triplets), the 48 COO keys
+   (32 diagonal + 16 distinct cross-body: the ascending and the *descending* pair share
+   their `(min, max)` keys), `worst |entry| 7.276e-12`, `worst |block| 1.053e-11`,
+   gradient `rel 7.431e-15` (joint-only, `|b_joint| = 9.086e+04`) and `2.182e-15`
+   against the *absolute* base gradient plus the scatter.  The `zero_out_lower` of the
+   two diagonal 12x12 blocks and the 16-way 3x3 unpacking are the T6.1b conventions
+   (§7.24 rule 11); the new one is `upper_LR` (rule 12).
+
+12. **`upper_LR` is load-bearing and needs a *device* select — build the scene with a
+   descending pair.**  The reference writes the single off-diagonal 12x12 block at
+   `(bids(L), bids(R))` where `(L, R) = (0, 1)` iff `bids(0) < bids(1)`, else
+   `(1, 0)`, with the *same* rule for the block's content (`H.block(L, R)`); since the
+   comparison is a device predicate it must become
+   `scalar_detail::{select_scalar, select_container}` (RULE M2), not a branch.  The
+   reporter interface only accepts *upper* block indices (`reporter_hessian_row`
+   zeroes `body_i > body_j`), so a joint whose left body has the larger id must have
+   its off-diagonal placed at `(min, max)` or its block is silently dropped — the test
+   scene therefore contains one ascending and one **descending** pair, and the
+   perturbation `ascending -> true` fails the COO comparison with `2.5e+04` (the whole
+   block is replaced by zeros).
+
+13. **The *energy* hook IS reachable here — through a test-built manager `Impl`.**
+   Unlike the constitutions (T6.3a §7.24 rule 8: their energies view is writable only
+   by T6.4's line-search reporter), a joint's `ComputeEnergyInfo` is an
+   `InterAffineBodyConstitutionManager::EnergyInfo` whose constructor and the
+   manager's `Impl` (with `affine_body_dynamics`, `dt_attr` and the
+   `constitution_energy_offsets_counts` table) are **public**, so the test fills them
+   and calls `do_compute_energy` on the real kernel: `worst rel 0.0` (assembly case)
+   and `4.9e-16` (scene case) against the hand-derived energies.  The *extent* hooks
+   stay unreadable (their counts are private), which is why the extent arithmetic is
+   pinned through the assembled budgets instead.
+
+14. **`make_spd`'s element Hessians are diagonal, so 8 sweeps == 20 == exact; but the
+   two *offsets* in `from_handles_full` must be the assembly's, not zero.**  The
+   joint kernel rebuilds the two *device* views from the handles the manager hands
+   over (`gradients.indices()/values()`, `hessians.row_indices()/col_indices()/values()`)
+   plus the view's *own* metadata, and passes `subvector_offset = 0` /
+   `subvector_extent = total_extent()` (the doublet's segment index is the *global*
+   body id, exactly as the reference's `upper_LR` assumes).  Handing the *rebased*
+   view (offsets 0, the T6.1b test's idiom) is also correct — but then the kernel must
+   not add the assembly's `doublet_index_offset`/`triplet_index_offset` again; the
+   port keeps the assembly's offsets and writes at `2 * I` / `HalfHessianSize * I`
+   *inside the slice*, which is the reference's own arithmetic.
+
+15. **The uid-25 hazard, measured, and resolved the T6.3a way (moving the mock).**
+   T6.1b's test-local `t61b::T61bInterConstitution` claimed uid 25 (the frontend's
+   `AffineBodyFixedJoint`) because that was the only way to get an
+   `InterAffineBody`-typed geometry into its scene then; T6.3b1 registers the *real*
+   **Measured first:** with the real system registered but the
+   mock still at 25, `run "[abd_linear]"` → rc **42**, `426 assertions / 2 failed`
+   (`T61bInterConstitution::geo_info_count == 0u` and `geo_ids.size() == 0u` at
+   `luisa_abd_linear_test.cpp:2340/2341`) and the **full suite** → rc **42**,
+   `175 test cases (174 passed / 1 failed)`, `761387 assertions (2 failed)` — the
+   *real* system won the group, exactly
+   as `SimEngine::build_systems()`'s demangled-type-name sort predicts
+   (`t61b::T61b...` < `uipc::backend::luisa::...`) plus the manager's
+   "last equal-uid entry wins" map.  **Resolution:** the mock moved to uid **28**
+   (`AffineBodyD6Joint`: frontend-registered, `InterAffineBody`-typed and
+   grep-proven unused — the reference has no `ConstitutionUID = 28` under
+   `src/backends/cuda`, and no test uses it), with a new 4-line
+   `claim_mock_inter_uid(joint_geo)` that rewrites the joint geometry's
+   `constitution_uid` to 28 while its `constraint_uids = {25}` stay (the *animator*
+   is a different registry and `T61bInterConstraint` still claims 25 there).  The
+   real joint is then *built* in that scene but owns no geometry and contributes
+   zero, so the file's assembly oracle keeps its meaning.  **Cost:** zero —
+   `run "[abd_linear]"` → **495 assertions in 7 test cases**, rc 0, the recorded
+   T6.1b number exactly.  Reserved test uids after this batch: **8** (T6.1a's mock),
+   **16** (T6.1b's `SoftTransformConstraint` stub; T6.4 owns the real one),
+   **25** (the real fixed joint, and T6.1b's *constraint* stub), **26** (the real
+   spherical joint), **28** (T6.1b's inter-body mock), 666/671 (the two external-force
+   managers).  Note the shapes that are *not* free: 16, 18, 19, 20, 21, 23, 666, 667,
+   668, 669, 670 are real uids of this milestone's remaining batches.
+
+16. **The scene case's absolute block check must skip the same-body keys.**  The
+   *absolute* `triplet_A` of a scene carries the ARAP body term (kappa = 1e8), so only
+   the *cross-body* keys (16 of the 48) are an absolute statement about the joints;
+   the differenced 48-key check lives in the assembly case.  The `[t61b]`/`[t63a]`
+   lesson repeats: state which keys your oracle can speak about.
+
+17. **Two Eigen traps this batch paid for (both measured).**  (a) `Eigen::Matrix`'s
+   default constructor does **not** zero, so `BlockMap out; out[key] += blk;` reads an
+   uninitialized 3x3 — the port's oracles must accumulate through
+   `find`/`emplace` (measured: a `~1e257` entry, and an `inf` block norm that looked
+   like a kernel bug for two runs).  (b) `Eigen::Transform<...,Affine>::rotation()` is
+   a polar decomposition (rule 3), while `q_to_transform`/`transform_to_q` are plain
+   linear-part spellings — a scene oracle must not mix the two.
+
+18. **Regression shape of this batch, and the cold-JIT cost.**  `run "[abd_joint_a]"`
+   → **223 assertions in 8 test cases**, rc 0 (per case: closed_forms 31,
+   finite_difference 13, degenerate_inputs 23, assembly 16, scene 18, device_vs_host 2,
+   uid_ownership 4, summary = the accounting case; the 7 scopes' 107 `T63B1_CHECK`s
+   are the file's own accounting and the remaining assertions to the 223 total are the
+   `REQUIRE`s and the summary's `CHECK`s).  `run ""` → **761456 assertions in 175 test cases**
+   (= the T6.3a baseline 761233/167 + this file's 223/8), rc 0; `run "~[abd_joint_a]"`
+   → **761233 assertions in 167 test cases** = the T6.3a baseline *exactly*, rc 0
+   (re-measured four times — see the FINDINGS note in the batch report about the one
+   0xC0000409 teardown flake); ctest → **1/1 passed** (`uipc.backend_luisa`, 22.61 s,
+   label gpu); `python scripts/luisa_standalone.py cuda` → **69 cases, 0 checks
+   failed**; `python scratch/gen_abd_cons_a.py --check --selfcheck` → rc 0.  The other
+   ABD filters are unchanged: `[abd_base] 2143/7`, `[abd_linear] 495/7`,
+   `[abd_dynamics] 547/7`, `[abd_constitution] 523/7`.  **The new file is picked up by
+   the test target's `file(GLOB_RECURSE SOURCE CONFIGURE_DEPENDS "*.cpp" "*.h")` +
+   `uipc_add_test(backend_luisa ${SOURCE})` (apps/tests/backends/luisa/CMakeLists.txt)
+   and the two backend TUs by `file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "*.cpp"
+   "*.h" "*.inl")` + `target_sources(luisa PRIVATE ${SOURCES})`
+   (src/backends/luisa/CMakeLists.txt:77)** — verified in the build log
+   (`[138/142] ... luisa_abd_joint_a_test.cpp.obj`, `[35/142] ...
+   affine_body_spherical_joint.cpp.obj`, `[54/142] ... affine_body_fixed_joint.cpp.obj`),
+   not assumed.  **Cold JIT:** the first filtered run of the new file took **3 m 23 s**
+   (the joints' energy/gradient/Hessian shaders plus the two inlined `make_spd`s),
+   every later run ~5 s — the same order as T6.3a's constitutions.
+
+19. **The `make_spd` sweep count is *unobservable* for these two joints (parent-verified
+    negative result; see rule 7).**  Both joints' element Hessians are exactly
+    `ddEdFr = kappa I_9` / `ddEdFt = kappa I_3` (diagonal), and `jacobi_evd` with
+    `sweeps = 0` returns `values = diag(M)`, `vectors = I` (`luisa_device/math/evd.h:155-164`),
+    so `make_spd(diag(kappa), 0) = diag(max(kappa, 0))` — *bitwise equal* to the 8-sweep and
+    20-sweep results.  Measured: the parent perturbed `abd_fixed_joint_detail::kMakeSpdSweeps
+    8 -> 0`, rebuilt, and `run "[abd_joint_a]"` stayed **223/8 green (rc 0)** — a genuinely
+    value-invariant change, *not* a coverage gap: the pass/fail pins
+    (`max_abs(H_neg) == 0` in *closed_forms*, `measured > 1e-4` in *degenerate_inputs (D4)*,
+    `worst_spd == 0.0`) are all satisfied identically.  Consequence for T6.3b2: the
+    **revolute** joint's element Hessian is *not* diagonal, so its clamp block *is*
+    sweep-sensitive — T6.3b2's test must perturb that one (e.g. `kMakeSpdSweeps` or the
+    pre-fan-out `make_spd` call) to pin the sweep count there.  Do not put a sweep-count
+    perturbation into a *diagonal*-element-hessian batch expecting it to bite.
+20. **Parent verification of this batch (what the independent pass added on top of the
+    subagent's own perturbations).**  Beyond the agent's three axes (a *generated*
+    exponent, the hessian's `upper_LR` predicate, the energy kernel's mass coefficient),
+    the parent perturbed three further axes and reverted each byte-identically:
+    (a) the **gradient doublet layout** (`write_pair_gradient`'s two payloads swapped:
+    `base <- G[12:24]`, `base+1 <- G[0:12]`) → rc 42, 2 failures at test lines 1831/1846
+    (the assembly's COO/gradient residual); (b) the **uid registry** (the fixed joint
+    claiming `26ull` instead of `25ull`) → rc 42, 6 failures, with the diagnostic itself
+    flipping to `uid25 = ANOTHER SYSTEM` (the ownership pin is therefore non-vacuous);
+    (c) `kMakeSpdSweeps 8 -> 0` → **not** caught, and provably value-invariant (rule 19).
+    The parent also re-ran the whole battery independently: `[abd_joint_a]` 223/8,
+    `~[abd_joint_a]` 761233/167 (the T6.3a baseline exactly), the full suite 761456/175,
+    `[abd_base]/[abd_linear]/[abd_dynamics]/[abd_constitution]` 2143/7 · 495/7 · 547/7 ·
+    523/7, standalone 69/0, generator `--check --selfcheck` rc 0, and **ctest 1/1 passed**
+    (22.60 s) — the first ctest attempt failed with LC's CUDA compiler reporting *"Failed to
+    start the process: An operation on a socket could not be performed because the system
+    lacked sufficient buffer space or because a queue was full"*
+    (`LuisaCompute/src/backends/cuda/cuda_compiler.cpp:54`), a **transient host-resource
+    error** (a parallel batch of GPU compilers had just run), not a defect: the immediate
+    re-run passed.  Budget for it when several JIT-heavy runs are launched back to back.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
