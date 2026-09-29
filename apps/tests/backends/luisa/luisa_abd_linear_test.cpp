@@ -1739,6 +1739,29 @@ using DenseVec          = uipc::Vector<Float, kDenseDim>;
 // ===========================================================================
 namespace t61b
 {
+/// The test-local mock ABD constitution's uid.
+///
+/// T6.3a MOVED THIS CLAIM from uid 1 to uid **8** (cookbook §7.24 rule 9): uid 1 is
+/// the real `uipc::backend::luisa::OrthoPotential`'s and uid 2 the real `ARAP`'s, and
+/// the ABD dynamics hands a uid's geometry group to the *last* equal-uid entry in the
+/// uid-sorted constitution list -- i.e. to the real constitutions, whose systems are
+/// built after this binary's test-local ones ('T' < 'u').  A scene of *this* file must
+/// keep its bodies in the mock's group, because the file's oracle is the
+/// subsystem's *assembly*: the mock's `do_compute_gradient_hessian` writes nothing, so
+/// the constitution term of the assembled body block stays exactly zero (as it was
+/// when the mock claimed uid 1 and no backend constitution existed).  uid 8 is the
+/// last of the frontend-registered `AffineBody`-type uids and is grep-proven unused.
+constexpr U64 kMockConstitutionUID = 8;
+
+/// Route a scene geometry into the mock's group (the frontend's `apply_to` wrote
+/// uid 1).
+inline void claim_mock_uid(SimplicialComplex& sc)
+{
+    auto cuid = sc.meta().find<U64>(builtin::constitution_uid);
+    UIPC_ASSERT(cuid, "t61b: the frontend did not write `constitution_uid`");
+    view(*cuid).front() = kMockConstitutionUID;
+}
+
 /// `kBodyCount` marked ABD cubes (identity affine rest+deformed state) plus, when
 /// `with_constraints`, the frontend `SoftTransformConstraint` on every instance
 /// (uid 16 -> the test-local `T61bConstraint`) and a fixed-joint geometry (uid 25
@@ -1765,6 +1788,10 @@ namespace t61b
 
         AffineBodyConstitution abd;
         abd.apply_to(sc, kKappa, kRho);
+        // T6.3a: keep this file's bodies in the mock's group (uid 8), so the
+        // constitution term of the assembled body block is exactly zero -- see
+        // `kMockConstitutionUID`.
+        claim_mock_uid(sc);
         view(sc.transforms())[0] = Matrix4x4::Identity();
 
         sc.meta().create<IndexT>(kMarker, 1);

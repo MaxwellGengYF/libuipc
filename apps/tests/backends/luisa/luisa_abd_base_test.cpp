@@ -44,14 +44,28 @@
  *     ............................................... abd_base_device_vs_host
  *
  * Reachable uids: the frontend's `uipc::constitution::AffineBodyConstitution`
- * writes uid **1** ("OrthoPotential") into the geometry's `constitution_uid` meta
- * attribute, and T6.3a owns the *backend* constitution of that uid.  T6.1a has no
- * backend ABD constitution at all, so this file registers a test-local mock that
- * claims uid 1 and does the group's work -- exactly the T5.1/T5.2 arrangement for
- * the FEM uids (T5.1's mock claims ARAP's uid 9 and T5.2 reports the collision).
- * When T6.3a lands, the group goes to whichever system registered first and this
- * file's scene case will report which one owns it instead of asserting blindly
- * (the mock records what `do_init` handed *it*).
+ * writes uid **1** ("OrthoPotential") / **2** ("ARAP") into the geometry's
+ * `constitution_uid` meta attribute.  T6.1a has no backend ABD constitution at all,
+ * so this file registers a test-local mock that claims a uid and does the group's
+ * work -- exactly the T5.1/T5.2 arrangement for the FEM uids (T5.1's mock claims
+ * ARAP's uid 9 and T5.2 reports the collision).
+ *
+ * T6.3a REVISITED THAT CLAIM (cookbook §7.24 rule 9): the mock used to claim uid 1
+ * and had to move, because `AffineBodyDynamics::Impl::_build_constitutions` sorts
+ * the registered constitutions by uid and hands the uid's geometry group to the
+ * **last** of the equal-uid entries, and the systems are built in demangled-type-name
+ * order -- `T61ABDMockConstitution` ('T' = 0x54) precedes
+ * `uipc::backend::luisa::OrthoPotential` ('u' = 0x75), so the *real* T6.3a
+ * constitution would always have taken uid 1 and this file's scene case would have
+ * read an empty group (measured, see the T6.3a report).  The mock therefore claims
+ * uid **8** -- the last of the eight frontend-registered `AffineBody`-type uids
+ * (`src/constitution/affine_body_constitution.cpp`), grep-proven unused by every
+ * backend system and every test -- and every ABD geometry of *this* file's scenes is
+ * labelled uid 8 (`claim_mock_uid`).  The assertions are unchanged: the mock still
+ * owns exactly this file's scenes, and the real uid-1/uid-2 constitutions are
+ * invalidated there (their uid is absent from the scene's constitution tabular), so
+ * nothing this file compares moves.  T6.3b/T6.4 must revisit this claim if they need
+ * uid 8.
  *
  * Shared-binary rule (cookbook §7.14 rule 6): every system registered by every test
  * file is built for every scene, so this file asserts only on *its own* slices (via
@@ -791,7 +805,24 @@ auto& abd_dump_kernel()
 // ---------------------------------------------------------------------------
 namespace t61
 {
-inline constexpr U64 kOrthoPotentialUID = 1;  // uipc::constitution::AffineBodyConstitution
+/// The test-local mock constitution's uid.  It is **8** -- the last frontend-
+/// registered `AffineBody`-type uid (`src/constitution/affine_body_constitution.cpp`
+/// registers 1..8) and grep-proven unused by every backend system and every test.
+/// uid 1 belongs to T6.3a's real `uipc::backend::luisa::OrthoPotential` and uid 2 to
+/// its `ARAP`; a mock claiming either would lose the group to the real constitution
+/// (the system build order is the demangled-type-name order and the last equal-uid
+/// entry owns the group).  See the file comment.
+inline constexpr U64 kMockConstitutionUID = 8;
+
+/// Writes the mock's uid into a scene geometry's `constitution_uid` meta attribute --
+/// the one label that routes the geometry into the mock's group (the frontend's
+/// `apply_to` wrote uid 1/2, the real constitutions' uid).
+inline void claim_mock_uid(SimplicialComplex& sc)
+{
+    auto cuid = sc.meta().find<U64>(builtin::constitution_uid);
+    UIPC_ASSERT(cuid, "t61: the frontend did not write `constitution_uid`");
+    view(*cuid).front() = kMockConstitutionUID;
+}
 
 struct Rec
 {
@@ -831,7 +862,7 @@ class T61ABDMockConstitution final : public gg::AffineBodyConstitution
     using AffineBodyConstitution::AffineBodyConstitution;
 
   protected:
-    U64 get_uid() const noexcept override { return t61::kOrthoPotentialUID; }
+    U64 get_uid() const noexcept override { return t61::kMockConstitutionUID; }
 
     void do_build(BuildInfo& info) override
     {
@@ -1023,6 +1054,9 @@ SimplicialComplex make_box_body(Float                          L,
 
     AffineBodyConstitution abd;
     abd.apply_to(sc, kappa, rho);
+    // T6.3a: this scene's bodies belong to the *test-local mock* (uid 8), not to the
+    // real uid-1 `OrthoPotential` -- see the file comment.
+    t61::claim_mock_uid(sc);
 
     auto T = view(sc.transforms());
     for(SizeT i = 0; i < body_count; ++i)
@@ -1055,6 +1089,7 @@ SimplicialComplex make_trimesh_body(Float                          L,
     const auto o = box_moments(L, 1000.0);
     AffineBodyConstitution abd;
     abd.apply_to(sc, kappa, mass_matrix_oracle(o.m, o.mx, o.mxx), o.volume);
+    t61::claim_mock_uid(sc);
 
     auto T = view(sc.transforms());
     for(SizeT i = 0; i < body_count; ++i)
