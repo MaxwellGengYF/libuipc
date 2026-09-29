@@ -1,0 +1,76 @@
+#include <affine_body/inter_affine_body_constitution.h>
+/*************************************************************************************************
+* T6.1b — InterAffineBodyConstitution (port of
+* src/backends/cuda/affine_body/inter_affine_body_constitution.cu; namespace only).
+*
+* Every body is the reference's: `inter_geo_info()` slices the manager's
+* per-constitution geometry list, `do_build()` checks that the scene's
+* `ConstitutionTabular` really carries this constitution's uid (the same
+* not-registered-in-the-scene guard the other interfaces use), resolves the
+* manager, runs the subclass hook and registers itself; the four hook forwards are
+* verbatim.  `report_gradient_hessian_extent` keeps the reference's
+* `issue #295` assertion (a constitution may not report Hessian blocks while
+* `gradient_only`).
+*************************************************************************************************/
+namespace uipc::backend::luisa
+{
+span<const InterAffineBodyConstitution::InterGeoInfo> InterAffineBodyConstitution::inter_geo_info() const noexcept
+{
+    auto [offset, count] = m_manager->m_impl.constitution_geo_info_offsets_counts[m_index];
+    return span{m_manager->m_impl.constitution_inter_geo_infos}.subspan(offset, count);
+}
+
+void InterAffineBodyConstitution::do_build()
+{
+    auto all_uids = world().scene().constitution_tabular().uids();
+    if(!std::binary_search(all_uids.begin(), all_uids.end(), uid()))
+    {
+        throw SimSystemException(
+            fmt::format("{} requires Constraint UID={}", name(), uid()));
+    }
+
+    m_manager = require<InterAffineBodyConstitutionManager>();
+
+    // let the subclass take care of its own build
+    BuildInfo info;
+    do_build(info);
+
+    m_manager->add_constitution(this);
+}
+
+void InterAffineBodyConstitution::init(FilteredInfo& info)
+{
+    do_init(info);
+}
+
+void InterAffineBodyConstitution::report_energy_extent(EnergyExtentInfo& info)
+{
+    do_report_energy_extent(info);
+}
+
+void InterAffineBodyConstitution::compute_energy(ComputeEnergyInfo& info)
+{
+    do_compute_energy(info);
+}
+
+void InterAffineBodyConstitution::report_gradient_hessian_extent(GradientHessianExtentInfo& info)
+{
+    do_report_gradient_hessian_extent(info);
+
+    UIPC_ASSERT(!(info.gradient_only() && info.m_hessian_count != 0),
+                "When gradient_only is true, hessian_count must be 0, but {} provides hessian count={}.\n"
+                "Ref: https://github.com/spiriMirror/libuipc/issues/295",
+                name(),
+                info.m_hessian_count);
+}
+
+void InterAffineBodyConstitution::compute_gradient_hessian(ComputeGradientHessianInfo& info)
+{
+    do_compute_gradient_hessian(info);
+}
+
+U64 InterAffineBodyConstitution::uid() const noexcept
+{
+    return get_uid();
+}
+}  // namespace uipc::backend::luisa

@@ -34,6 +34,10 @@ class FiniteElementMethod;
 // T6.1a: the ABD dynamics is engine-aware in the same way (the reference resolves
 // it *before* the FEM method and calls its init() first).
 class AffineBodyDynamics;
+// T6.1b: so is the inter-affine-body constitution manager (reference step 1 order:
+// affine_body_dynamics -> inter_affine_body_constitution_manager ->
+// finite_element_method -> global_body_manager).
+class InterAffineBodyConstitutionManager;
 
 class SimEngine final : public backend::SimEngine
 {
@@ -121,6 +125,10 @@ class SimEngine final : public backend::SimEngine
     // T6.1a: optional (`find<>`) — the ABD dynamics only exists when the scene uses
     // an AffineBody constitution type.
     AffineBodyDynamics* m_affine_body_dynamics = nullptr;
+    // T6.1b: optional (`find<>`) — the inter-affine-body constitution manager only
+    // exists when the scene uses an `InterAffineBody` constitution type (a joint or
+    // an articulation).
+    InterAffineBodyConstitutionManager* m_inter_affine_body_constitution_manager = nullptr;
 
     PipelineType m_pipeline_type = PipelineType::Basic;
 

@@ -21,9 +21,14 @@
  *  * `Impl::{init, record_start_point, step_forward, compute_energy}` (the
  *    reference's kernels + `kinetic->compute_energy` / `cst->compute_energy`
  *    fan-outs — they need the T6.2 kinetic and the T6.3 constitutions),
- *  * the five `do_*` hooks, `add_reporter` and `REGISTER_SIM_SYSTEM`.
+ *  * the five `do_*` hooks and `REGISTER_SIM_SYSTEM`.
  * Nothing is stubbed: the hooks are declared, so an unreachable definition is a
  * link error (cookbook §7.16 rule 13).
+ *
+ * PULLED FORWARD BY T6.1b: `add_reporter` — its only caller is
+ * `ABDLineSearchSubreporter::do_build()`, which T6.1b had to define (the animator's
+ * line-search subreporter needs the base's vtable).  It lives in the new
+ * abd_line_search_reporter.cpp with a SCOPE NOTE naming the rest as T6.4's.
  *********************************************************************/
 #include <sim_system.h>
 #include <line_search/line_search_reporter.h>

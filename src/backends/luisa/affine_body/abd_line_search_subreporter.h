@@ -7,10 +7,14 @@
  * The sibling of abd_line_search_reporter.h: `ABDLineSearchReporter::Impl` holds a
  * `SimSystemSlotCollection<ABDLineSearchSubreporter>`, so the type must be
  * complete.  Ported here: the class declaration with the reference's two
- * `using`-aliases, both info classes, the hook set and the private plumbing
- * declarations.  NOT defined here (T6.4): `do_build()`'s body (it requires
- * `ABDLineSearchReporter` and calls `add_reporter`) and
- * `init()`/`report_extent()`/`compute_energy()`.
+ * Ported here: the class declaration with the reference's two `using`-aliases, both
+ * info classes, the hook set and the private plumbing declarations.  ITS BODIES
+ * ARE PULLED FORWARD BY T6.1b (abd_line_search_subreporter.cpp: the four
+ * forwarding hooks) because the ABD animator's and the inter-body manager's
+ * line-search subreporters derive from it and a vtable needs them (the T5.3 /
+ * fem_line_search_subreporter.cpp precedent).  NOT defined here (T6.4):
+ * `ABDLineSearchReporter`'s own bodies, so `do_build()`'s
+ * `require<ABDLineSearchReporter>()` invalidates every subreporter until then.
  *********************************************************************/
 #include <sim_system.h>
 #include <affine_body/abd_line_search_reporter.h>

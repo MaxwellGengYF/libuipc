@@ -17,25 +17,24 @@
  * WHAT IS PORTED HERE (the reference's inline surface)
  *  * the class declaration and its `DiagLinearSubsystem` base,
  *  * `ComputeGradientHessianInfo` — complete: the reference defines its ctor and
- *    accessors *inline in the header*, so nothing is deferred,
+ *    accessors *inline in the header*, so nothing is deferred.  **T6.1b corrected
+ *    its two buffer types** to the reference's dense `BufferView<Vector12>` /
+ *    `BufferView<Matrix12x12>` (T6.1a had used the reporter interface's
+ *    doublet/triplet views; the kinetic and the constitutions write
+ *    `gradients(body_i) = G12`, so the dense shape is the load-bearing one),
  *  * `diag_hessian()` (an inline accessor over `Impl`),
  *  * the nested `Impl` / `ReportExtentInfo` / `AssembleInfo` *declarations*.
  *
- * WHAT IS **NOT** DEFINED HERE (all T6.1b's, marked per member):
- *  * `ReportExtentInfo::{gradient_count, hessian_count, check}` — the reference
- *    defines them in the .cu; `check()` is the `check_report_extent` pattern the
- *    cookbook forbids weakening, so it is declared and left to T6.1b rather than
- *    stubbed (cookbook §7.16 rule 13: a stub would turn a missing-feature build
- *    error into a runtime no-op),
+ * WHAT T6.1b ADDED (all of it defined in abd_linear_subsystem.cpp):
+ *  * `ReportExtentInfo::{gradient_count, hessian_count, check}`,
  *  * `AssembleInfo`'s ctor + `gradients()/hessians()/gradient_only()`,
  *  * every `Impl` method and every `do_*` override, and
- *  * `REGISTER_SIM_SYSTEM` + `get_uid()` (the reference's `ABDLinearSubsystemUID`).
+ *  * `REGISTER_SIM_SYSTEM` + `get_uid()` (the reference's `ABDLinearSubsystemUID`
+ *    == 0, issue #271).
  *
- * Consequence, stated for the parent: with this file in place the ABD systems
- * build and run, but `ABDLinearSubsystem` is never instantiated (it is not
- * registered), so the global linear system has no ABD dofs until T6.1b.  Nothing
- * here can silently no-op: an unreachable definition is a *link* error, and the
- * class is abstract-or-unreferenced in the meantime.
+ * With this file the ABD subsystem is registered, so the global linear system has
+ * ABD dofs in every ABD scene: `uid 0 < FEM's uid 1`, i.e. the ABD block comes
+ * first in the shared dof space.
  *********************************************************************/
 #include <sim_system.h>
 #include <linear_system/diag_linear_subsystem.h>
@@ -63,16 +62,20 @@ class ABDLinearSubsystem final : public DiagLinearSubsystem
     }
 
     /// The info the kinetic system and the constitutions write their element
-    /// gradient/Hessian into.  Every accessor is inline in the reference, so this
-    /// class is complete (T5.3's `FEMLinearSubsystem::ComputeGradientHessianInfo`
-    /// precedent).
+    /// gradient/Hessian into: **dense per-body buffers** (the reference's
+    /// `cuda_tool::BufferView<Vector12>` / `BufferView<Matrix12x12>`), indexed by
+    /// the *body* index within the subsystem's window.  T6.1a had mapped these two
+    /// members onto `LDoubletVectorView`/`LTripletMatrixView` (the *reporter*
+    /// interface's shape); T6.1b corrects that to the reference's dense buffers,
+    /// because the kinetic/constitutions write `gradients(body_i) = G12` (measured
+    /// against the reference's `ortho_potential_compute_gradient_hessian_kernel`).
     class ComputeGradientHessianInfo
     {
       public:
-        ComputeGradientHessianInfo(bool                                   gradient_only,
-                                   lla::LDoubletVectorView<Float, 12>     gradient,
-                                   lla::LTripletMatrixView<Float, 12, 12> hessians,
-                                   Float                                  dt) noexcept
+        ComputeGradientHessianInfo(bool                           gradient_only,
+                                   lud::LBufferView<LVector12>    gradient,
+                                   lud::LBufferView<LMatrix12x12> hessians,
+                                   Float                          dt) noexcept
             : m_gradient_only(gradient_only)
             , m_gradients(gradient)
             , m_hessians(hessians)
@@ -86,13 +89,13 @@ class ABDLinearSubsystem final : public DiagLinearSubsystem
         auto dt() const noexcept { return m_dt; }
 
       private:
-        bool                                   m_gradient_only = false;
-        lla::LTripletMatrixView<Float, 12, 12> m_hessians;
-        lla::LDoubletVectorView<Float, 12>     m_gradients;
-        Float                                  m_dt = 0.0;
+        bool                           m_gradient_only = false;
+        lud::LBufferView<LMatrix12x12> m_hessians;
+        lud::LBufferView<LVector12>    m_gradients;
+        Float                          m_dt = 0.0;
     };
 
-    /// SCOPE NOTE (T6.1b): the three member bodies are the reference's .cu
+    /// SCOPE NOTE (T6.1b, closed): the three member bodies are the reference's .cu
     /// definitions (`check()` is the `check_report_extent` guard).
     class ReportExtentInfo
     {
@@ -119,7 +122,9 @@ class ABDLinearSubsystem final : public DiagLinearSubsystem
 
     class Impl;
 
-    /// SCOPE NOTE (T6.1b): ctor + accessors are the reference's .cu definitions.
+    /// SCOPE NOTE (T6.1b, closed): ctor + accessors are the reference's .cu
+    /// definitions.  This is the *reporter* interface: 12x12 blocks with explicit
+    /// (body_i, body_j) indices.
     class AssembleInfo
     {
       public:
@@ -136,8 +141,8 @@ class ABDLinearSubsystem final : public DiagLinearSubsystem
         bool   m_gradient_only = false;
     };
 
-    /// SCOPE NOTE (T6.1b): the whole Impl (the assembly kernels, the
-    /// gradient/Hessian windows, the dytopo receiver, the norms) is T6.1b's; the
+    /// SCOPE NOTE (T6.1b, closed): the whole Impl (the assembly kernels, the
+    /// gradient/Hessian windows, the dytopo receiver, the norms) is ported; the
     /// member list is the reference's, so the port is a mechanical edit there.
     class Impl
     {

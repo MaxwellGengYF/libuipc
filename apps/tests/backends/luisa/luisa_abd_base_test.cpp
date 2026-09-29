@@ -2147,8 +2147,14 @@ TEST_CASE("abd_base_scene", "[luisa][abd_base]")
     // neither `GlobalAnimator` nor `AffineBodyAnimator` exists.  This is the
     // *not-implemented* signal for the batch that owns them, not an expectation of
     // the final behaviour.
-    T61_CHECK(c, T61ABDProbe::global_animator == nullptr);
-    T61_CHECK(c, T61ABDProbe::animator == nullptr);
+        T61_CHECK(c, T61ABDProbe::global_animator == nullptr);
+        // T6.1b landed the ABD animator: it is *registered* now, and its `find<>`
+        // result is the registered-but-invalidated object (T5.3's finding), so the
+        // "is it in play?" question is asked with `is_valid()` -- in this scene
+        // there is no Constraint constitution, hence no `GlobalAnimator`, so the
+        // animator is invalidated by its own `require<>`.
+        T61_CHECK(c, (T61ABDProbe::animator == nullptr
+                      || T61ABDProbe::animator->is_valid() == false));
 
     REQUIRE(T61ABDProbe::abd != nullptr);
     auto& abd = *T61ABDProbe::abd;

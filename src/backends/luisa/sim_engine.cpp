@@ -28,6 +28,9 @@
 // sim_engine_do_init.cu step 1 resolves and initialises it *before* the FEM
 // method and before the global body manager).
 #include <affine_body/affine_body_dynamics.h>
+// T6.1b: the inter-affine-body constitution manager is engine-aware too (the
+// reference's step 1 initialises it between the ABD dynamics and the FEM method).
+#include <affine_body/inter_affine_body_constitution_manager.h>
 
 
 namespace uipc::backend::luisa
@@ -131,6 +134,11 @@ void SimEngine::build_engine_systems()
     // T6.1a: ABD dynamics (optional: only a scene with an AffineBody constitution
     // type has one).  The reference resolves it *before* the FEM method.
     m_affine_body_dynamics = find<AffineBodyDynamics>();
+    // T6.1b: the inter-affine-body constitution manager (optional: its
+    // SimSystemCreator only creates it when the scene has an `InterAffineBody`
+    // constitution type).  The reference resolves it right after the dynamics and
+    // *before* the FEM method (sim_engine_do_init.cu step 1).
+    m_inter_affine_body_constitution_manager = find<InterAffineBodyConstitutionManager>();
 }
 
 void SimEngine::set_pipeline_type()
@@ -164,16 +172,20 @@ void SimEngine::init_scene()
 
     // 1. Before the common scene initialization: the ABD dynamics builds its
     //    geometry/constitution infos and hands the constitutions their init();
-    //    then the FEM method does the same, and finally the body manager hands out
-    //    the global body ranges that the vertex reporters use while filling
-    //    body_ids.
+    //    then the inter-affine-body manager groups the joint geometries and hands
+    //    its constitutions theirs; then the FEM method does the same, and finally
+    //    the body manager hands out the global body ranges that the vertex
+    //    reporters use while filling body_ids.
     //    (Reference order, sim_engine_do_init.cu step 1:
     //     affine_body_dynamics -> inter_affine_body_constitution_manager ->
-    //     finite_element_method -> global_body_manager; the inter-affine-body
-    //     manager is T6.1b's.)
+    //     finite_element_method -> global_body_manager.)
     if(m_affine_body_dynamics)
     {
         m_affine_body_dynamics->init();
+    }
+    if(m_inter_affine_body_constitution_manager)
+    {
+        m_inter_affine_body_constitution_manager->init();
     }
     if(m_finite_element_method)
     {

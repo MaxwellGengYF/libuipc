@@ -25,26 +25,18 @@
  *    defines it as `return m_dt;`, the only sensible reading of the member it
  *    stores, so T6.4's constraints cannot hit a link error.
  *
- * WHAT IS **NOT** DEFINED HERE (T6.1b's, none of it stubbed):
- *  * `Impl::{init, step}`, `do_init()`, `do_step()`, `do_build(BuildInfo&)`,
- *    `compute_energy(...)`, `compute_gradient_hessian(...)`,
- *    `BaseInfo::{substep_ratio, qs, q_prevs, body_masses, is_fixed}`,
- *    `ComputeEnergyInfo::energies()`,
- *    `ComputeGradientHessianInfo::{gradients, hessians, gradient_only}`,
- *    `ReportExtentInfo::{hessian_count, gradient_count, energy_count, check}`
- *    (`check()` is the `check_report_extent` pattern — never weakened),
- *    `FilteredInfo::{anim_geo_infos, for_each}` (the two templates are declared
- *    here, defined in details/affine_body_animator.inl by T6.1b),
- *  * `REGISTER_SIM_SYSTEM(AffineBodyAnimator)` and the two sub-reporters the
- *    reference defines at the bottom of its .cu
- *    (`AffineBodyAnimatorLinearSubsystemReporter` needs T6.1b's
- *    abd_linear_subsystem_reporter.h; `AffineBodyAnimatorLineSearchSubreporter`
- *    needs T6.4's abd_line_search_subreporter.h) plus the inter-affine-body layer.
+ * WHAT IS **NOT** DEFINED HERE (all T6.4's, none of it stubbed):
+ *  * `ABDLineSearchReporter`'s own bodies (its `Impl::{init, record_start_point,
+ *    step_forward, compute_energy}` + the five `do_*` hooks + its
+ *    `REGISTER_SIM_SYSTEM`) and `ABDLineSearchReporter::add_reporter` -- the last
+ *    one is the *only* body of that file T6.1b had to pull forward (a vtable needs
+ *    it), see abd_line_search_reporter.cpp.
  *
- * Consequence, stated for the parent: until T6.1b, no AffineBodyAnimator exists in
- * any scene, so `AffineBodyConstraint::do_build()`'s `require<AffineBodyAnimator>()`
- * throws `SimSystemException` and invalidates the constraint.  That is the correct
- * "not implemented yet" signal (T5.1 rule 13) -- not a silent no-op.
+ * Consequence, stated for the parent: with this file defined and registered, an
+ * `AffineBodyAnimator` exists in every scene that has both an AffineBody and a
+ * Constraint constitution; a scene with neither invalidates it (`require<>`
+ * throws), which is the port's "not in play" signal.  Its line-search subreporter
+ * is invalidated in every scene until T6.4 registers `ABDLineSearchReporter`.
  *********************************************************************/
 #include <animator/animator.h>
 #include <affine_body/affine_body_dynamics.h>
@@ -172,6 +164,16 @@ class AffineBodyAnimator final : public Animator
         }
         void check(std::string_view name) const;
 
+        /// DEVIATION (T6.1b): read-only accessors for the three counts.  The
+        /// reference has none (the animator is its only reader), but a unit test
+        /// that drives a constraint's `do_report_extent` directly has no way to
+        /// observe the 0/0/0 contract otherwise; the setters above keep the
+        /// reference's names and signatures (the T5.4b precedent for the FEM
+        /// animator's `ReportExtentInfo`).
+        [[nodiscard]] SizeT energy_count() const noexcept { return m_energy_count; }
+        [[nodiscard]] SizeT gradient_count() const noexcept { return m_gradient_segment_count; }
+        [[nodiscard]] SizeT hessian_count() const noexcept { return m_hessian_block_count; }
+
       private:
         friend class AffineBodyAnimator;
         friend class AffineBodyConstraint;
@@ -220,3 +222,5 @@ class AffineBodyAnimator final : public Animator
     virtual void do_build(BuildInfo& info) override;
 };
 }  // namespace uipc::backend::luisa
+
+#include "details/affine_body_animator.inl"

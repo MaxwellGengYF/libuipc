@@ -2576,6 +2576,151 @@ lines — plus the engine wiring in `luisa/sim_engine.{h,cpp}` and the test
    (`gvm_body_ids == body_offset + inst`).  After the reverts the same commands are
    green again (2143 assertions, 0 failures).
 
+### 7.22 Patterns established in T6.1b (ABD linear subsystem, animator, inter-affine-body layer)
+M6 batch **T6.1b** completes the ABD layer M6 opened: `affine_body/abd_linear_subsystem.{h,cpp}`
+(+ `abd_linear_subsystem_function.h`), `abd_linear_subsystem_reporter.{h,cpp}`,
+`abd_dytopo_effect_receiver.{h,cpp}`, `affine_body_animator.{h,cpp}`
+(+ `details/affine_body_animator.inl`), `abd_line_search_reporter.cpp` /
+`abd_line_search_subreporter.cpp` (the two T6.4 bodies a vtable needs, see rule 1), the
+inter-affine-body layer (`inter_affine_body_constitution.{h,cpp}`,
+`inter_affine_body_constitution_manager.{h,cpp}` + its `.inl`, `inter_affine_body_animator.{h,cpp}`,
+`inter_affine_body_constraint.{h,cpp}`), the `SimEngine` step-1 wiring for the inter-body
+manager and the test `apps/tests/backends/luisa/luisa_abd_linear_test.cpp` (tag `[abd_linear]`).
+1. **The dependency closure was measured, and only two T6.4 bodies were pulled forward.**
+   `AffineBodyAnimatorLineSearchSubreporter` and
+   `InterAffineBodyConstitutionLineSearchSubreporter` derive from T6.4's
+   `ABDLineSearchSubreporter`, whose only virtual override plus the four forwarding hooks are
+   needed for their *vtables*, and that `do_build` calls
+   `ABDLineSearchReporter::add_reporter` — so `abd_line_search_subreporter.cpp` (4 bodies) and
+   `abd_line_search_reporter.cpp` (1 body, `add_reporter`) exist here with SCOPE NOTEs naming
+   T6.4 as the owner of the rest (the T5.3 / `fem_line_search_subreporter.cpp` precedent).  The
+   subreporters are then *invalidated in every scene* by
+   `require<ABDLineSearchReporter>()` — the explicit not-implemented signal, not a no-op.
+2. **The ABD Jacobi triple's index conventions, and the `I * 16` that is easy to get wrong.**
+   A body owns 12 dofs, so its 12x12 block is a **4x4 block of 3x3 blocks** and the global
+   triplet buffer (the `DiagLinearSubsystem`/`GlobalLinearSystem` `DoFBlockSize == 3` layout) is
+   a 3x3-block COO: the reference's `TripletMatrixAssembler::block<4,4>(I * 4 * 4).write(...)`
+   *starts at the I-th body's 16-triplet run*, so the kernel's per-thread call must pass
+   `I * kTripletsPerBodyBlock`, not `0`.  T6.1b shipped `0` first and the COO assertion caught
+   it immediately: only thread 0's block landed and the rest of the array kept the `-1` sentinel
+   (measured: 208 triplets, 17 distinct keys instead of 48).  The unpacking order is
+   `counter = a * 4 + b` with the sub-block `H12.block<3,3>(3a, 3b)`, and the row/col indices
+   written are the *submatrix-relative* blocked indices (`body * 4 + a`), which the view adds to
+   its own `submatrix_offset`.
+3. **`zero_out_lower` is part of the convention, not a detail.** Every *same-body* 12x12 block
+   (the body term's kinetic+shape block *and* every reporter's diagonal block *and* the dytopo
+   same-body pair) is stored **upper-triangular in 3x3 blocks**; for `body_i < body_j` all 16
+   sub-blocks are written; for `body_i > body_j` the reference zeroes the block (its reporters
+   only report the upper triangle).  The symmetric reconstruction is then performed by
+   `ge2sym` + `MatrixConverter`: entries with `row > col` are dropped, off-diagonal blocks are
+   mirrored transposed by the SpMV, and a *diagonal* (`row == col`) block is **not** mirrored
+   (`spmv.h`'s contract).  Measured consequence, which a test oracle must model: the assembled
+   ABD matrix is symmetric at the **3x3-block level only** — the within-body couplings that
+   `zero_out_lower` removed stay zero.
+4. **The dense oracle must `+=`, never `=`.**  The oracle that rebuilds the matrix from the
+   hand-derived `(row, col, block)` sums walks a *map that still contains the zero-valued lower
+   half* of each diagonal block; writing the mirror with `=` lets that zero entry clobber the
+   real upper entry (measured: `A_eff(0,3)` 2.55 vs oracle 0.0).  With `+=` the measured
+   agreement is **2.493e-14** against the effective operator extracted by 24 unit-vector
+   `rbk_sym_spmv` solves, and `A*x` matches to **4.265e-16** (bound 1e-5) while the
+   "no mirroring at all" convention is off by **5.074e-01** — i.e. the comparison pins the
+   convention instead of accepting any assembly.
+5. **What the COO assertion buys.**  `adj_linear_chain` reads the raw `triplet_A` (208 triplets)
+   *before* the conversion, sums duplicates per `(row, col)` and compares against the
+   hand-derived map: **worst |dev-oracle| 0.000e+00** with 432 values compared, and the
+   hand-derived block sums are exact for every key.  After `ge2sym` + `convert` the BCOO is
+   sorted/unique with the duplicate sums preserved (**worst 1.178e-14**, 36 unique blocks).
+   The two conventions (mirror / upper-only) are also exposed as an `is_valid()`-style
+   non-vacuity: the block map of the *body* term alone cannot distinguish them, the
+   within-body lower keys can.
+6. **`ComputeGradientHessianInfo`'s two buffer types were wrong in T6.1a's scaffold, and T6.1b
+   fixed them.**  The reference's kinetic/constitution interface hands over **dense per-body
+   buffers** (`cuda_tool::BufferView<Vector12>` / `BufferView<Matrix12x12>`); a constitution
+   writes `gradients(body_i) = G12` (measured against
+   `ortho_potential_compute_gradient_hessian_kernel`).  T6.1a had mapped them onto
+   `LDoubletVectorView`/`LTripletMatrixView` — the *reporter* interface's shape (which is
+   correct for `AssembleInfo` and for `AffineBodyAnimator::ComputeGradientHessianInfo`, where a
+   constraint reports 12x12 `(body_i, body_j)` blocks).  In the port the dense buffers are
+   `lud::LBufferView<LVector12>` / `lud::LBufferView<LMatrix12x12>` (windowed views), and a
+   constitution's kernel is dispatched with them directly (the dispatch encodes the window).
+7. **LC has no `fill` *command*, and `LBufferView::fill` runs on the main stream.**  The ABD
+   subsystem's contact-only branch needed the reference's `gradients.buffer_view().fill(0)`
+   and got a local zero-kernel on the frame stream instead (§7.11 rule 7), the T5.4a finding.
+   The same trap is *live* in `GlobalLinearSystem::Impl::_assemble_linear_system`, whose
+   `triplet_A.fill(0)/row_indices().fill(-1)` go to the main stream while the subsystem kernels
+   are recorded on the frame stream: a test that reads the assembled buffers back must
+   `gg::frame_stream().synchronize()` (this batch's test does), and **T5.4a's test never read the
+   assembled content back, which is why the race was not visible before** — T8.3 should replace
+   those three fills with recorded kernels when it ports `solve()`.
+8. **The ABD assembly budget.**  `plan_extent` (the factored routine the unit test drives) is
+   the reference's arithmetic: the body term contributes **one 12x12 block per body** only when
+   the Hessian is assembled at all, the reporters contribute their 12x12 *gradient doublets*
+   (always scanned — the slices are needed in gradient-only mode too) and their 12x12 Hessian
+   blocks (only when the Hessian is assembled), the dytopo receiver contributes its 3x3
+   *triplet* count, and the reported extent is `(sum of 12x12 blocks) * 16` 3x3 triplets with
+   `dof_count = body_count * 12`.  The ABD gradient extent is the *dof count* (the gradient
+   buffer is the global one), not the reporters' doublet count.
+9. **The per-vertex -> per-body Jacobi maps are the dytopo end's whole content.**
+   `_assemble_dytopo_effect` maps the classified effect with `v2b` and the per-vertex `J`:
+   `G12 = J_i^T G3` scattered at `body_i * 12`, and for a vertex pair the reference's three
+   cases — `body_i < body_j`: `J_i^T H J_j`; `body_i > body_j`: `J_j^T H^T J_i`;
+   `body_i == body_j`: `J_i^T H J_j (+ J_j^T H^T J_i)` when `i != j`, one term when `i == j` —
+   followed by `zero_out_lower` for the same-body case and a write at the swapped `(L, R)`
+   (`L = min(body_i, body_j)`).  The receiver's `do_report` declares the *vertex* range
+   `[vertex_offset, vertex_offset + vertex_count)`; with several receivers the manager partitions
+   the effect by range (T4.3's coverage), while a **single** receiver takes the manager's fast
+   path and receives the collected effect unfiltered.
+10. **The inter-affine-body manager's two orderings.**  `Impl::init` sorts the registered
+    constitutions by **uid** (`m_index` from that order) and fills two lists from the scene's
+    geometries *in scene order*: `inter_geo_infos` (a geometry whose **base**
+    `constitution_uid` is one of ours) and `constitution_inter_geo_infos` (base **plus**
+    `extra_constitution_uids` hits, counted per constitution).  Both are `stable_sort`ed by
+    constitution uid, so same-constitution geometries keep scene order and the offset/count
+    slicing is sound (`UIPC_ASSERT(total == size)` at the end of `init`).  The manager is only
+    *created* when the scene's constitution table carries the `InterAffineBody` type
+    (`SimSystemCreator`), and `SimEngine::init_scene` now initialises it in the reference's
+    step-1 order: `affine_body_dynamics -> inter_affine_body_constitution_manager ->
+    finite_element_method -> global_body_manager`.
+11. **The ABD animator's fan-outs and slice semantics.**  `Impl::init` sorts the constraints by
+    uid (assigning `m_index`), associates each with the geometries whose `constraint_uids`
+    mention its uid (aborting on an unclaimed uid — the reference's contract), and
+    `Impl::step` runs `step` + `report_extent` in the *unsorted* `constraints.view()` order,
+    writing the per-constraint energy/gradient/Hessian counts and re-scanning the offset
+    tables.  A constraint's `ComputeGradientHessianInfo::gradients()/hessians()` are the
+    *slices* `[offset, count)` of the animator's reporter buffer, so the constraint writes at
+    slice-relative indices with `(body_i, body_j)` block indices — the same shape the
+    `AssembleInfo` slices have.  `GlobalAnimator::step()` is private (only the engine drives
+    it), so a test that wants the step fan-out must go through `World::advance()`.
+12. **Test-side ordering matters when a system's gate lives in `do_init`.**  A reporter's
+    `do_init` runs inside `ABDLinearSubsystem::Impl::init()`, which only runs when the *linear
+    subsystem* is initialised (`GlobalLinearSystem::init()` or a test-local
+    `GlobalLinearSystem::Impl`), so a test that asserts a reporter's `enabled` flag before
+    calling `impl.init()` reads the *previous* value.  T6.1b's test asserts it after.
+13. **`find<T>()` returns the registered-but-invalidated object (T5.3's finding, re-measured).**
+    With the ABD animator now registered, T6.1a's `abd_base_scene` case had to stop asserting
+    `find<AffineBodyAnimator>() == nullptr` and assert the *in-play* question instead
+    (`animator == nullptr || !animator->is_valid()`), because the scene has no `Constraint`
+    constitution and therefore no `GlobalAnimator` — the animator is invalidated by its own
+    `require<>`.  This is the only pre-existing expectation T6.1b moved, and it is a *test*
+    update (the file's own comment predicted it).
+14. **Reserved uids this batch claims.**  The test-local `AffineBodyConstraint` claims uid **16**
+    (`uipc::constitution::SoftTransformConstraint`) and the test-local
+    `InterAffineBodyConstitution`/`InterAffineBodyConstraint` claim uid **25**
+    (`uipc::constitution::AffineBodyFixedJoint`) — the same knowing reuse as T6.1a's uid-1 mock
+    (`ConstitutionTabular::insert` resolves through `ConstitutionUIDCollection::find`, so an
+    arbitrary uid is impossible).  T6.4 and T6.3b own the real bodies for 16 and 25 and must
+    revisit these claims; the frontend `AffineBodyFixedJoint::create_geometry` is also what
+    makes the `InterAffineBody` *type* appear in the scene (the manager's creation gate).
+15. **Regression shape of this batch.**  `run` -> **760163 assertions / 153 test cases** (=
+    the T6.1a baseline 759668/146 + this file's 495/7) and `run "~[abd_linear]"` ->
+    **759668 / 146**, i.e. *no* pre-existing expectation moved (after the one T6.1a test update
+    of rule 13, which changes an assertion's *form*, not its count).  `ctest` 1/1 and the
+    standalone build are unchanged.
+16. **Non-vacuity evidence for the batch.**  See the batch report: the `I * 16` perturbation of
+    rule 2 (the COO assertion fails with a *named* assertion and a printed key list), the
+    upper-only-convention perturbation of rule 4 (`worst_sym` jumps from 4.3e-16 to 1.19) and
+    the `dyt_dbl_idx` perturbation of the device round (a host-memory `kernel_assert` abort).
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
