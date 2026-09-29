@@ -275,7 +275,6 @@ void StableNeoHookean3D::do_compute_gradient_hessian(ComputeGradientHessianInfo&
         return;
 
     auto gradients = info.gradients();
-    auto hessians  = info.hessians();
 
     // The handles are pre-offset to this constitution's slice (see arap_3d.cpp).
     const auto g_offset = static_cast<size_t>(gradients.doublet_index_offset());
@@ -283,11 +282,36 @@ void StableNeoHookean3D::do_compute_gradient_hessian(ComputeGradientHessianInfo&
     auto       g_indices = gradients.indices().subview(g_offset, g_count);
     auto       g_values  = gradients.values().subview(g_offset * 3u, g_count * 3u);
 
-    const auto h_offset = static_cast<size_t>(hessians.triplet_index_offset());
-    const auto h_count  = static_cast<size_t>(hessians.triplet_count());
-    auto       h_row_indices = hessians.row_indices().subview(h_offset, h_count);
-    auto       h_col_indices = hessians.col_indices().subview(h_offset, h_count);
-    auto       h_values      = hessians.values().subview(h_offset * 9u, h_count * 9u);
+    // Hessian slice; empty on a *gradient-only* pass -- see arap_3d.cpp for why the
+    // placeholder substitution is required (an LC empty view's handle is null).
+    const bool gradient_only = info.gradient_only();
+    lud::LCBufferView<int32_t> h_row_indices;
+    lud::LCBufferView<int32_t> h_col_indices;
+    lud::LCBufferView<double>  h_values;
+    int32_t h_submatrix_offset_x = 0;
+    int32_t h_submatrix_offset_y = 0;
+    int32_t h_total_block_rows   = 0;
+    int32_t h_total_block_cols   = 0;
+    if(gradient_only)
+    {
+        h_row_indices = g_indices;
+        h_col_indices = g_indices;
+        h_values      = g_values;
+        h_total_block_rows = h_total_block_cols = static_cast<int32_t>(g_count);
+    }
+    else
+    {
+        auto       hessians = info.hessians();
+        const auto h_offset = static_cast<size_t>(hessians.triplet_index_offset());
+        const auto h_count  = static_cast<size_t>(hessians.triplet_count());
+        h_row_indices = hessians.row_indices().subview(h_offset, h_count);
+        h_col_indices = hessians.col_indices().subview(h_offset, h_count);
+        h_values      = hessians.values().subview(h_offset * 9u, h_count * 9u);
+        h_submatrix_offset_x = static_cast<int32_t>(hessians.submatrix_offset().x);
+        h_submatrix_offset_y = static_cast<int32_t>(hessians.submatrix_offset().y);
+        h_total_block_rows   = static_cast<int32_t>(hessians.total_rows());
+        h_total_block_cols   = static_cast<int32_t>(hessians.total_cols());
+    }
 
     auto& k = snh3d_gradient_hessian_kernel();
     frame_stream()
@@ -302,13 +326,13 @@ void StableNeoHookean3D::do_compute_gradient_hessian(ComputeGradientHessianInfo&
                   h_row_indices,
                   h_col_indices,
                   h_values,
-                  static_cast<int32_t>(hessians.submatrix_offset().x),
-                  static_cast<int32_t>(hessians.submatrix_offset().y),
-                  static_cast<int32_t>(hessians.total_rows()),
-                  static_cast<int32_t>(hessians.total_cols()),
+                  h_submatrix_offset_x,
+                  h_submatrix_offset_y,
+                  h_total_block_rows,
+                  h_total_block_cols,
                   info.rest_volumes(),
                   info.dt(),
-                  info.gradient_only() ? uint32_t{1} : uint32_t{0},
+                  gradient_only ? uint32_t{1} : uint32_t{0},
                   n)
                   .dispatch(n));
 }
