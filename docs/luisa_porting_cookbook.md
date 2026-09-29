@@ -3913,6 +3913,267 @@ assertions.
     declaration order is green), so the battery's green runs are only meaningful in the default
     order — worth a look if a future batch ever sees a spurious single-assertion failure.
 
+### 7.28 Patterns established in T6.4a (the Newton tolerance subsystem, the ABD diag preconditioner, the ABD tolerance checker, the completed ABD line-search reporter)
+
+**T6.4 was split into three batches and T6.4a is the first**: (a) *this* batch — the solve
+plumbing: `newton_tolerance/**` (not ported before, and a prerequisite: the ABD tolerance
+checker derives from `NewtonToleranceChecker`), `affine_body/abd_diag_preconditioner.*`,
+`affine_body/abd_tolerance_checker.*` and the *deferred bodies* of
+`affine_body/abd_line_search_reporter.cpp`; (b) `affine_body/constraints/**`
+(external-articulation uid 23, soft-transform uid 16, the ABD-external-body-force pair uid
+666); (c) the deferred MAS preconditioner (`mas_preconditioner_engine.{h,cu}` +
+`fem_mas_preconditioner.cu`, ~2400 lines of warp/shared-memory device code).  The split is
+recorded in `libuipc_lc_plan.md`'s M6 paragraph.  T6.4a delivers 12 files (6 new headers/sources
+in `newton_tolerance/`, 3 new `affine_body/` pairs + their two `*_function.h`, the completed
+reporter pair) plus one new generic routine in the numerics layer, the engine wiring, the
+refreshed module export list and `apps/tests/backends/luisa/luisa_abd_solve_test.cpp`
+(tag `[abd_solve]`, 8 cases / 245 assertions).
+
+1. **The tolerance subsystem is the Newton loop's convergence contract, and it is *inert*
+   until Phase 8.**  `NewtonToleranceManager` (`require<>`d by the engine like the
+   `LineSearcher`, and `init()`ed last in `init_scene`'s step-1 order, after the
+   time-integrator manager) holds the checkers; `pre_newton(frame)` fans out to every
+   checker and `check(ResultInfo&)` fans out **until the first non-converged checker**
+   (the `break` is part of the contract) and logs the reference's report block.  Neither has
+   an engine call site yet — `advance()` still runs only the prologue/epilogue — so the
+   subsystem is inert in every existing scene (that is why adding it moved **no** pre-existing
+   expectation: measured `~[abd_solve]` = the T6.3b3 baseline 762241/191 *exactly*).
+
+2. **Two pinned reference quirks in the checker base, both transcribed verbatim.**
+   (a) `NewtonToleranceChecker::pre_newton(PreNewtonInfo& info)` **ignores its argument** and
+   constructs a *fresh default* `PreNewtonInfo` for its subclass, so every checker sees
+   `frame() == 0` — the manager's `pre_newton(7)` reaches only the log line.  The port keeps
+   that (`(void)info; PreNewtonInfo pre_info;`) and the test pins `MaxTranslationChecker::frame
+   == 0` after `pre_newton(7)`.
+   (b) `ABDToleranceChecker::do_check` declares a **local** `bool h_success`, which shadows the
+   member `IndexT h_success = 1`: the local feeds `info.converged(...)`, the member is never
+   written, so `do_report()` — which reads the *member* — always prints `Tol: < abs_tol`, even
+   after a *failed* check.  The port keeps both names and the shadowing and pins the report
+   string after a measured failure ("`Tol: < 0.0001`"; `h_success == 1`; the flag itself is 0).
+
+3. **The `lps::inverse` gap for `N > 4`, and what the reference does with a singular input.**
+   The ABD preconditioner inverts a 12x12 block per body, and the reference's
+   `cuda_tool::eigen::inverse` dispatches on the size: the closed-form adjugate forms exist for
+   2/3/4 only and everything wider goes through `GaussEliminationInverse`
+   (`cuda_tool/eigen/gauss_elimination.h`).  Until T6.4a `lps::inverse` *static_asserted*
+   `N == 2 || 3 || 4` (cookbook §7.21 rule 11), so this batch added the generic branch to the
+   numerics layer (`luisa_device/math/matrix_ops.h`, `detail::gauss_elimination_inverse`) — the
+   first *additive* change to that layer since T2.2.  Its two device-control-flow statements
+   become `select`s (RULE M2): the pivot *search* becomes a running scan whose outcome is folded
+   into each candidate row's weight (the reference **adds** the first row below whose |entry|
+   exceeds `eps`, it does not swap), and the two `return result;` statements — which return an
+   **uninitialized** `Eigen::Matrix` for a singular input — become a `missing` flag that masks
+   the whole result to **zero** and protects the divisions.  The port's singular answer is
+   therefore the deterministic zero matrix instead of UB; that is *pinned* four ways in the test
+   (a duplicate-row block, a diagonal entry below `epsilon<double>()`, one ulp above it, and a
+   singular block through the factored preconditioner row).  Every loop index is a host constant
+   (LC's DSL has no dynamically-indexed local array), which is why the routine is
+   select-and-unrolled; the cost is a ~9k-statement shader, and the *measured* cold-JIT for the
+   whole new filter is seconds, not minutes (rule 14).
+
+4. **The ABD diagonal preconditioner is the FEM sibling's shape with a different *input*.**
+   `ABDDiagPreconditioner` is a `LocalPreconditioner` bound through `BuildInfo::connect` to
+   `ABDLinearSubsystem`; `do_assemble` does **not** scan the assembled BCOO (`info.A()`, the FEM
+   idiom) but inverts `ABDLinearSubsystem::diag_hessian()`, the subsystem's *dense per-body*
+   12x12 buffer (one element per body: no `i == j` test, no dof-window arithmetic), and
+   `do_apply` computes `z.segment<12>(i * 12) = diag_inv(i) * r.segment<12>(i * 12)` over the
+   subsystem's *window*, with the reference's `if(*converged != 0) return;` early-out.  Both
+   bodies live in `abd_diag_preconditioner_function.h` so the shipped shader and the unit test
+   run the same code (the §7.20 rule 1 recipe), and the class keeps the reference's public
+   surface (`abd_linear_subsystem`, `diag_inv`) in a header, exactly like T5.4b's FEM pair — the
+   test registers the *real* preconditioner into a standalone `GlobalLinearSystem::Impl`.
+
+5. **The tolerance checker's factored row, and the DSL's missing `atomic_exch`.**  The
+   reference's `abd_tolerance_checker_do_check_kernel` is three statements: read the one-element
+   `success` flag, `return` if it is 0 ("already failed stays failed"), then `for(c = 3; c < 12;
+   ++c) if(abs(dq[c]) > abs_tol) { atomic_exch(success, 0); break; }` — the first three dofs are
+   the translation and are **ignored on purpose**, and the comparison is **strict** (so
+   `|dq_i| == abs_tol` converges).  `abd_tolerance_checker_function.h` factors the decision
+   (`exceeded_row` = the nine-component OR, `failed_row` = that OR folded with
+   `success_value != 0`), leaving only the `$if` guards and the store in the kernel — which is
+   what makes the host instantiation (a `storage::memory` view) the test's oracle.  The
+   atomic's DSL gap: LC has no `atomicExch` *function*, only the `AtomicOp` behind
+   `AtomicRef<T>::exchange`, so `luisa_device/atomic.h` (the file that exists for exactly these
+   gaps, §3.3) gained `atomic_exch(ref, v)`; the **flag read-back** is spelled
+   `success.copy_to(&frame_stream()) != 0` rather than the reference's implicit
+   `bool h_success = success;`, because a `LDeviceVar`'s implicit conversion reads on the *main*
+   stream and can see a stale flag (§7.22 rule 7).
+
+6. **The line-search reporter's bodies are the FEM sibling's, plus a shape-energy sum.**  T6.1a
+   had declared the class and T6.1b had pulled `add_reporter` (and the subreporter's four
+   forwarding hooks) forward for their *vtables*; T6.4a adds
+   `Impl::{init, record_start_point, step_forward, compute_energy}` and the five `do_*` hooks +
+   `REGISTER_SIM_SYSTEM`, and deletes the SCOPE NOTEs (in the reporter, the subreporter, the
+   animator and the inter-body manager).  Three kernels: `step_forward` writes
+   `q = q_temp + alpha * dq` for non-fixed bodies (`$if`-guarded store), the energy fan-out
+   zeroes fixed/external-kinetic bodies' kinetic energy and combines *three* sums — kinetic
+   (`abd().kinetic->compute_energy`, special-cased), shape (each constitution's slice) and the
+   subreporters' (each `report_extent`/`compute_energy` slice, `scan`-ed into the offsets table)
+   — and a one-thread combine kernel writes `info.energy()`.  `resize_discard` maps onto
+   `LDeviceBuffer::resize` (the port *is* cuda_tool's shape: amortized growth + a
+   value-initialised tail) and `DeviceReduce().Sum` onto `lla::device_reduce_sum` with the FEM's
+   zero-length guard.  **Registration consequence:** the ABD animator's and the inter-body
+   manager's line-search subreporters stop being invalidated and become live — the explicit
+   not-implemented signal T6.1b left behind is gone.
+
+7. **THE EXPORT LIST IS NOW PART OF EVERY BATCH THAT ADDS A TEST SYMBOL — AND THE GENERATOR HAS
+   A BOOTSTRAP TRAP.**  `src/backends/luisa/luisa_module.def` is the module's explicit export
+   list (T6.3b3's LNK1189 fix) and `scripts/luisa_module_def.py` derives it from **the symbols the
+   in-tree consumers *import*** (a `dumpbin /imports` scan of the built PE files).  That is
+   self-referential, and this batch hit the trap head-on: the first build after writing the test
+   failed with **13 unresolved externals** (the intended loud signal), the symbols were merged
+   into the `.def` by `scratch/t64a_def_bootstrap.py` (it parses the decorated names out of the
+   `LNK2019`/`LNK2001` lines), the module and the test exe relinked — and when the *generator*
+   was re-run it **dropped one of them again**: a `LNK2001` for
+   `?do_report@NewtonToleranceChecker@...` whose only reference is a **vtable slot** (the test's
+   derived mock checkers) is resolved from the module's import library *without* creating an
+   import-table entry, so the consumer-import scan cannot see it and the next link fails again.
+   The fix (in the *test*): make the reference a **used** import — the mocks' `do_report()`
+   calls the base's own default body
+   (`std::string{"mockA|"} + NewtonToleranceChecker::do_report()`) — after which the exe imports
+   it, the generator keeps it, and the loop is idempotent.  **Recipe for the next batch:**
+   build → read the `LNK2019`/`LNK2001` names → `python scratch/t64a_def_bootstrap.py <build
+   log>` (or add the symbol as a *used* reference) → build → `python
+   scripts/luisa_module_def.py` (**rewrite**, so the committed file is generator-produced) →
+   `--check` must be rc 0 → and the two name-loading paths (`ctest -R backend_luisa`,
+   `python scripts/luisa_standalone.py cuda`) plus `python scripts/luisa_check_module_abi.py`
+   must stay green.  Measured: the list went 362 → **374** entries (370 consumer symbols + the 4
+   C API entry points), and the module relinks on every `.def` change (it is a `LINK_DEPENDS`).
+
+8. **A shared-binary hazard that *changes the assembly's numbers*: a sibling test file's
+   slot-owning, marker-gated kinetic.**  `AffineBodyDynamics` has exactly **one** kinetic slot,
+   and "the last system built wins" (§7.23 rule 7's demangled-name sort); T6.3b1's file
+   registered `zt61b::T61bKineticOwner` *precisely* to sort after every `uipc::backend::luisa::`
+   class and keep the slot.  Consequence, measured *here*: in a scene that does **not** carry
+   that file's marker, `abd().kinetic` is that mock, its `do_compute_gradient_hessian` writes
+   nothing, and the assembled ABD `diag_hessian` is the **shape Hessian alone** (measured:
+   `body_id_to_kinetic_hessian` identically zero, the dyadic mass 125, the (t,t) 3x3 sub-block
+   exactly 0, `|diag_hessian|max = κ · 1e-4`, `cond ≈ 1e296`).  This is *not* a port defect (the
+   port's kernels and the reference's)
+   `diag_hessian(I) = shape + (!external_kinetic ? kinetic : 0)` agree; it is the shared test
+   binary's slot ownership.  **Lessons for test design:** (i) a scene that wants the *real*
+   kinetic must own the slot itself (the `zt64a::…` name trick) or carry the sibling's marker;
+   (ii) a *structural* zero mode follows: the shape-only ortho-potential Hessian has neither
+   translation nor rotation curvature, so `D` is singular whenever the kinetic term is missing —
+   so the preconditioner's **apply oracle must be built from a hand-written `diag_inv`**
+   (`ABDDiagPreconditioner::diag_inv` is public, so the test writes its own rank-1 SPD inverses
+   and compares the shipped shader's `z` with the closed form), not from the assembled block;
+   (iii) the *device-vs-host* round stays valid anyway and is the strongest statement available:
+   the shipped shader's `diag_inv` equals the host `lps::inverse(diag_hessian)` to **0.000e+00**
+   and Eigen's `inverse()` to **0.000e+00** on the same input.
+
+9. **Perturbation *pins* must change a value, not just a call count.**  The manager's
+   short-circuit was pinned by asserting that the checkers after the failing mock keep their
+   previous `abs_tol`; removing the `break` (a pure host change) was **not caught** the first
+   time, because the two real checkers recompute the *same* tolerance from unchanged inputs.
+   The pin became non-vacuous only after the test *changed the checkers' inputs* before the
+   failing check (`newton_velocity_tol = 0.75`, `transrate_tol = 0.25`) so that a run would
+   write a *different* `abs_tol` — then the perturbation fails 4 assertions.  The general rule
+   (the §7.25 rule 19 family): a *value-invariant* perturbation is not evidence of coverage,
+   and a *call-count* pin is value-invariant unless the callee's inputs change too.
+
+10. **The frame stream vs the main stream, again, for *recorded* kernels.**  The preconditioner's
+    `do_apply` and the line-search `step_forward` **record** their kernels on the frame stream
+    (cuda_tool equivalence), while `LDenseVector::copy_to`/`LDeviceVar::copy_to` go through the
+    main stream: a test that reads the output back right after the call can read the *sentinel*
+    it wrote before (measured here: `worst |z - D^-1 r| = 1.0` with `|z|` equal to the sentinel
+    instead of the expected 5.5e4 — the classic shifted/stale-field signature).  Fix: sync the
+    frame stream before every read-back (the test's `read_device` helper does it; a bare
+    `copy_to` does not), and where a `LDeviceVar`'s implicit conversion would be used, spell it
+    `var.copy_to(&frame_stream())`.
+
+11. **The ABD tolerance row is a pure OR over the *rows that see the flag still set*, and that is
+    what the device round has to model.**  With the flag seeded 1 the kernel's per-row verdicts
+    are exactly the host `failed_row` results (measured 64/64 on a random batch, 32/32 in the
+    device-vs-host case, 1000/1000 host-side decisions vs a hand-written loop); with the flag
+    seeded **0** every thread returns early, *every* recorded verdict is false and no exchange
+    happens (measured: 0/64 decided), which is the "already failed stays failed" semantics in its
+    observable form.  A batch whose tolerance sits *outside* the sampled range is useless — the
+    first version sampled `|dq| ∈ [0, 0.35]` against `abs_tol = 0.12` and all 64 rows failed, so
+    the non-vacuity `REQUIRE` ("both verdicts occur") fired.  Sample the rotational components
+    *around* the tolerance (`[-0.10, 0.10]` against `abs_tol = 0.09`: measured 40/64 failed) and
+    assert both verdicts.
+
+12. **`LineSearcher::ComputeEnergyInfo` is constructible by a test — with a *real* `LineSearcher`
+    pointer.**  `ComputeEnergyInfo(LineSearcher*, LBufferView<Float>)` is public, but `dt()` reads
+    `m_impl->m_dt_attr`, which only `LineSearcher::init()` sets, so the test must
+    `find<LineSearcher>()` in a real scene and hand it over; then `do_compute_energy` runs the
+    whole fan-out and writes the one-element `info.energy()`.  With a *test-local subreporter*
+    whose energy values are known, the fan-out becomes a **differenced** statement
+    (`total(on) - total(off) == the mock's own values`; measured exactly 3000.0 with the mock
+    contributing 1000 + 2000), and the subreporter's `report_extent`/`compute_energy` slicing is
+    observable through the size of the view it is handed (`last_count == 2`).  The mock is
+    **inert** in every other scene (a static flag), which is what keeps the shared binary's other
+    files unchanged.
+
+13. **The reporter's four forwarding bodies are only reachable through *public* hooks.**  The
+    reference declares `ABDLineSearchReporter`'s five `do_*` in a `private:` section (its own
+    `.cu` is the only reader) and `LineSearchReporter`'s `record_start_point`/`step_forward`/
+    `compute_energy`/`init` are private with `friend class LineSearcher`, which no test can drive
+    before Phase 8.  The port therefore makes the five hooks public (documented as a test seam,
+    the FEM sibling's `protected:` shape) so the test can drive the *same* calls the engine will:
+    measured `q = q_temp + alpha·dq` to **0.000e+00** (bitwise) for the moving body, the fixed
+    body untouched **bitwise**, and a *second* identical `step_forward` call reproducing the same
+    `q` **bitwise** — which is what proves the start-point snapshot happened (the reference
+    always evaluates from `q_temp`, never from the already-stepped `q`).
+
+14. **Regression shape, the cold-JIT budget and the reproduction recipe.**  `[abd_solve]` →
+    **245 assertions in 8 test cases** rc 0 (per case: inverse12 24, diag_apply 24,
+    tolerance_boundary 60, tolerance_device 9, manager 45, line_search 16, device_vs_host 13,
+    summary = the accounting case); `~[abd_solve]` → **762241/191** = the T6.3b3 baseline
+    *exactly* (so the batch is purely additive: the new systems are inert in every other scene);
+    the whole suite → **762486/199**; `[abd_base]`/`[abd_linear]`/`[abd_dynamics]`/
+    `[abd_constitution]`/`[abd_joint_a]`/`[abd_joint_b]`/`[abd_joint_c]` = 2143/7 · 495/7 · 547/7 ·
+    523/7 · 223/8 · 402/8 · 383/8 (all unchanged); `ctest` 1/1 (30.6 s); the standalone suite 69
+    cases / 0 checks failed; `python scripts/luisa_module_def.py --check` rc 0 (374 symbols);
+    `python scripts/luisa_check_module_abi.py` rc 0; `python scratch/gen_abd_cons_a.py --check
+    --selfcheck` rc 0.  **The 12x12 Gauss-Jordan shader is cheap to JIT here** (the first
+    `[abd_solve]` run took ~14 s *including* the kernel compiles of six cases; later runs are
+    2–4 s), and — deliberately — **no test-local 12x12 kernel is written anywhere in this file**:
+    the new inverse's device instantiation is the *shipped* preconditioner shader (§7.27 rule 2
+    is why).  The per-TU syntax checks (`python scripts/luisa_check_compile.py <src> --syntax
+    --filter /backends/luisa/`) are the fast inner loop: all six new TUs and the four touched
+    ones compile with 0 warnings in ~10 s each.
+
+15. **Non-vacuity: three perturbations on three different axes, all caught and all reverted
+    byte-identically** (`scratch/t64a_perturb.py`, the T6.3b1/b2/b3 driver pattern: patch →
+    build → run the owning case → revert → sha256 → re-verify the whole filter green).
+    **P1** the *strict-comparison* axis (`abd_tolerance_checker_function.h`: the first
+    `lps::abs(dq(3)) > abs_tol` → `>=`) — the host-only `abd_solve_tolerance_boundary` case,
+    which pins `|dq_i| == abs_tol` ⇒ converged: **2 failures**.  **P2** the *transcribed
+    arithmetic* of the shipped preconditioner (`abd_diag_preconditioner_function.h`: the apply's
+    `H * r12` → `H * r12 * 0.5`), owned by `abd_solve_diag_apply` (which drives the real shader
+    against the closed-form `diag_inv * r`): **1 failure**.  **P3** the *host control flow* of
+    the manager (`newton_tolerance_manager.cpp`: the short-circuit `break` removed), owned by
+    `abd_solve_manager`: **4 failures** (and it took the rule-9 lesson above to make this axis
+    observable at all).  After each revert the module rebuilds with 0 warnings and `[abd_solve]`
+    is green again (245 assertions).
+
+16. **What this batch *claims*, and what it does not.**  No uid is claimed (the classes here are
+    uid-less; the ABD checker and the preconditioner report through their managers/registries —
+    the FEM sibling's spelling).  Nothing is written to `src/backends/cuda/` or
+    `src/backends/common/`, no existing assertion is weakened, and the two files the export list
+    touches (`luisa_module.def`) are generator-produced.  **Deliberate deviations, all reported:**
+    (i) `newton_tolerance_manager.h`/`newton_tolerance_checker.h` make `init`/`pre_newton`/`check`
+    (and the checker's four forwards) public — the T5.4b "pure test seam" precedent (§7.20 rule 9);
+    (ii) `max_translation_checker` and `abd_tolerance_checker` got *headers* (the reference defines
+    both inside their `.cu`) so the unit test can name them and drive `do_check` directly;
+    (iii) the reporter's five hooks are public (rule 13); (iv) `math::inverse` gained the `N > 4`
+    branch (rule 3) and `luisa_device/atomic.h` gained `atomic_exch` (rule 5).  **Still open for
+    T6.4b/c** (do not read this list as "ported"): `affine_body/constraints/**`, the uid 16/23/666
+    systems and the whole MAS preconditioner engine; and the port's solve path (`GlobalLinear-
+    System::solve()`, `spmv`, `spmv_dot`, the global-preconditioner branch) remains T8.3's, so
+    *nothing* here exercises an actual Newton solve — the preconditioner is driven through a
+    standalone `GlobalLinearSystem::Impl` and the line search's iteration loop is not run.
+
+17. **The battery's two new steps are permanent.**  `python scripts/luisa_module_def.py --check`
+    (rc 0 ⇔ the committed export list matches the consumers' imports) and `python
+    scripts/luisa_check_module_abi.py` (LoadLibrary + GetProcAddress on the four C entry points)
+    belong in every batch from T6.3b3 on; a batch that adds a test symbol must *rewrite* the list
+    (rule 7) and commit it, and a batch that touches the module's link properties must re-run both
+    (the C API symbols are `UIPC_BACKEND_API`-exported, so the `.def` never controlled *them* —
+    §7.27 rule 14's value-invariant axis).
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

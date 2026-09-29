@@ -86,4 +86,15 @@ namespace uipc::backend::luisa::luisa_device
 {
     return ref.fetch_min(v);
 }
+
+/// `cuda_tool::atomic_exch(addr, val)` (T6.4a's first user: the ABD tolerance
+/// checker's "already failed stays failed" flag).  CUDA's `atomicExch` stores `val`
+/// and returns the value `addr` held *before* the exchange -- LC's
+/// `AtomicRef<int>::exchange`, which is the only spelling the DSL offers for it
+/// (there is no `atomic_exch` intrinsic in the DSL, only the `AtomicOp` behind it).
+[[nodiscard]] inline auto atomic_exch(lcrt::detail::AtomicRef<std::int32_t> ref,
+                                      lcrt::Expr<std::int32_t>          v) noexcept
+{
+    return ref.exchange(v);
+}
 }// namespace uipc::backend::luisa::luisa_device

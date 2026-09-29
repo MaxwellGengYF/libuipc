@@ -31,6 +31,10 @@
 // T6.1b: the inter-affine-body constitution manager is engine-aware too (the
 // reference's step 1 initialises it between the ABD dynamics and the FEM method).
 #include <affine_body/inter_affine_body_constitution_manager.h>
+// T6.4a: the Newton-tolerance manager (the reference's step-1 tail: the line
+// searcher, the linear system, the tolerance manager and the time integrator are
+// the last four `init()`s of init_scene()).
+#include <newton_tolerance/newton_tolerance_manager.h>
 
 
 namespace uipc::backend::luisa
@@ -123,6 +127,11 @@ void SimEngine::build_engine_systems()
     m_time_integrator_manager = &require<TimeIntegratorManager>();
 
     m_line_searcher = &require<LineSearcher>();
+    // T6.4a: the reference `require<>`s the NewtonToleranceManager too: it is the
+    // registry every tolerance checker registers with (`MaxTranslationChecker` in
+    // every scene, `ABDToleranceChecker` in an ABD scene), and it is registered
+    // unconditionally, so `require<>` never throws.
+    m_newton_tolerance_manager = &require<NewtonToleranceManager>();
 
     m_global_simplicial_surface_manager = find<GlobalSimplicialSurfaceManager>();
     m_global_dytopo_effect_manager = find<GlobalDyTopoEffectManager>();
@@ -229,7 +238,10 @@ void SimEngine::init_scene()
     {
         m_time_integrator_manager->init();
     }
-    // (NewtonToleranceManager -> Phase 8)
+    // T6.4a: the tolerance manager's init() hands every registered checker its
+    // init().  The reference calls it unguarded (it is `require<>`d, like the line
+    // searcher) and after the time-integrator manager's.
+    m_newton_tolerance_manager->init();
 
     event_rebuild_scene();
     m_state = SimEngineState::None;

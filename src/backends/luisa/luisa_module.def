@@ -7,13 +7,14 @@
 ; auto-generated list exceeded MSVC's 65535-export ceiling -> LNK1189).
 ;
 ; Contents: the module's C API + every symbol the in-tree consumers import from it.
-; 362 entries, generated from 1 consumer(s).
+; 375 entries, generated from 1 consumer(s).
 ; ---------------------------------------------------------------------------
 EXPORTS
     ??0?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
     ??0?$LMatrixConverter@N$02@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
     ??0?$LSpmv@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
     ??0?$LSpmv@N$02@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
+    ??0ComputeEnergyInfo@LineSearcher@luisa@backend@uipc@@QEAA@PEAV1234@V?$LBufferView@N@luisa_device@234@@Z
     ??0KernelCoutCapture@luisa@backend@uipc@@QEAA@AEAVLStream@luisa_device@123@@Z
     ??0LLinearSystemContext@linalg@luisa_device@luisa@backend@uipc@@QEAA@PEAVLStream@2345@@Z
     ??0LStream@luisa_device@luisa@backend@uipc@@QEAA@AEAVStream@compute@2@@Z
@@ -49,6 +50,7 @@ EXPORTS
     ?buffer_view@ComputeGradientInfo@GlobalLinearSystem@luisa@backend@uipc@@QEAAXV?$DenseVectorViewT@$0A@NUbuffers@storage@linalg@luisa_device@luisa@backend@uipc@@$0A@@linalg@luisa_device@345@@Z
     ?build_linear_system@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?cached_object@LStream@luisa_device@luisa@backend@uipc@@QEAAPEAXPEBXP6APEAXXZP6AXPEAX@Z@Z
+    ?check@NewtonToleranceManager@luisa@backend@uipc@@QEAAXAEAVResultInfo@1234@@Z
     ?check@ReportExtentInfo@ABDLinearSubsystem@luisa@backend@uipc@@QEBAXV?$basic_string_view@DU?$char_traits@D@std@@@std@@@Z
     ?check@ReportExtentInfo@FEMLinearSubsystem@luisa@backend@uipc@@QEBAXV?$basic_string_view@DU?$char_traits@D@std@@@std@@@Z
     ?check@ReportExtentInfo@FiniteElementElastics@luisa@backend@uipc@@QEBAXV?$basic_string_view@DU?$char_traits@D@std@@@std@@@Z
@@ -97,7 +99,9 @@ EXPORTS
     ?dimensions@VertexAttributeInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@345@XZ
     ?displacements@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?displacements@VertexDisplacementInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
+    ?distribute_solution@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?do_apply_recover@ISimSystem@backend@uipc@@MEAAXAEAVRecoverInfo@123@@Z
+    ?do_build@ABDLineSearchSubreporter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@ABDLinearSubsystemReporter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@AffineBodyConstitution@luisa@backend@uipc@@EEAAXXZ
     ?do_build@AffineBodyConstraint@luisa@backend@uipc@@EEAAXXZ
@@ -118,10 +122,14 @@ EXPORTS
     ?do_build@InterAffineBodyConstitution@luisa@backend@uipc@@EEAAXXZ
     ?do_build@InterAffineBodyConstraint@luisa@backend@uipc@@EEAAXXZ
     ?do_build@JointDofReporter@luisa@backend@uipc@@EEAAXXZ
+    ?do_build@NewtonToleranceChecker@luisa@backend@uipc@@UEAAXXZ
     ?do_build@SimplicialSurfaceReporter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@TimeIntegrator@luisa@backend@uipc@@EEAAXXZ
     ?do_build@VertexReporter@luisa@backend@uipc@@EEAAXXZ
+    ?do_check@ABDToleranceChecker@luisa@backend@uipc@@UEAAXAEAVCheckResultInfo@NewtonToleranceManager@234@@Z
+    ?do_check@MaxTranslationChecker@luisa@backend@uipc@@UEAAXAEAVCheckResultInfo@NewtonToleranceManager@234@@Z
     ?do_clear_recover@ISimSystem@backend@uipc@@MEAAXAEAVRecoverInfo@123@@Z
+    ?do_compute_energy@ABDLineSearchReporter@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@LineSearcher@234@@Z
     ?do_compute_energy@ARAP3D@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@FEM3DConstitution@234@@Z
     ?do_compute_energy@AffineBodyDrivingPrismaticJoint@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@InterAffineBodyAnimator@234@@Z
     ?do_compute_energy@AffineBodyDrivingRevoluteJoint@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@InterAffineBodyAnimator@234@@Z
@@ -161,11 +169,15 @@ EXPORTS
     ?do_dump@ISimSystem@backend@uipc@@MEAA_NAEAVDumpInfo@123@@Z
     ?do_init@DyTopoEffectReceiver@luisa@backend@uipc@@MEAAXAEAVInitInfo@1234@@Z
     ?do_init@DyTopoEffectReporter@luisa@backend@uipc@@MEAAXAEAVInitInfo@1234@@Z
+    ?do_record_start_point@ABDLineSearchReporter@luisa@backend@uipc@@UEAAXAEAVRecordInfo@LineSearcher@234@@Z
+    ?do_report@ABDToleranceChecker@luisa@backend@uipc@@UEAA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ
+    ?do_report@NewtonToleranceChecker@luisa@backend@uipc@@MEAA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ
     ?do_report_extent@Codim0DConstitution@luisa@backend@uipc@@EEAAXAEAVReportExtentInfo@FiniteElementElastics@234@@Z
     ?do_report_extent@FiniteElementExternalVertexForceConstraint@luisa@backend@uipc@@UEAAXAEAVReportExtentInfo@FiniteElementAnimator@234@@Z
     ?do_report_extent@HookeanSpring1D@luisa@backend@uipc@@UEAAXAEAVReportExtentInfo@FiniteElementElastics@234@@Z
     ?do_report_extent@KirchhoffRodBending@luisa@backend@uipc@@UEAAXAEAVReportExtentInfo@FiniteElementElastics@234@@Z
     ?do_step@FiniteElementExternalVertexForce@luisa@backend@uipc@@UEAAXAEAVExternalForceInfo@FEMExternalForceManager@234@@Z
+    ?do_step_forward@ABDLineSearchReporter@luisa@backend@uipc@@UEAAXAEAVStepInfo@LineSearcher@234@@Z
     ?do_to_json@SimSystem@backend@uipc@@MEBA?AV?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_12_0@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_12_0@nlohmann@@XZ
     ?do_try_recover@ISimSystem@backend@uipc@@MEAA_NAEAVRecoverInfo@123@@Z
     ?dof_count@DiagLinearSubsystem@luisa@backend@uipc@@QEBAHXZ
@@ -270,6 +282,7 @@ EXPORTS
     ?positions@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?positions@HalfPlane@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?positions@VertexAttributeInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
+    ?pre_newton@NewtonToleranceManager@luisa@backend@uipc@@QEAAX_K@Z
     ?prev_positions@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?primitive_count@FilteredInfo@FiniteElementMethod@luisa@backend@uipc@@QEBA_KXZ
     ?q_to_transform@luisa@backend@uipc@@YA?AV?$Matrix@N$03$03$0A@$03$03@Eigen@@AEBV?$Matrix@N$0M@$00$0A@$0M@$00@5@@Z

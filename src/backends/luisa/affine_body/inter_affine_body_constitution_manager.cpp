@@ -29,10 +29,11 @@
 * the bodies are the reference's verbatim, plus the two reporters at the bottom of
 * this file (`InterAffineBodyConstitutionLinearSubsystemReporter` ->
 * `ABDLinearSubsystemReporter`, and `InterAffineBodyConstitutionLineSearchSubreporter`
-* -> T6.4's `ABDLineSearchSubreporter`).  The line-search subreporter is
-* *invalidated* in every scene of this batch (`ABDLineSearchReporter` is T6.4's),
-* which is the intended not-implemented signal; the linear-subsystem one is live
-* and is what the T6.1b test drives.
+* -> T6.4a's `ABDLineSearchSubreporter`).  The line-search subreporter was
+* *invalidated* by `require<ABDLineSearchReporter>()` for as long as that reporter
+* had no bodies (T6.1b's explicit not-implemented signal); T6.4a completed the
+* reporter, so both subreporters in this file are now live and the
+* linear-subsystem one is what the T6.1b test drives.
 *************************************************************************************************/
 namespace uipc::backend
 {

@@ -223,42 +223,157 @@ template <typename T, int N>
 }
 
 // ---------------------------------------------------------------------------
+//  Generic NxN inverse (Gauss-Jordan, reference-equivalent) -- T6.4a
+// ---------------------------------------------------------------------------
+namespace detail
+{
+/// `1` when the (possibly DSL) predicate `p` holds, `0` otherwise: the pivot
+/// bookkeeping stays in the scalar type the arithmetic already uses.
+template <typename T, typename P>
+[[nodiscard]] inline auto pivot_indicator(P&& p) noexcept
+{
+    return select(zero_of<T>(), one_of<T>(), std::forward<P>(p));
+}
+/**
+ * `cuda_tool::eigen::GaussEliminationInverse`
+ * (`src/backends/cuda/cuda_tool/eigen/gauss_elimination.h`): the augmented
+ * `[A | I]` swept in place -- a forward pass with a *partial* pivot, then a
+ * backward pass -- leaving `A^-1` in the right half.  The reference's pivot step is
+ * an **addition, not a swap**: when `|mat[i][i]| < eps` it looks for the first
+ * `j > i` with `|mat[j][i]| > eps` and adds that whole row into row `i`.
+ *
+ * Two of the reference's statements are *device* control flow (cookbook RULE M2)
+ * and therefore become `select`s here:
+ *  * the pivot *search* (`for(j = i + 1; …) if(abs(mat[j][i]) > eps) break;`) is a
+ *    running scan whose outcome is folded into every candidate row's weight, and
+ *  * the two `return result;` statements -- which return an **uninitialized**
+ *    `Eigen::Matrix` for a singular input -- become a `missing` flag that masks the
+ *    whole result to **zero** and protects the divisions.  `LMat`'s storage is
+ *    zero-initialised (mat.h), so the port's singular answer is the deterministic
+ *    zero matrix instead of the reference's UB (pinned by the unit test).
+ *
+ * Every loop index is a host (compile-time) constant: the routine is written with
+ * `select`s precisely because LC's DSL has no dynamically-indexed local array.
+ * The non-singular arithmetic is the reference's, in the reference's order
+ * (`mat[i][r] += mat[j][r]` scaled by an exactly-0/1 weight, `mat[i][r] /= ep`,
+ * `e = -1 * mat[j][i] / mat[i][i]`, `mat[j][r] += e * mat[i][r]`).
+ */
+template <typename T, int N>
+[[nodiscard]] inline LMat<T, N, N> gauss_elimination_inverse(const LMat<T, N, N>& input) noexcept
+{
+    constexpr int DP = 2 * N;
+
+    const auto eps  = make_scalar<T>(std::numeric_limits<scalar_value_t<T>>::epsilon());
+    const auto zero = zero_of<T>();
+    const auto one  = one_of<T>();
+
+    /// The reference's `T mat[dim][dim * 2]`, `mat[i][j] = input(i, j)` on the left
+    /// and the identity on the right.
+    LMat<T, N, DP> mat{};  // zero-initialised (LMat's own convention)
+    for(int i = 0; i < N; ++i)
+    {
+        for(int j = 0; j < N; ++j)
+            mat(i, j) = input(i, j);
+        mat(i, N + i) = one;
+    }
+
+    auto missing = zero;  // one when a pivot search failed (the reference's return)
+
+    for(int i = 0; i < N; ++i)
+    {
+        auto need  = pivot_indicator<T>(abs(mat(i, i)) < eps);
+        auto found = zero;  // one once a pivot row has been added into row i
+        for(int j = i + 1; j < N; ++j)
+        {
+            auto take = mul(pivot_indicator<T>(abs(mat(j, i)) > eps),
+                            mul(need, pivot_indicator<T>(found == zero)));
+            for(int r = i; r < DP; ++r)
+                mat(i, r) = add(mat(i, r), mul(take, mat(j, r)));
+            found = add(found, take);
+        }
+        missing = add(missing, mul(need, pivot_indicator<T>(found == zero)));
+
+        // `T ep = mat[i][i]; for(r = i; r < 2dim; ++r) mat[i][r] /= ep;`
+        // `ep` is replaced by one on a singular step, so that nothing divides by
+        // zero; that step's output is masked away by `missing` at the end.
+        auto ep = select(one, mat(i, i), missing == zero);
+        for(int r = i; r < DP; ++r)
+            mat(i, r) = div(mat(i, r), ep);
+
+        for(int j = i + 1; j < N; ++j)
+        {
+            auto e = mul(make_scalar<T>(-1), div(mat(j, i), mat(i, i)));
+            for(int r = i; r < DP; ++r)
+                mat(j, r) = add(mat(j, r), mul(e, mat(i, r)));
+        }
+    }
+
+    for(int i = N - 1; i >= 0; --i)
+    {
+        for(int j = i - 1; j >= 0; --j)
+        {
+            auto e = mul(make_scalar<T>(-1), div(mat(j, i), mat(i, i)));
+            for(int r = i; r < DP; ++r)
+                mat(j, r) = add(mat(j, r), mul(e, mat(i, r)));
+        }
+    }
+
+    LMat<T, N, N> result;
+    for(int i = 0; i < N; ++i)
+        for(int j = 0; j < N; ++j)
+            result(i, j) = select(zero, mat(i, N + j), missing == zero);
+    return result;
+}
+
+}  // namespace detail
+
+// ---------------------------------------------------------------------------
 //  Inverse (closed form, reference-equivalent)
 // ---------------------------------------------------------------------------
 template <typename T, int N>
 [[nodiscard]] inline LMat<T, N, N> inverse(const LMat<T, N, N>& m) noexcept
 {
-    static_assert(N == 2 || N == 3 || N == 4,
-                  "inverse is only implemented for 2x2, 3x3 and 4x4 here");
-    LMat<T, N, N> out;
-    T             det;
-    if constexpr(N == 2)
+    static_assert(N >= 2, "inverse needs a square matrix of size >= 2");
+    if constexpr(N > 4)
     {
-        detail::adjugate2x2(m.data.data(), out.data.data());
-        det = detail::add(detail::mul(m.data[0], out.data[0]),
-                          detail::mul(m.data[1], out.data[2]));
-    }
-    else if constexpr(N == 3)
-    {
-        detail::adjugate3x3(m.data.data(), out.data.data());
-        det = detail::add(detail::add(detail::mul(m.data[0], out.data[0]),
-                                      detail::mul(m.data[1], out.data[3])),
-                          detail::mul(m.data[2], out.data[6]));
+        // the reference's `cuda_tool::eigen::inverse` dispatches on the size: the
+        // closed-form adjugate forms below exist for 2/3/4 only, everything wider
+        // goes through `GaussEliminationInverse` (T6.4a: the ABD diagonal
+        // preconditioner's 12x12 blocks).
+        return detail::gauss_elimination_inverse(m);
     }
     else
     {
-        detail::adjugate4x4(m.data.data(), out.data.data());
-        det = detail::add(
-            detail::add(detail::add(detail::mul(m.data[0], out.data[0]),
-                                    detail::mul(m.data[1], out.data[4])),
-                        detail::mul(m.data[2], out.data[8])),
-            detail::mul(m.data[3], out.data[12]));
-    }
+        LMat<T, N, N> out;
+        T             det;
+        if constexpr(N == 2)
+        {
+            detail::adjugate2x2(m.data.data(), out.data.data());
+            det = detail::add(detail::mul(m.data[0], out.data[0]),
+                              detail::mul(m.data[1], out.data[2]));
+        }
+        else if constexpr(N == 3)
+        {
+            detail::adjugate3x3(m.data.data(), out.data.data());
+            det = detail::add(detail::add(detail::mul(m.data[0], out.data[0]),
+                                          detail::mul(m.data[1], out.data[3])),
+                              detail::mul(m.data[2], out.data[6]));
+        }
+        else
+        {
+            detail::adjugate4x4(m.data.data(), out.data.data());
+            det = detail::add(
+                detail::add(detail::add(detail::mul(m.data[0], out.data[0]),
+                                        detail::mul(m.data[1], out.data[4])),
+                            detail::mul(m.data[2], out.data[8])),
+                detail::mul(m.data[3], out.data[12]));
+        }
 
-    auto inv_det = detail::div(one_of<T>(), det);
-    for(std::size_t i = 0; i < out.data.size(); ++i)
-        out.data[i] = detail::mul(out.data[i], inv_det);
-    return out;
+        auto inv_det = detail::div(one_of<T>(), det);
+        for(std::size_t i = 0; i < out.data.size(); ++i)
+            out.data[i] = detail::mul(out.data[i], inv_det);
+        return out;
+    }
 }
 
 /// Member spellings (Eigen's `m.determinant()` / `m.inverse()`), declared in mat.h.

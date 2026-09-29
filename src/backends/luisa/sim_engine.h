@@ -38,6 +38,10 @@ class AffineBodyDynamics;
 // affine_body_dynamics -> inter_affine_body_constitution_manager ->
 // finite_element_method -> global_body_manager).
 class InterAffineBodyConstitutionManager;
+// T6.4a: so is the Newton-tolerance manager (the reference `require<>`s it in
+// build() and calls its init() after the time-integrator manager's -- it is the
+// ABD tolerance checker's registry, and it always exists).
+class NewtonToleranceManager;
 
 class SimEngine final : public backend::SimEngine
 {
@@ -129,6 +133,10 @@ class SimEngine final : public backend::SimEngine
     // exists when the scene uses an `InterAffineBody` constitution type (a joint or
     // an articulation).
     InterAffineBodyConstitutionManager* m_inter_affine_body_constitution_manager = nullptr;
+    // T6.4a: the Newton-tolerance manager is always registered (its checkers gate
+    // themselves on the scene's systems), so the engine `require<>`s it like the
+    // LineSearcher.
+    NewtonToleranceManager* m_newton_tolerance_manager = nullptr;
 
     PipelineType m_pipeline_type = PipelineType::Basic;
 

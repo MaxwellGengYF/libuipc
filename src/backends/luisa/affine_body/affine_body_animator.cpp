@@ -29,14 +29,14 @@
 *    the offset tables are keyed by) -- preserved verbatim.
 *  * `FilteredInfo::anim_geo_infos()` returns a `span` into `Impl::anim_geo_infos`;
 *    the reference relies on `reserve()` before filling it so the span stays valid.
-*  * THE LINE-SEARCH HALF: `AffineBodyAnimatorLineSearchSubreporter` derives from
-*    T6.4's `ABDLineSearchSubreporter`, whose four forwarding bodies are *pulled
-*    forward* here (see abd_line_search_subreporter.cpp) because a vtable needs
-*    them; the ABD line-search *reporter* itself is T6.4's, so in every scene of
-*    this batch the subreporter is invalidated by `require<ABDLineSearchReporter>()`
-*    -- the explicit not-implemented signal, not a silent no-op.  The energy
-*    fan-out (`compute_energy`) is ported and compiled; it is unreachable until
-*    T6.4 registers the reporter.
+ *  * THE LINE-SEARCH HALF: `AffineBodyAnimatorLineSearchSubreporter` derives from
+ *    `ABDLineSearchSubreporter`, whose four forwarding bodies were *pulled forward*
+ *    by T6.1b (see abd_line_search_subreporter.cpp) because a vtable needs them.
+ *    The ABD line-search *reporter* itself was T6.4a's, so until then the
+ *    subreporter was invalidated by `require<ABDLineSearchReporter>()` -- the
+ *    explicit not-implemented signal, not a silent no-op.  **T6.4a closed that**:
+ *    the reporter is registered, the subreporter below is live, and its
+ *    `compute_energy` fan-out is now reachable from the line search.
 *************************************************************************************************/
 namespace uipc::backend::luisa
 {
@@ -285,8 +285,8 @@ namespace uipc::backend::luisa
 {
 // ---------------------------------------------------------------------------
 // The two sub-reporters the reference defines at the bottom of
-// affine_body_animator.cu: the linear-subsystem half (this batch) and the
-// line-search half (T6.4's reporter, see the file comment).
+// affine_body_animator.cu: the linear-subsystem half (T6.1b) and the
+// line-search half (T6.4a registered the reporter it requires, so both are live).
 // ---------------------------------------------------------------------------
 class AffineBodyAnimatorLinearSubsystemReporter final : public ABDLinearSubsystemReporter
 {
