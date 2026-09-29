@@ -24,6 +24,10 @@
 #include <line_search/line_searcher.h>
 // T5.1
 #include <finite_element/finite_element_method.h>
+// T6.1a: the engine drives the ABD dynamics too (the reference's
+// sim_engine_do_init.cu step 1 resolves and initialises it *before* the FEM
+// method and before the global body manager).
+#include <affine_body/affine_body_dynamics.h>
 
 
 namespace uipc::backend::luisa
@@ -124,6 +128,9 @@ void SimEngine::build_engine_systems()
     // T5.1: the reference `find<>`s the FEM method alongside AffineBodyDynamics
     // (optional: only a scene with a FiniteElement constitution has one).
     m_finite_element_method = find<FiniteElementMethod>();
+    // T6.1a: ABD dynamics (optional: only a scene with an AffineBody constitution
+    // type has one).  The reference resolves it *before* the FEM method.
+    m_affine_body_dynamics = find<AffineBodyDynamics>();
 }
 
 void SimEngine::set_pipeline_type()
@@ -155,13 +162,19 @@ void SimEngine::init_scene()
 
     set_pipeline_type();
 
-    // 1. Before the common scene initialization: the FEM method builds its
-    //    geometry/constitution infos, uploads the rest state and hands the
-    //    constitutions their init(); then the body manager hands out the global
-    //    body ranges that the vertex reporters use while filling body_ids.
+    // 1. Before the common scene initialization: the ABD dynamics builds its
+    //    geometry/constitution infos and hands the constitutions their init();
+    //    then the FEM method does the same, and finally the body manager hands out
+    //    the global body ranges that the vertex reporters use while filling
+    //    body_ids.
     //    (Reference order, sim_engine_do_init.cu step 1:
     //     affine_body_dynamics -> inter_affine_body_constitution_manager ->
-    //     finite_element_method -> global_body_manager.)
+    //     finite_element_method -> global_body_manager; the inter-affine-body
+    //     manager is T6.1b's.)
+    if(m_affine_body_dynamics)
+    {
+        m_affine_body_dynamics->init();
+    }
     if(m_finite_element_method)
     {
         m_finite_element_method->init();

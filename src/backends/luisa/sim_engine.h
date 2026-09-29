@@ -31,6 +31,9 @@ class LineSearcher;
 // `find<FiniteElementMethod>()` pointer and calls its init() in the
 // "before common scene initialization" step).
 class FiniteElementMethod;
+// T6.1a: the ABD dynamics is engine-aware in the same way (the reference resolves
+// it *before* the FEM method and calls its init() first).
+class AffineBodyDynamics;
 
 class SimEngine final : public backend::SimEngine
 {
@@ -115,6 +118,9 @@ class SimEngine final : public backend::SimEngine
     // T5.1: optional (`find<>`) — the FEM method only exists when the scene uses a
     // FiniteElement constitution type.
     FiniteElementMethod* m_finite_element_method = nullptr;
+    // T6.1a: optional (`find<>`) — the ABD dynamics only exists when the scene uses
+    // an AffineBody constitution type.
+    AffineBodyDynamics* m_affine_body_dynamics = nullptr;
 
     PipelineType m_pipeline_type = PipelineType::Basic;
 

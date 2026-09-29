@@ -2372,6 +2372,210 @@ below are what the port turned out to depend on; the first one is the brief's §
     invalidated with it), and the filters `[half_plane]` 426/7, `[constitution_a]`
     2362/7, `[fem_dynamics]` 135/8 and `[fem_linear]` 323/4 are unchanged.
 
+### 7.21 Patterns established in T6.1a (ABD core: types, jacobi matrices, dynamics, energy, kinetic, reporters)
+
+M6 batch **T6.1a** opens the Affine Body Dynamics port: the new directory
+`src/backends/luisa/affine_body/` gets `type_define.h`, `utils.{h,cpp}`,
+`abd_jacobi_matrix.{h,cpp}` (+ `details/abd_jacobi_matrix.inl`),
+`abd_energy.{h,cpp}`, `affine_body_dynamics.{h,cpp}` (+ `details/affine_body_dynamics.inl`),
+`abd_time_integrator.{h,cpp}`, `affine_body_state_accessor_feature.{h,cpp}`,
+`affine_body_state_accessor.cpp`, the five reporters
+(`affine_body_{body,vertex,surface}_reporter.{h,cpp}`,
+`affine_body_external_force_{reporter,manager}.{h,cpp}`) and the two interfaces
+`affine_body_constitution.{h,cpp}` / `affine_body_constraint.{h,cpp}` — 19 files, 5940
+lines — plus the engine wiring in `luisa/sim_engine.{h,cpp}` and the test
+`apps/tests/backends/luisa/luisa_abd_base_test.cpp` (tag `[abd_base]`).
+
+1. **The M6 re-partition (the plan does *not* contain it yet — this is the record of
+   it).** The reference's `affine_body/` has structural include cycles, so M6 was
+   re-partitioned: **T6.1a** = types / `utils` / `abd_jacobi_matrix` / `abd_energy` /
+   `affine_body_dynamics(+inl)` / `abd_time_integrator` / `affine_body_state_accessor(+feature)` /
+   reporters / `affine_body_constitution` + `affine_body_constraint` *interfaces*;
+   **T6.1b** = `abd_linear_subsystem(+reporter)` + `abd_dytopo_effect_receiver` +
+   `affine_body_animator(+details)` + the inter-affine-body layer; **T6.2** =
+   `affine_body/bdf/`; **T6.3a/b** = `constitutions/` (arap, ortho_potential) + the four
+   joints; **T6.4** = `constraints/` + `abd_diag_preconditioner` + `abd_tolerance_checker`
+   + the shared `mas_preconditioner_engine`/`fem_mas_preconditioner`; the two AL files
+   (`abd_active_set_reporter`, `abd_al_stiffness_estimator`) are M8's.  A batch may
+   **declare** another batch's interface (rule 2), never its bodies.
+
+2. **Pull-forward = declaration surface only, no stubs.**  T6.1a had to declare
+   `ABDLineSearchReporter` + `ABDLineSearchSubreporter` (T6.2/T6.4 own the bodies),
+   `ABDLinearSubsystem` (T6.1b), `AffineBodyAnimator` (T6.1b) and
+   `AffineBodyKinetic`'s *interface* (the `bdf/` bodies are T6.2).  Each file carries a
+   `SCOPE NOTE (T6.x)` naming exactly what is missing and who owns it, and nothing is
+   stubbed: an unimplemented entry point stays a **link error** (rule 7.16-13).
+   Measured closure (the three definitions T6.1a *did* have to provide because an
+   in-scope, reachable call site needs them):
+   * `AffineBodyAnimator::add_constraint` — `AffineBodyConstraint::do_build` calls it;
+   * `AffineBodyAnimator::BaseInfo::dt()` — the reference declares it and never defines
+     it (the same finding as `FiniteElementAnimator::BaseInfo::dt()` in T5.3);
+   * `AffineBodyAnimator::ReportExtentInfo::check()` — `AffineBodyConstraint::report_extent`
+     calls `info.check(name())` and that member is compiled here, so leaving it out was a
+     **measured LNK2019**, not a "not implemented" signal.  Its body is the reference's
+     one line (`check_report_extent(...)`).
+
+3. **The ABD element types are aggregates with `LUISA_STRUCT` registrations, and they
+   are byte-identical to the Eigen aliases.**  12-dof data is
+   `LVector12 = lps::LVec<Float,12>` (96 B) and `LMatrix12x12 = lps::LMat<Float,12,12>`
+   (1152 B, column-major = Eigen's default order).  The two *aggregates* the reference
+   defines in `abd_jacobi_matrix.h` are
+   `ABDJacobi{LVector3 x_bar;}` (24 B, the Eigen class is one `Vector3` member at offset
+   0 with no base/virtuals) and
+   `ABDJacobiDyadicMass{Float m_mass; LVector3 m_mass_times_x_bar;
+   LMatrix3x3 m_mass_times_dyadic_x_bar;}` (104 B, offsets 0/8/32 — every member is
+   8-byte aligned, so neither side pads).  All four sizes are `static_assert`ed in
+   `affine_body/type_define.h` and re-checked against a *mirror* Eigen-layout struct in
+   the test (`sizeof(ABDJacobiDyadicMass) == 104`,
+   `offsetof(m_mass_times_dyadic_x_bar) == 32`, ...), because the ABI argument for a
+   different-language port has to be measured, not asserted in prose.  Note the
+   *alignment* differs on purpose (Eigen over-aligns a 96/1152-byte type to 16 B,
+   `LVec`/`LMat` use 8 B): only size and storage order take part in the buffer ABI, and
+   every host↔device crossing goes through `to_luisa()`/`to_eigen()` element-wise —
+   never a `reinterpret_cast`.
+
+4. **`LUISA_STRUCT` registration order is load-bearing, twice over.**
+   (a) The registration *derives* the DSL member access (`Expr<S>`/`Ref<S>`/`Var<S>`),
+   so any helper that reads `e.member` or writes `dst.member` must come **after**
+   `LUISA_STRUCT(S, ...)` — the file's layout is aliases → generic views → aggregate
+   element types → registrations → `load_*`/`store_*` helpers (measured C2908/C2766/C2039
+   while writing it the other way round).  (b) The registration block itself must be at
+   **global** scope (like the backend's own `type_define.h`), so the helpers live in a
+   *second* `namespace uipc::backend::luisa` block after it.
+
+5. **One generic body per routine, templated on the scalar (`S`), never a host/device
+   pair.**  Every numeric routine is header-only and `S`-templated (`double` host,
+   `lcrt::Var<double>` device); `utils.cpp`/`abd_energy.cpp` then hold the reference's
+   *Eigen-typed* host signatures as thin forwards to `S = Float`.  This is the T5.1
+   convention (§7.16 rule 1), and it is what makes the device-vs-host round *bitwise*
+   (T6.1a measured **779/779 bitwise equal**, worst absolute difference 0.0).
+
+6. **`q`/`A` conventions (the (body, vertex) index maps).**
+   `q = [t; a1; a2; a3]` where **`a_i` is row `i` of `A`** (`q_to_A` reads
+   `A(i,j) = q(3+3i+j)`), so the deformed point is `p = A x̄ + t` — *not* `Aᵀx̄ + t`.
+   `ABDJacobi::to_mat()` is the 3x12 jacobian `J(a,a)=1`, `J(i,3+3i+j)=x̄_j`, and
+   `ABDJacobiT::operator*(g)` is `Jᵀg`.  The port's T6.1a test initially wrote the
+   transposed oracle and the *port* was right: the two forms differ by a transpose, and
+   the FD/layout checks pin it down.
+   The dynamics indexes bodies and vertices as
+   `vertex_id = geo_info.vertex_offset + instance * (sc.vertices().size()) + local_vertex`
+   and `body_id = geo_info.body_offset + instance`; `v2b` maps the former onto the
+   latter, `vertex_id_to_J` holds the **rest** position of every vertex, and geometries
+   are ordered by `constitution_uid` (stable) — i.e. by creation order when one
+   constitution owns them all.
+
+7. **`ABDJacobiStack<N>` had a wrong return type in the port until the test
+   instantiated it.**  The reference has *two* different maps:
+   `ABDJacobiStackT::operator*(const Vector<Float,3N>&)` returns **`Vector12`**
+   (`sum_i J_iᵀ g_i`), while `ABDJacobiStack::operator*(const Vector12&)` returns
+   `Vector<Float,3N>` (`q -> (J_1 q, ..., J_N q)`).  The port's first spelling gave the
+   transpose map the stack-map return type; it compiled (nothing instantiated it) and the
+   `abd_base_jacobi` case's `ABDJacobiStack2` round tripped it into a **C2440**.  The
+   stack is dead code in the reference and its only call site here is the test, which is
+   exactly why the test must touch every ported routine.
+
+8. **A local variable named like the scalar template parameter silently breaks
+   `lps::zero_of<S>()`.**  The reference's `skew` writes `S << ...` with a local `S`
+   (fine for Eigen); the port's `lps::LMat<S,3,3> S;` shadows the template parameter, so
+   `lps::zero_of<S>()` received a *variable* — measured **C2672 "invalid template
+   argument for 'T', expected a type"** at the first device instantiation.  The local is
+   now `ret`.
+
+9. **`obj.template member(...)` is rejected by MSVC on a non-dependent member name.**
+   The reference's `affine_body_dynamics.inl` calls
+   `m_impl.template for_each(geo_slots, ...)`; MSVC reports
+   **C2187 "unexpected 'template'"** *at instantiation* (it parses the body lazily, which
+   is why the un-instantiated TU compiled).  Dropping the disambiguator is correct here
+   (`m_impl` is a concrete type and the overloads differ by arity) and is what the FEM
+   `.inl` already does — recorded as a port deviation.
+
+10. **Eigen expressions bound with `auto` dangle (a *test* trap, but worth the rule).**
+   `const auto Minv = <temporary>.inverse();` and
+   `const auto H = 0.5 * f();` (a scalar times a by-value temporary) bind an
+   `Eigen::Inverse<>`/`CwiseBinaryOp` **expression** that references a temporary which
+   dies at the end of the statement.  The T6.1a test measured 144 `nan`s from exactly
+   that, and an earlier version of the same lines passed "by luck"; every Eigen-valued
+   local in the test is now explicitly typed.  (The ported code itself is unaffected: it
+   returns concrete `lps::` containers.)
+
+11. **The ABD layer's own LC idioms.**  Scalars have no `operator+=` /
+   `operator-=` (`lps::detail::{add,sub,mul}`; §7.16-3), `h.block<3,1>(r,c)` is an
+   `LMat<3,1>` (not an `LVec<3>`), so `h.block<3,1>(3,0).col(0) += m_x_bar` is the only
+   spelling of the reference's `h.block<3,1>(r,c) += m_x_bar`; `norm/dot/squaredNorm/cross`
+   are **free** functions for views (a `MatMap` row has no `.norm()`); `LMat::block<BR,BC>`
+   is (rows, cols); `lps::inverse`/`determinant` exist for 2/3/4 only, so the 12x12 mass
+   inverse is computed with **Eigen** on the host (`.inverse()` — which also needs
+   `<Eigen/LU>`, else the call *compiles* and fails to link, measured **LNK2019** for
+   both `Matrix12x12::inverse()` and a 3x3 `Block::determinant()`); device predicates in
+   `abd_dyadic_mass_inertia_tensor_cm` and `torque_to_F` become `select`s (RULE M2),
+   with the reference's warning routed through `LC_LOG`/`logger::warn`.
+
+12. **The engine wiring is part of the batch that ports the dynamics, not of Phase 8.**
+   `luisa::SimEngine` had no `AffineBodyDynamics` slot, so `world.init()` never called
+   `AffineBodyDynamics::init()`: the system built, the constitutions registered, and the
+   dynamics' `abd_body_count` stayed **0** (the (uid → geometry) classification is done
+   in `Impl::init`).  The reference's `sim_engine_do_init.cu` step 1 order is
+   `affine_body_dynamics -> inter_affine_body_constitution_manager -> finite_element_method
+   -> global_body_manager`, and the port now mirrors it (`find<AffineBodyDynamics>()`
+   beside `find<FiniteElementMethod>()`, `init()` before the FEM method's).  Symptom to
+   remember: a *valid* system with a valid constitution and an empty body list means the
+   engine never initialised it.
+
+13. **Test-side findings that would repeat for any ABD test (recorded here so the next
+   batch does not rediscover them).**
+   * A *rotated/scaled* ABD cube is a different **rest** configuration (the mesh
+     positions), not a different instance transform: the dyadic mass integrates the rest
+     positions, the instance transform is the deformed state `q`.
+   * The surface reporter reports **only what the scene labelled**: `label_surface(sc)`
+     must be called on the tet mesh (`label_triangle_orient` in turn *requires* a
+     tetmesh — it aborts on a trimesh).  A tetmesh built from raw connectivity has no
+     triangles at all, so the surface arrays are empty without it.
+   * `AffineBodyConstitution::apply_to(sc, kappa, mass, volume)` (the explicit-mass
+     overload) is the only way to get a **dim-2** ABD body while T6.3a's shell
+     constitution is missing: the geometry must carry `constitution_uid == 1` to be in
+     the ported dynamics' group, and the density overload's dim-2 path needs a closed,
+     *oriented* trimesh.
+   * The shared-binary rule bites *harder* here than in M5: `luisa_global_geometry_test.cpp`'s
+     reporters report **every** scene geometry as a body/vertex set, so this file's
+     `body_offset()` is 1 and the global vertex array is 8 entries longer than the scene's
+     — all assertions are made on the reporter's own slice.
+   * The default scene config is already a **BDF1** scene
+     (`integrator/type == "bdf1"`), so `BDF1Flag` exists for any default scene; the test
+     sets it explicitly anyway and `find<>`s the flag.
+
+14. **Test uids and what the mock proves.**  T6.1a has no backend ABD constitution
+   (`constitutions/` is T6.3a's), so the file registers **`T61ABDMockConstitution` with
+   uid 1** = the frontend `uipc::constitution::AffineBodyConstitution`'s
+   "OrthoPotential" (the only alternative — an arbitrary reserved uid — is impossible:
+   `ConstitutionTabular::insert(uid)` resolves through `ConstitutionUIDCollection::find(uid)`
+   and throws for an unregistered uid).  This is the §7.18-12 precedent (T5.1's mock
+   claims ARAP's uid 9) and it *must* be revisited when T6.3a lands: the mock's group is
+   then contested and the scene case's own report (`do_init`'s recorded
+   `geo_infos().size()` / `body_count()` / `vertex_count()`) is what says which system
+   got it.  The new uid space: **666** is the ABD external-force manager's
+   (`AffineBodyExternalForceManager::UID`, "the same UID as external force constitution"
+   and a *reporter* uid here, like the FEM manager's 671); **1** is claimed by the test
+   mock as above; 671 stays as §7.18-12 recorded it.
+
+15. **Regression shape of this batch (the T5.4b baselines, exactly).**
+   `run` -> **759668 assertions / 146 test cases** (= the T5.4b baseline 757525/139 +
+   this file's 2143/7) and `run "~[abd_base]"` -> **757525 assertions / 139 test cases**,
+   i.e. *no* pre-existing expectation moved although five new systems
+   (`AffineBodyDynamics`, three reporters, the external-force manager, the state accessor
+   and the time-integrator/constitution/constraint/animator declarations) are now
+   registered in every scene of the shared binary — all of them are either invalidated
+   by `require<AffineBodyDynamics>()`/`BDF1Flag` when the scene has no ABD, or inert.
+   `ctest` 1/1 and the standalone build (69 cases, 0 checks failed) are unchanged.
+
+16. **Non-vacuity evidence for the batch** (brief §3.7, three perturbations, each
+   patched → built → run → reverted): moving `ABDJacobi::to_mat`'s block column
+   `(0,3) -> (0,6)` fails 11 assertions (`J(a,b) vs J_oracle`, `Jq vs p_oracle`,
+   `M6 vs J0/J1`); scaling the gravity's mass factor by 0.5 in
+   `_build_geometry_on_host` fails 8 (`grav[0] vs expected`, `|grav_r| <= 1e-9`,
+   `grav[0] vs g`); dropping the vertex reporter's `+ body_offset` fails 32
+   (`gvm_body_ids == body_offset + inst`).  After the reverts the same commands are
+   green again (2143 assertions, 0 failures).
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
