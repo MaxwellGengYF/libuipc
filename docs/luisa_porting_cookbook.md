@@ -4396,6 +4396,188 @@ constitutions'), and the law was re-derived independently *before* a line of C++
     A third, *cheap* axis worth recording: the test's own *uid probe* kernel pins the two ABI
     assumptions that the dispatch rests on (rule 5), so a future reviewer does not have to trust them.
 
+### 7.30 Patterns established in T6.4c (the MAS preconditioner engine + the FEM MAS preconditioner)
+
+**Scope.** The last M6 batch and the hardest device-code one: `finite_element/mas_preconditioner_engine.{h,cpp}`
++ `mas_preconditioner_engine_function.h` (the port of the reference's 205 + 1726 lines), the
+`finite_element/fem_mas_preconditioner.{h,cpp}` + `fem_mas_preconditioner_function.h` (the port of its
+473-line driver), the `"mas"` entry of the config selection (the diagonal preconditioner's documented
+deferral became a two-way contract), the refreshed module export list and
+`apps/tests/backends/luisa/luisa_mas_preconditioner_test.cpp` (tag `[mas_preconditioner]`, **7 cases /
+234 assertions**). The engine is the StiffGIPC MultiLevel Additive Schwarz preconditioner: 16-node banks,
+a hierarchy of "banks of banks", a 48x48 Galerkin cluster matrix per bank per level, a column-oriented
+48x48 Gauss-Jordan inverse per cluster and `z = M^{-1} r` with injection prolongation.
+
+1. **The kernel map is the reference's, one for one.** The 14 named `__global__` functions of the
+   reference (`build_connect_mask_L0/Lx`, `prepare_prefix_sum_L0`, `build_level1`, `next_level_cluster`,
+   `prefix_sum_Lx`, `compute_next_level`, `aggregation`, `scatter_hessian_to_clusters_k1/k2`,
+   `invert_cluster_matrices`, `build_multi_level_R`, `schwarz_local_solve`, `collect_final_Z`) became 14
+   `cached_kernel` shaders in `mas_preconditioner_engine.cpp` and the class keeps the reference's whole
+   public step list, so the unit test can drive the engine step by step. **Read the reference before
+   writing**: the colouring (per-bank elected-lane prefixes), the level table and the two scatter passes are
+   not reconstructable from the algorithm's description (the second pass's packed-warp-sum coarsening is
+   only visible in the code).
+2. **Storage deviations, all forced by the DSL, none behavioural.** `ClusterMatrixSymT<Scalar>`
+   (`Eigen::Matrix<Scalar,3,3> M[136]`) is not an LC buffer element (a C-array member is not reflectable
+   and a custom-struct element has no `fetch_add`), so the port stores the **same bytes** as one flat
+   scalar buffer, indexed `cluster * 1224 + sym_index(br,bc) * 9 + (3*j + i)`; that is also what makes the
+   reference's `cuda_tool::eigen::atomic_add` (9 scalar atomics) expressible as
+   `DenseVectorView::atomic_add`. `Int2` and `LevelTable` are flattened the same way (`level_sizes` = 2
+   ints per level, `coarse_tables` = MAX_LEVELS ints per vertex), and the multi-level `Vector3f`/`float3`
+   buffers are flat floats (3 per node). The kernel *code* then reads like the reference's.
+3. **`Var<Buffer<T>>` is move-only (again), now inside a helper signature.** `load_cluster_block(HView H,
+   …)` with `HView` taken **by value** hit T5.4b's `C2280` at the first *kernel* call site; the helpers take
+   `const HView&`. (§7.20 rule 11's trap is not just about the reference's own signature — every new helper
+   that receives a `BufferVar` has to spell `const&`.)
+4. **The generic-index gap: `sym_index`/`mat_entry`/`lanemask_lt` must be templated on the index flavour.**
+   The kernels call them with **DSL** indices (`vert_col % 16`) while the host/oracle code calls them with
+   `int`s, and a `constexpr int sym_index(int,int)` simply does not accept an `Expr`. The port's helpers are
+   `template <typename R, typename C> auto sym_index(const R&, const C&)` with pure integer arithmetic, so
+   one body serves both; `cluster_block_base` (host-only) had to drop `constexpr` for the same reason.
+5. **Three more scalar gaps closed in `mas_preconditioner_engine_function.h`** (the file that exists for
+   them): `popcount_scalar`/`ctz_scalar` (`lcrt::popcount`/`lcrt::ctz` vs `std::popcount`/`std::countr_zero`),
+   `min_scalar`/`max_scalar` (`lcrt::min` is not reachable from host code, `std::min` is not a DSL
+   intrinsic), and `as_u32`/`as_i32` (a `static_cast<uint32_t>` of a DSL value is a compile error — the
+   first version of the engine had 32 of them and the fix is a two-line dispatcher). `__ffs(x) - 1` is
+   `ctz_scalar`, and `ctz(0)` is 32 on both sides (the callers test `j < lane_count` instead of relying on
+   it).
+6. **RULE M2 for the reference's data-dependent loops: a fixed bound plus a `live` flag.** The closure
+   loops (`while(connect_msk != ~0U) … __ffs(todo) - 1 …`) and the level walks (`while(next_id >= 0 &&
+   level < level_num - 1)`) are rewritten as `$while`/`$for` loops with a host bound (BANKSIZE, MAX_LEVELS,
+   `level_num`) and a `live` predicate. The closure's result is the **least fixpoint** of "merge the masks of
+   the lanes you are connected to", which is order independent, so the fixed 16-iteration version computes
+   exactly what the reference's early-exiting loop computes (pinned by the level-table case: 192/192 table
+   entries and 64/64 `going_next` entries equal for three meshes, including a *reversed* partition).
+7. **The surplus-thread gate is load-bearing (a real bug the port had to fix, measured).** The reference
+   lets the surplus threads of a partial block `return` before any shared-memory or atomic work. The port
+   dispatches whole blocks and predicates instead (it cannot return around a block-wide barrier), and the
+   first version therefore let the *clamped* surplus lanes of `next_level_cluster` run their elected-lane
+   accumulation: a clamped lane whose mask is only its own bit passes
+   `popc(mask & lanemask_lt(lane)) == 0` and counts as an elected lane. Measured effect: **16** level-2
+   nodes instead of 1, i.e. `level_sizes[3].x = 16` (the whole logical warp) — caught by the level-table
+   oracle, fixed with `& in_range` on the two elected-lane accumulations (and on the level-size write).
+   **Rule: every side effect of a clamped lane in a kernel with warp/shared collectives needs an
+   `in_range` gate, and the portable way to *see* the mistake is an independent structural oracle.**
+8. **A zero-length buffer view is not a kernel argument — pad it.** The engine's 1-vertex unit test (and
+   any scene with no cross-bank edge) passes an empty neighbor list, and LC's `LBufferView::native()` of a
+   never-allocated buffer is a *null* handle: the dispatch dies with a **SIGSEGV inside the test process**
+   (not a CUDA error). The fix is T6.4b's "padded buffer + clamped index" idiom: the neighbor list keeps one
+   unused element (§7.29 rule 8) and the host copy uses the exact subview.
+9. **THE FLAT-VIEW TRAP: `A.values().size()` is not the triplet count.** The reference passes
+   `CBufferView<Eigen::Matrix3d>` (one element per triplet) to `set_preconditioner` and takes
+   `triplet_values.size()` as the dispatch count; the port's BCOO container exposes a **flat scalar** view
+   (`9` doubles per triplet, T3.1's layout), so the same expression meant **9x too many "triplets"**. The
+   surplus iterations read past `row_indices()`/`col_indices()` (whose tail is zero-filled by the geometric
+   growth) and past the values (whose tail the converter leaves *uninitialised*), i.e. they scattered
+   garbage blocks into the fine cluster. Measured symptom: the assembled cluster-0 matrix had `4.0` in the
+   fixed vertex's block instead of the reader's `55.66`-scale values, and the fine-level apply was off by
+   1.2e-1 (a 100% error) while the *synthetic* cases still passed — their garbage triplets were rejected by
+   the `0 <= row < total_nodes` guards. The fix is `size() / 9` (documented at the call site), and the
+   lesson is general: **a count taken from an linalg view must be divided by the block size.**
+10. **`LocalPreconditioner::do_init` is only reached through `GlobalLinearSystem::Impl::init()` — so a
+    scene alone leaves the MAS engine uninitialised.** `do_init` is where the hierarchy (the partition, the
+    CSR, the level table) is built; in the *engine* flow only Phase 8's `SimEngine::do_init` calls
+    `GlobalLinearSystem::init()` (the port's `sim_engine.cpp` still says so), so a scene builds the
+    preconditioner's `do_build` (the config selection, the registration) but never its `do_init`. The test
+    therefore drives the real preconditioner through a standalone `GlobalLinearSystem::Impl` exactly like
+    T5.4b/T6.4a, and **asserts the uninitialised state first** so the contract is documented rather than
+    implied. Consequence for a future reader: `m_has_partition`/`is_initialized()` are false in every scene
+    of this port today — that is Phase 8's wiring, not a defect.
+11. **The reference's fixed-row substitution is in the assembled BCOO, and the fixed vertex's row is
+    *zero* off the diagonal (measured, not assumed).** `fix_hessian_row` (T5.4a) replaces a fixed vertex's
+    diagonal block by `Identity()` and every off-diagonal block that touches it by `Zero()`, and the
+    converter's segmented sum adds the (1 kinetic + #incident-tets) diagonal triplets into
+    `(1 + #tets) * Identity` — measured here as exactly `4.0` for the 5-tet scene's vertex 0, with its five
+    `(0,j)` triplets at `|H|max = 0.000e+00`. The test's cluster-matrix oracle models exactly that (and the
+    engine agrees to 1.4e-14, i.e. a few ulps of a `4e2`-scale sum whose *atomic* order is not fixed —
+    asserted at 1e-12, not 0, and that 1.4e-14 is *measured*, not a guess).
+12. **The cluster-inverse oracles: hand-derived systems first, Eigen second, and the fix-up is part of the
+    oracle.** For analytically known cases (a one-vertex cluster: `blockdiag(H^-1, I_42)`, exact to 0.0; a
+    two-vertex cluster: the explicitly written 6x6 inverse, worst 2.6e-08 because the inverse is stored in
+    **float**, GIPC parity) the expected value is written out in the test; for a random SPD 8-vertex stencil
+    the oracle is (a) the reference's own scatter rule (an upper triplet adds `H`, a lower one adds `H^T` to
+    the mirrored block), (b) the gather's symmetric reconstruction with the **zero-diagonal pin**
+    (`if(row == col && s_mat == 0) s_mat = 1`), (c) Eigen's `inverse()` (LU with partial pivoting — a
+    different algorithm from the ported column-oriented Gauss-Jordan) and (d) the reference's
+    post-elimination 3x3-block fix-up applied to the *inverse*. Measured: the rebuilt dense matrix agrees
+    with the hand-written SPD system **exactly** (0.0), the cluster inverse with Eigen's **1.3e-08**
+    (`|D·inv − I|` diagonal max 4.9e-08), and a *zero* cluster gives the exact identity (the reference's
+    deterministic singular answer). The engine's 48x48 Gauss-Jordan is thus pinned on three hand-derived
+    systems and one random one; the 2x2 hand trace that proves the "odd" pivot-row division cancels out is
+    recorded in the test's comments.
+13. **The level table / colouring oracle is a union-find, and it exposed the two index spaces.** The
+    test derives the hierarchy with a plain union-find over the same hand-written adjacency (per-bank
+    components, the `(bank, lowest lane)` component ranking, the level boundaries, the per-vertex chain) —
+    a completely different algorithm from the engine's bit-mask closure — and compares it against the
+    engine's own buffers: **fine masks 32/32, `going_next` 64/64 and `coarse_tables` 192/192 equal** for a
+    32-vertex chain, the same chain with a *reversed* partition and an 8x4 triangulated patch. The
+    reversed-partition case is what pins the reference's two index spaces: `fine_connect_masks` is indexed
+    by the **partition position** while `going_next`'s level-0 region and `coarse_space_tables` are indexed
+    by the **real vertex index** (they only coincide for an identity partition, which is why the first
+    version of the oracle — position-indexed — passed the identity case and failed the reversed one
+    32/64). Also note the *post-closure* masks: a fully connected bank ends up with `0xffff` for every
+    vertex, so the interesting hand-derivable quantities are the pre-closure masks (pinned separately).
+14. **The coarse level is aggregation Galerkin, in two shapes.** With one connected component in a
+    level-0 bank (`prefix == 1`) the reference's k2 sums every block of the fine cluster into one coarse
+    node's diagonal block (the test's hand-derived 3x3 = `A + B + 2C + 2C^T`, matched to 1.6e-09); with
+    more than one component each lane walks up on its own and the coarse block `(a,b)` accumulates the fine
+    blocks whose ancestors are `a`/`b` — and that branch adds `mat3` under `cdx >= rdx` into
+    `sym_index(rdx % 16, cdx % 16)`, which for *interleaved* components can be a **lower**-triangle slot
+    (the formula is only the symmetric index for `row <= col`). The test keeps its meshes in the contiguous
+    regime (a chain, a grid, two contiguous chains) where the two agree; the interleaved case is a *latent
+    reference quirk* recorded here rather than pinned (no test constructs it).
+15. **The apply oracle is the fine level only, and that is what makes it checkable.** The engine's
+    `set_active_level_num(1)` (public, the reference's own API) makes the apply a pure per-cluster block
+    Jacobi, so the test builds the oracle from the *read-back assembled BCOO*: for every vertex `v` in
+    cluster `c`, `z_v = Σ_{q ∈ c} M_c^{-1}[i_v, i_q] r_q`. Measured on the 5-tet scene: worst absolute
+    **4.9e-09** (scale 1.25e-01, `z^T r = +9.01e-01`), 24/24 entries bitwise identical across two runs, the
+    `converged != 0` early-out keeps all 24 sentinels, the MAS result differs from the block-*diagonal*
+    oracle by 1.1e-02 (**so the selection is not a silent fallback to the diagonal preconditioner**) and the
+    full hierarchy differs from the fine level by 4.1e-04 (so the coarse levels really contribute). The
+    same case also compares the engine's *assembled* cluster-0 matrix and its inverse with the oracle
+    (1.4e-14 / 5.4e-10) — the same check case 1 makes on synthetic meshes, here on the real scene's A.
+16. **The compile-deadlock trap was avoided by construction, and the barrier forced a padding.** No kernel
+    here holds a `make_spd`/12x12 chain (the largest expression is a 3x3 block), so §7.27 rule 2 never bit;
+    the 48x48 Gauss-Jordan is a *loop* (`$for(pivot, 0, 48)`), not an unrolled chain, and its four
+    `sync_block()`s per pivot must be reached by every live thread — so the port **pads the cluster buffers**
+    (≤ 1 cluster) to make `m_total_num_clusters * 3` a whole number of 96-thread blocks instead of letting
+    the surplus lane return around the barrier: the padded lanes invert a zero cluster (whose diagonal the
+    kernel pins to 1, i.e. an exact identity inverse) and their result is never read. The one *host* cost is
+    a slightly larger allocation, documented at `init_matrix`/`invert_cluster_matrices`.
+17. **The GPU block size must be a multiple of 32 — a *new* harness trap.** The banks are 16 lanes wide,
+    but `set_block_size(16)` is rejected by LC at dispatch time with a **fatal
+    `Assertion 'thread_count <= 1024u && thread_count % 32u == 0u' failed` (process abort, rc 3221226505)**;
+    the test-local closure kernel therefore uses a 32-thread block (and predicates the idle lanes). The
+    engine's own kernels use 256 and 96 (both multiples of 32).
+18. **The config selection is a two-way contract with printed diagnostics.**
+    `FEMMASPreconditioner::do_build` throws `SimSystemException` unless
+    `linear_system/fem_preconditioner == "mas"`; `FEMDiagPreconditioner::do_build` throws when it *is*
+    "mas". Measured on the same scene: with `"mas"` the MAS preconditioner is valid and the diagonal one is
+    invalid (`valid=1 / valid=0`), without the key it is exactly the other way round (`0 / 1`), and the
+    deferral reason is the debug line `SimSystemCollection::build_systems()` logs
+    (`[{system}] shutdown, reason: …`) — the test raises the log level around the scene build so the
+    diagnostic is visible in the log, i.e. never a silent fallback. `python scripts/luisa_module_def.py` +
+    `--check` rc 0 and `scripts/luisa_check_module_abi.py` rc 0 stay in the battery (§7.28 rule 7): this
+    batch needed **4** new exports (`MASPreconditionerEngine::{init_neighbor,init_matrix,set_preconditioner,
+    level_size}`), bootstrapped from the `LNK2019` names and then rewritten by the generator (390 → **394**
+    symbols); the `FEMMASPreconditioner` hooks are vtable-only, so they were *not* needed — the test drives
+    them through the class's `do_*` methods, which are already exported for T5.4b's sibling.
+19. **Non-vacuity: two perturbations on two axes, both caught, both reverted byte-identically** (below in
+    the T6.4c report). The host axis (the config reader) is cheap; a *device* axis costs a fresh JIT of the
+    affected engine kernels (the whole `[mas_preconditioner]` filter cold-JITs in ~40 s here, warm runs in
+    ~3 s).
+20. **Regression shape and the reproduction recipe.** `[mas_preconditioner]` → **234 assertions in 7 test
+    cases** (per case: cluster_inverse 12, level_table 73, preconditioner_apply 18, config_mas 7,
+    config_default 4, device_vs_host 46 + the accounting case); `~[mas_preconditioner]` → **762957/208 =
+    the T6.4b baseline exactly** (the batch is purely additive: the new systems are inert unless a scene
+    selects `"mas"`); the whole suite → **763191/215**; `[fem_precond]`/`[fem_linear]`/
+    `[fem_dynamics]` = 104/4 · 323/4 · 135/8 (unchanged; note the filter is `[fem_precond]`, the
+    T5.4b tag, not `[fem_preconditioner]`); `ctest` 1/1 (29.96 s); the standalone suite 69 cases / 0
+    checks failed; `python scripts/luisa_module_def.py --check` rc 0 (**394** symbols);
+    `python scripts/luisa_check_module_abi.py` rc 0. Total ~5200 new/changed port lines. **Reproduction:**
+    `python scripts/luisa_build.py build backend_luisa` (rc 0, 0 warnings) then
+    `python scripts/luisa_build.py run "[mas_preconditioner]"`; each case prints the numbers quoted above.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

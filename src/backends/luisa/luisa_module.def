@@ -7,7 +7,7 @@
 ; auto-generated list exceeded MSVC's 65535-export ceiling -> LNK1189).
 ;
 ; Contents: the module's C API + every symbol the in-tree consumers import from it.
-; 391 entries, generated from 1 consumer(s).
+; 395 entries, generated from 1 consumer(s).
 ; ---------------------------------------------------------------------------
 EXPORTS
     ??0?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
@@ -275,6 +275,8 @@ EXPORTS
     ?init@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?init@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?init@Runtime@luisa_device@luisa@backend@uipc@@QEAAXV?$basic_string_view@DU?$char_traits@D@std@@@std@@0@Z
+    ?init_matrix@MASPreconditionerEngine@luisa@backend@uipc@@QEAAXXZ
+    ?init_neighbor@MASPreconditionerEngine@luisa@backend@uipc@@QEAAXHHHV?$span@$$CBI$0?0@std@@00V?$span@$$CBH$0?0@6@1@Z
     ?initialized@Runtime@luisa_device@luisa@backend@uipc@@QEBA_NXZ
     ?instance@Runtime@luisa_device@luisa@backend@uipc@@SAAEAV12345@XZ
     ?inter_geo_infos@FilteredInfo@InterAffineBodyConstitutionManager@luisa@backend@uipc@@QEBA?AV?$span@$$CBVInterGeoInfo@InterAffineBodyConstitutionManager@luisa@backend@uipc@@$0?0@std@@XZ
@@ -282,6 +284,7 @@ EXPORTS
     ?is_empty@DyTopoClassifyInfo@luisa@backend@uipc@@QEBA_NXZ
     ?is_valid@ISimSystem@backend@uipc@@QEBA_NXZ
     ?last_solve_iterations@GlobalLinearSystem@luisa@backend@uipc@@QEBA_KXZ
+    ?level_size@MASPreconditionerEngine@luisa@backend@uipc@@QEBA?AUInt2@1234@H@Z
     ?main_stream@Runtime@luisa_device@luisa@backend@uipc@@QEAAAEAVStream@compute@3@XZ
     ?main_stream@luisa_device@luisa@backend@uipc@@YAAEAVStream@compute@2@XZ
     ?make_abd_dyadic_mass@luisa@backend@uipc@@YA?AUABDJacobiDyadicMass@123@NAEBV?$Matrix@N$02$00$0A@$02$00@Eigen@@AEBV?$Matrix@N$02$02$0A@$02$02@6@@Z
@@ -333,6 +336,7 @@ EXPORTS
     ?set_building@SimSystem@backend@uipc@@EEAAX_N@Z
     ?set_engine_aware@SimSystem@backend@uipc@@EEAAXXZ
     ?set_invalid@SimSystem@backend@uipc@@EEAAXXZ
+    ?set_preconditioner@MASPreconditionerEngine@luisa@backend@uipc@@QEAAXV?$LBufferView@N@luisa_device@234@V?$LBufferView@H@6234@1H@Z
     ?setup_ccd@Impl@GlobalVertexManager@luisa@backend@uipc@@QEAAXV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@@Z
     ?shape_energy@luisa@backend@uipc@@YANAEBV?$Matrix@N$0M@$00$0A@$0M@$00@Eigen@@@Z
     ?shape_energy_gradient@luisa@backend@uipc@@YA?AV?$Matrix@N$08$00$0A@$08$00@Eigen@@AEBV?$Matrix@N$0M@$00$0A@$0M@$00@5@@Z
