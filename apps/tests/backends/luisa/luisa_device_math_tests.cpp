@@ -500,3 +500,74 @@ TEST_CASE("math_device_smoke", "[luisa][math][device]")
     auto known = smoke_calc<double>(LVec<double, 3>::Ones(), LVec<double, 3>::Ones());
     CHECK((close(known.nm, std::sqrt(12.0), 1e-12)));
 }
+
+// ---------------------------------------------------------------------------
+// Device double-precision accuracy of the transcendental builtins.
+//
+// Motivated by T5.2c: LC's `cuda_builtin/cuda_device_math.h` maps the *double*
+// overloads to their float counterparts (logf/expf/acosf/... and powf for a
+// non-integral exponent), and LC's **AST** codegen path does emit them
+// (`cuda_codegen_ast.cpp` maps CallOp::LOG* to `lc_log*`).  This build uses the
+// **LLVM** codegen path instead, which lowers the same ops to libdevice's double
+// functions, so this test pins the observed behaviour: if a future LC upgrade
+// switches codegen, the assertions below fail loudly instead of silently
+// degrading every ported constitutive routine to ~1e-8 relative accuracy.
+// (See docs/luisa_porting_cookbook.md sections 1.4/1.5.)
+// ---------------------------------------------------------------------------
+TEST_CASE("device_double_math_accuracy", "[luisa][device]")
+{
+    test_runtime();
+
+    std::vector<double> in{0.5, 1.3, 2.7, 0.9};
+    constexpr uint32_t  K = 5;
+    const uint32_t      n = static_cast<uint32_t>(in.size());
+    std::vector<double> out(in.size() * K, 0.0);
+
+    lud::LDeviceBuffer<double> dev_in, dev_out;
+    dev_in.copy_from(luisa::span{in});
+    dev_out.resize(in.size() * K);
+    dev_out.view().fill(0.0);
+
+    static auto kernel = lud::compile1<lcrt::Buffer<double>, lcrt::Buffer<double>, uint32_t>(
+        [](lcrt::BufferVar<double> x, lcrt::BufferVar<double> o, lcrt::Var<uint32_t> n) noexcept
+        {
+            auto i = lcrt::dispatch_x();
+            $if(i < n)
+            {
+                auto v = x->read(i);
+                o->write(i * 5u + 0u, lcrt::log(v));
+                o->write(i * 5u + 1u, lcrt::pow(v, 0.5));
+                o->write(i * 5u + 2u, lcrt::exp(v));
+                o->write(i * 5u + 3u, lcrt::acos(v));
+                o->write(i * 5u + 4u, lcrt::sin(v));
+            };
+        });
+
+    lud::main_stream() << kernel(dev_in.view(), dev_out.view(), n).dispatch(n)
+                       << lcrt::synchronize();
+    dev_out.view().copy_to(luisa::span{out});
+    lud::main_stream().synchronize();
+
+    // Double precision is ~1e-16 and the float fallback is ~1e-7..1e-8, so a 1e-13
+    // bound separates the two unambiguously.  acos is undefined outside [-1, 1], so
+    // the out-of-domain inputs must compare as "both NaN" rather than by a ratio.
+    for(size_t i = 0; i < in.size(); ++i)
+    {
+        const double v = in[i];
+        const double host[K] = {std::log(v), std::pow(v, 0.5), std::exp(v), std::acos(v), std::sin(v)};
+        for(uint32_t k = 0; k < K; ++k)
+        {
+            const double got = out[i * K + k];
+            if(std::isnan(host[k]) || std::isnan(got))
+            {
+                CHECK((std::isnan(host[k]) == std::isnan(got)));
+                continue;
+            }
+            const double rel = std::abs(got - host[k]) / std::max(1e-300, std::abs(host[k]));
+            if(!(rel <= 1e-13))
+                std::printf(" [mathacc] i=%zu k=%u x=%.17g dev=%.17g host=%.17g rel=%.3e\n",
+                            i, k, v, got, host[k], rel);
+            CHECK(rel <= 1e-13);
+        }
+    }
+}

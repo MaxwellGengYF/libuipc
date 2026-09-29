@@ -128,10 +128,81 @@ cmake --build build -j && cmake --install build --prefix <root>/install
 
 This makes `<spdlog/spdlog.h>` resolve to vcpkg's spdlog (header-only target
 `spdlog::spdlog_header_only`) so there is exactly one fmt in the process. Do **not**
-work around this by removing LC's `include/luisa/ext` from the include path — the LC
-logging header needs it.
+  work around this by removing LC's `include/luisa/ext` from the include path — the LC
+  logging header needs it.
 
----
+### 1.4 **Applied local LC fix #2**: double-precision transcendentals were computed in float
+
+LC's CUDA backend has **two** codegen paths and picks between them by environment variable
+(`src/backends/cuda/cuda_device.cpp`):
+
+| env | path |
+|---|---|
+| `LUISA_EXPERIMENTAL_LLVM_CODEGEN=1` | `llvm_codegen/` -- lowers `log`/`exp`/... to `_call_libdevice_unary_op(b, "log", v)`, i.e. **libdevice double** |
+| `LUISA_EXPERIMENTAL_XIR_CODEGEN=1` (or a kernel needing autodiff) | XIR |
+| neither (the **default**) | `cuda_codegen_ast.cpp`, which emits `lc_log`/`lc_log2`/`lc_log10`/... for `CallOp::LOG*` |
+
+The default (AST) path lands in `cuda_builtin/cuda_device_math.h`, where the `lc_double`
+overloads of **19** functions are the single-precision ones:
+
+```cpp
+__device__ inline lc_double lc_log  (lc_double x) noexcept { return logf(x); }
+__device__ inline lc_double lc_acos (lc_double x) noexcept { return acosf(x); }
+__device__ inline lc_double lc_exp  (lc_double x) noexcept { return expf(x); }  // + sin/cos/tan, the
+...                                                                              // arc/hyperbolic ones,
+__device__ inline lc_double lc_atan2(lc_double y, lc_double x) noexcept { return atan2f(y, x); }
+                                                                                 // log2/log10/exp10,
+// and powf_impl(lc_double, lc_double) falls back to                               // copysign
+//     return y_int == y ? powi_impl(x, y_int) : powf(x, y);
+```
+
+(`sqrt/rsqrt/exp2/ceil/floor/trunc/round/rint/fma/fmod` are correctly double.) **So with the
+default codegen every double `log`/`exp`/`pow`/trigonometric in a ported kernel is evaluated at
+~1e-8 relative accuracy instead of ~1e-16**, while the reference (nvcc-compiled) code uses the
+accurate double functions. Measured in-tree, before the fix:
+`log(0.5)` -> `-0.69314712285995483` (rel 8.32e-08), `exp(0.5)` rel 3.19e-08, `acos(0.5)` rel
+2.78e-08, `sin(0.5)` rel 2.26e-07; the rod/spring constitutions of T5.2c show the same ~1e-7 in
+their per-element device-vs-host comparison.
+
+**Fix (applied):**
+```
+python scripts/patch_lc_double_transcendentals.py        # idempotent; --check reports only
+# rebuild + reinstall LC (cuda_builtin/*.h is embedded by luisa_embed_device_lib, so
+# cuda_builtin_embedded.cpp regenerates, and the change reaches the runtime)
+cmake --build C:/dev/LuisaCompute/build-msvc -j 12
+cmake --install C:/dev/LuisaCompute/build-msvc --prefix C:/dev/LuisaCompute/install-msvc
+```
+After the fix the same kernel is **bit-exact** against `std::` for `log`, `pow(x,0.5)`, `exp`,
+`acos` and 1.4e-16 for `sin`. This is guarded permanently by the
+`device_double_math_accuracy` case in `apps/tests/backends/luisa/luisa_device_math_tests.cpp`
+(bound 1e-13, which separates double from float unambiguously) -- if a future LC upgrade
+switches codegen or drops the patch, that case fails loudly instead of quietly degrading every
+constitutive routine.
+
+### 1.5 Three deployment traps that silently change the numbers (all hit in T5.2c)
+
+1. **A stale LC runtime next to the tests.** libuipc deploys `${LUISA_COMPUTE_PREFIX}/bin` next
+   to the module. That used to be a `POST_BUILD` step of the `luisa` target, which only runs
+   when the module is **relinked** -- so rebuilding LuisaCompute alone left an *older*
+   `luisa-backend-cuda.dll` (and `.dll`s) beside `uipc_test_backend_luisa.exe`, and every
+   in-tree measurement silently used that older LC (it was even a different build of the same
+   version: its md5 matched neither `install/bin` nor `install-msvc/bin`). It is now an
+   always-run `add_custom_target(luisa_runtime_deploy ALL)` with the module depending on it.
+   After rebuilding LC, verify
+   `md5sum build/Release/bin/luisa-backend-cuda.dll C:/dev/LuisaCompute/install-msvc/bin/luisa-backend-cuda.dll`
+   -- they must match.
+2. **`luisa_compute_deploy_runtime` remembers per target.** LC's own deploy function returns
+   early once its `LUISA_COMPUTE_RUNTIME_DEPLOYED` property is set, so a standalone scratch
+   project (e.g. `scratch/lc_math_probe`) keeps running whatever it deployed the first time.
+   That produced a *wrong* conclusion during this investigation (a probe with a patched DLL
+   looked unaffected by a patch that was in fact decisive). Delete the scratch build directory
+   (or at least its LC DLLs and `.cache`) before re-measuring, and prefer asserting with
+   `md5sum` that the consumer's DLL is the one you just built.
+3. **The LC PTX cache is codegen-specific.** `<exe dir>/.cache/kernel_<hash>.ptx` is keyed by the
+   kernel IR, not by the backend DLL or the builtin sources, so it can serve PTX produced by the
+   *other* codegen path. After changing LC (or its codegen selection), purge
+   `rm -rf build/Release/bin/.cache build/Release/bin/.data` -- it costs a full re-JIT (~17 min
+   for the whole suite) and it is the only way to be sure nothing stale is reused.
 
 ## 2. Build & run recipes (Windows)
 
@@ -1627,7 +1698,86 @@ how many cases ran before it. Measured consequence: the same stationary-state FD
 must hold in *both* streams (and the filtered run is the one that has all six cases in one process, so
 it is the sharper one).
 
+M5 batch **c** (rods/springs/particles) ports `kirchhoff_rod_bending` (uid 15, an extra constitution),
+`hookean_spring_1d` (uid 12), `particle_0d` (uid 13) and the four uid-0 placeholders
+`empty_0d/1d/2d/3d`, plus their two generated `sym/*.inl` files. The rules below are what that port
+turned out to depend on.
 
+30. **A hand-derived oracle can be wrong in a way a "compare with the port" test cannot see — and both
+the finite difference *and* an expression-level oracle are what catch it.** Batch c's Kirchhoff-rod
+energy was first derived as `k pi r^4 (1 - cos theta)/L0`; the generated `x7 * bracket` actually
+collapses to `k pi r^4 (1 - cos)/((1 + cos) L0)` = `k pi r^4 tan^2(theta/2)/L0` (the algebra slip is
+`(1 - cos^2)/(1 + cos)^2` mis-cancelled to `(1 - cos)` — the *device* was right). Three consequences,
+all acted on:
+  (a) a **right-angle** hand-computed configuration cannot see it: `cos = 0` makes `(1 - c)` and
+  `(1 - c)/(1 + c)` equal, which is exactly why the first version "passed" it — the batch-c hand case
+  is now a **60 degree** hinge (the two forms differ by 3/2);
+  (b) the FD comparison reported it as a *constant* ~0.5 relative error, i.e. rule 26's signature seen
+  from the oracle's side;
+  (c) `scratch/t52c_eval.py` settles such a dispute with no GPU: it re-parses the *generated* `.inl`
+  with the transcriber's own parser (`gen_fem_cons_a.parse`), emits Python from the AST and evaluates
+  it in double, so a hand formula is checked against the expression itself (measured: rod E rel 4.6e-14,
+  rod `dEdX` 1.1e-13, spring E 1.1e-14, spring `dEdX` 5.5e-15). It also localised a **sign** slip in the
+  derived rod gradient: with `dE/dc = -2K/(1 + c)^2` and `du, dv` the `c`-gradients w.r.t. `e0, e1`,
+  `dE/dx0 = -dE/dc du`, `dE/dx1 = +dE/dc (du - dv)`, `dE/dx2 = +dE/dc dv`.
+  Write the FD first and keep a cheap expression-level oracle.
+
+31. **`make_spd`'s sweep count for the rod/spring element Hessians is 8, measured.** The reference's
+`utils/make_spd.h` is a tolerance-driven Jacobi loop (device data, so the port needs a host-fixed count)
+whose *purpose* is the eigenvalue clamp. Measured plateau of the layer's cyclic sweep against an exact
+`eigen decompose + clamp + reconstruct` (30 random symmetric matrices per N, worst relative over the
+matrix's own scale): N = 6/9/12 all reach ~1e-15 at **8** sweeps, while 5 gives 1.9e-12 (N = 6), 1.1e-6
+(N = 9) and 2.2e-4 (N = 12) — the same 8 batch b chose for its 12x12 shells, at ~1/3 of the layer
+default's (20) JIT cost. `krb_detail::kMakeSpdSweeps` and `hs1d_detail::kMakeSpdSweeps` are both 8,
+spelled locally so that neither constitution's header depends on the other's. Measured on the *actual*
+element Hessians: the projected 9x9 matches the exact clamp to **3.2e-15** (rod) / **2.9e-15** (spring)
+relative, and **40/40** rod / **26/40** spring randomized states are *indefinite* before the projection,
+i.e. the clamp is not a no-op.
+
+32. **Split the Hessian check: unclamped analytic vs FD in *every* state, the clamp identity
+separately.** Same shape as batch a's rule 8. Measured over 40 randomized states: rod FD gradient rel
+**3.7e-10**, Hessian rel **9.6e-5** at h = 1e-6 and **2.0e-8** at h = 1e-4; spring **2.5e-10** /
+**2.0e-4** / **2.7e-8**; Hessian asymmetry **1.7e-16** (rod) and **1.6e-16** (spring). The brief's
+1e-4 / 1e-3 bounds hold at h = 1e-6 for both; h = 1e-4 is the round-off optimum (rule 24). A straight
+rod's *analytic* Hessian is PSD (min/max eigenvalue −2.9e-16) and its FD at h = 1e-4 agrees to 2.0e-7.
+
+33. **The degenerate states of this batch, pinned from the source** (neither constitution has any input
+guard — no branch, no assert, no length clamp):
+  * rod, collapsed current configuration (all three positions equal) with a healthy `L0`: `x7 =
+  (...)^-2 = +inf` times a bracket that is *exactly* 0 ⇒ `E = NaN` (gradient and Hessian non-finite);
+  * rod, zero *rest* length: `+inf` with a bent current state, `0/0 = NaN` with a straight one;
+  * rod folded back on itself (antiparallel edges): the closed form's limit is `+inf`, but the
+  generated `0 * inf` gives NaN (or a value whose last bits depend on `u.v + |u||v|`) ⇒ only
+  non-finiteness is asserted;
+  * spring, zero *current* length: the energy is finite and *exactly* `k Vdt2 / 2` (derived:
+  `0.5 k (0 - L0)^2 / L0^2 * Vdt2`), the gradient is `0 * inf = NaN`, the Hessian non-finite;
+  * spring, zero *rest* length: the generated density is `+inf` but the kernel's own `Vdt2 ∝ L0` scales
+  it by 0 ⇒ the *kernel* energy is `NaN` (a case where "the density alone would be +inf" is the wrong
+  assertion — check the value the kernel actually returns);
+  * spring, compressed (`L < L0`): the unclamped Hessian has a negative eigenvalue (−3.0 here) and the
+  shipped one is PSD — the model's own reason for `make_spd`.
+  The one guard that *does* exist is `utils/codim_thickness.h`'s `edge_thickness(t0, t1)` RUNTIME_CHECK
+  (an abort, not a throw), so it cannot be exercised from a test.
+
+34. **LC's default CUDA codegen evaluates `double` transcendentals in SINGLE precision.** LC
+picks its CUDA codegen by environment variable (see 1.4): the default is the **AST** path, which
+emits `lc_log`/`lc_exp`/`lc_acos`/... , and `cuda_builtin/cuda_device_math.h` defines those
+`lc_double` overloads as the **float** functions (`logf`, `expf`, `acosf`, ..., and `powf` for a
+non-integral `pow` exponent). This, not fast-math rounding, is what bounds a device-vs-host
+comparison in any routine that transcribes a generated expression containing `pow`/`log`/`exp`/
+trigonometry: measured in-tree, `log(0.5)` came back as `-0.69314712285995483` (8.32e-08
+relative), `sin(0.5)` at 2.26e-07, and the rod/spring constitutions showed ~1e-7 per element
+while the *host* instantiation of the very same routine matched the oracle to ~1e-13.
+    (a) this is **fixed** by the applied local LC patch of 1.4 (`scripts/patch_lc_double_
+    transcendentals.py`), which makes the AST path use the double functions; the guard is the
+    `device_double_math_accuracy` case (bound 1e-13);
+    (b) if you measure before/after such a change, read 1.5 first -- a stale deployed LC runtime
+    or a stale PTX cache will make a real fix look like a no-op (this cost two wrong conclusions
+    during T5.2c, including one that withdrew a correct diagnosis);
+    (c) assert a device-vs-host bound per routine and **record the measured value**; do not
+    derive it from which transcendental the routine uses, and do not "fix" a transcription by
+    re-spelling it as `lps::sqrt` (the reference writes `std::pow(..., 1.0/2.0)` and the
+    generator's contract is operator spelling only).
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

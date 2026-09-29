@@ -52,15 +52,26 @@ if(MSVC)
     endif()
 endif()
 
-# The LC backend modules and runtime DLLs are discovered next to the consuming
-# executable; deploy them beside this module too (Windows keeps them in bin/).
-if(EXISTS "${LUISA_COMPUTE_PREFIX}/bin")
-    add_custom_command(TARGET luisa POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory_if_different
-                "${LUISA_COMPUTE_PREFIX}/bin"
-                "$<TARGET_FILE_DIR:luisa>"
-        COMMENT "Deploying LuisaCompute runtime next to uipc_backend_luisa")
-endif()
+  # The LC backend modules and runtime DLLs are discovered next to the consuming
+  # executable; deploy them beside this module too (Windows keeps them in bin/).
+  #
+  # This is an ALWAYS-RUN custom target rather than a POST_BUILD step of the module:
+  # a POST_BUILD command only runs when the module is (re)linked, so rebuilding
+  # LuisaCompute alone left a *stale* LC runtime next to the tests -- which silently
+  # changes numerical results, because different LC revisions use different codegen
+  # paths (measured in T5.2c: an older deployed luisa-backend-cuda.dll evaluated
+  # double-precision log/exp/pow/trig through LC's AST path, i.e. in float, while the
+  # current one lowers them to libdevice's double functions). See
+  # docs/luisa_porting_cookbook.md section 1.6.
+  if(EXISTS "${LUISA_COMPUTE_PREFIX}/bin")
+      add_custom_target(luisa_runtime_deploy ALL
+          COMMAND "${CMAKE_COMMAND}" -E copy_directory_if_different
+                  "${LUISA_COMPUTE_PREFIX}/bin"
+                  "$<TARGET_FILE_DIR:luisa>"
+          COMMENT "Deploying LuisaCompute runtime next to uipc_backend_luisa")
+      add_dependencies(luisa luisa_runtime_deploy)
+  endif()
+
 
 # No CUDA language, no cublas/cusparse/cusolver (unused — see plan §2.2).
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "*.cpp" "*.h" "*.inl")
