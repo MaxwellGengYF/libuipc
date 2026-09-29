@@ -19,6 +19,24 @@
  * and defines the four trivial members in fem_linear_subsystem_reporter.cpp
  * (T5.4 moves those definitions into its own fem_linear_subsystem.cpp).
  * Everything else of this header is *not* dropped: it is T5.4's port work.
+ *
+ * ---------------------------------------------------------------------------
+ * T5.3 EXTENSION (the dependency-cycle policy of the T5.3 brief's §1.2)
+ * ---------------------------------------------------------------------------
+ * `FiniteElementKinetic` cannot even be *declared* without two more members of
+ * this class, so T5.3 pulls exactly those forward and nothing else:
+ *   - the nested `ComputeGradientHessianInfo` (verbatim from the reference header
+ *     with `cuda_tool::` -> `lla::` view types; fully inline there, so no
+ *     definition moved),
+ *   - `Impl::kinetic` (`SimSystemSlot<FiniteElementKinetic>`),
+ *   - `friend class FiniteElementKinetic` + `add_kinetic()` (defined in
+ *     finite_element_kinetic.cpp, next to its only caller).
+ * T5.4 still owns: `DiagLinearSubsystem` as the base, `do_build/do_init/
+ * do_report_extent/do_assemble/do_accuracy_check/do_retrieve_solution/
+ * do_diag_norm/do_mass_norm/do_report_init_extent/do_receive_init_dof_info/
+ * get_uid`, the dytopo receiver, the preconditioner hooks, every assembly kernel,
+ * the definitions of the four `AssembleInfo` accessors, and the move of T5.1's
+ * four trivial definitions into its own fem_linear_subsystem.cpp.
  *********************************************************************/
 #include <sim_system.h>
 #include <luisa_device/linear/linear.h>
@@ -31,6 +49,7 @@ namespace lla = luisa_device::linalg;
 
 class FEMLinearSubsystemReporter;
 class FEMDyTopoEffectReceiver;  // T5.5
+class FiniteElementKinetic;     // T5.3
 
 // NOTE: the reference derives this from `DiagLinearSubsystem` (T5.4). T5.1 keeps
 // the SimSystem base so that `require<FEMLinearSubsystem>()` (which the reporter
@@ -41,6 +60,37 @@ class FEMLinearSubsystem : public SimSystem
   public:
     using SimSystem::SimSystem;
     // T5.4: `using DiagLinearSubsystem::DiagLinearSubsystem;`
+
+    /// T5.3: verbatim from the reference's fem_linear_subsystem.h, with the
+    /// cuda_tool view types mapped to T3.1's `lla` views (`LDoubletVectorView` is
+    /// the reference's `DoubletVectorView`, `LTripletMatrixView<Float,3,3>` its
+    /// `TripletMatrixView<Float,3>`).  Every accessor is inline in the reference,
+    /// so nothing has to be defined in a .cpp.
+    class ComputeGradientHessianInfo
+    {
+      public:
+        ComputeGradientHessianInfo(bool                                          gradient_only,
+                                   lla::LDoubletVectorView<Float, 3>             gradients,
+                                   lla::LTripletMatrixView<Float, 3, 3>          hessians,
+                                   Float                                         dt) noexcept
+            : m_gradient_only(gradient_only)
+            , m_gradients(gradients)
+            , m_hessians(hessians)
+            , m_dt(dt)
+        {
+        }
+
+        auto gradient_only() const noexcept { return m_gradient_only; }
+        auto gradients() const noexcept { return m_gradients; }
+        auto hessians() const noexcept { return m_hessians; }
+        auto dt() const noexcept { return m_dt; }
+
+      private:
+        bool m_gradient_only = false;
+        lla::LDoubletVectorView<Float, 3>    m_gradients;
+        lla::LTripletMatrixView<Float, 3, 3> m_hessians;
+        Float                                m_dt = 0.0;
+    };
 
     class ReportExtentInfo
     {
@@ -96,12 +146,18 @@ class FEMLinearSubsystem : public SimSystem
     };
 
     /// T5.1 part of the reference's Impl: the reporters collection that
-    /// `add_reporter()` fills. T5.4 adds every other member of the reference's
-    /// Impl (gradients, offset-count collections, the device containers, ...).
+    /// `add_reporter()` fills. T5.3 adds `kinetic` (it is needed to *declare*
+    /// `FiniteElementKinetic`, see the file's scope note).  T5.4 adds every other
+    /// member of the reference's Impl (gradients, offset-count collections, the
+    /// device containers, `sim_engine`, the vertex reporter, the dytopo receiver,
+    /// `dt_attr`, `reserve_ratio`, ...).
     class Impl
     {
       public:
         SimSystemSlotCollection<FEMLinearSubsystemReporter> reporters;
+
+        // T5.3 (see the scope note)
+        SimSystemSlot<FiniteElementKinetic> kinetic;
     };
 
     // !!! T5.4 ports the system class itself (BuildInfo/InitInfo, do_build(), ...)
@@ -111,6 +167,11 @@ class FEMLinearSubsystem : public SimSystem
   private:
     friend class FEMLinearSubsystemReporter;
     void add_reporter(FEMLinearSubsystemReporter* reporter);
+
+    // T5.3: the reference's `friend class FiniteElementKinetic; void
+    // add_kinetic(FiniteElementKinetic*);` (defined in finite_element_kinetic.cpp).
+    friend class FiniteElementKinetic;
+    void add_kinetic(FiniteElementKinetic* kinetic);
 
     // T5.4's `FEMLinearSubsystem` owns the real Impl; T5.1 needs an instance to
     // hold `reporters`.

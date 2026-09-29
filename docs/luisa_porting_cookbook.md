@@ -1778,6 +1778,213 @@ while the *host* instantiation of the very same routine matched the oracle to ~1
     derive it from which transcendental the routine uses, and do not "fix" a transcription by
     re-spelling it as `lps::sqrt` (the reference writes `std::pow(..., 1.0/2.0)` and the
     generator's contract is operator spelling only).
+### 7.18 Patterns established in T5.3 (FEM dynamics, BDF, animator, external forces)
+
+M5 batch **T5.3** ports the FEM dynamics layer: `fem_time_integrator.{h,cpp}`, the BDF
+integrators (`bdf/fem_bdf{1,2}_time_integrator`), their kinetic systems
+(`bdf/finite_element_bdf{1,2}_kinetic`), `bdf/bdf2_function.h` + `bdf/sym/bdf2.inl`,
+`bdf/fem_bdf2_state.{h,cpp}`, `finite_element_kinetic.{h,cpp}`,
+`finite_element_animator.{h,cpp}` + `details/finite_element_animator.inl`,
+`finite_element_external_force_{manager,reporter}.{h,cpp}`, plus the three pieces the
+dependency cycle forces T5.3 to pull forward (`fem_line_search_{subreporter,reporter}`,
+`finite_element_constraint`, `constraints/soft_position_constraint`) and the *energy
+half* of `finite_element_elastics`. The rules below are what that port turned out to
+depend on; the first five are the ones a later task will hit again.
+
+1. **The BDF kernels, the beta convention, and one asymmetry the brief got wrong.** The
+   transcribed laws (`fx = is_fixed(i) != 0`, `x̃ = x_tilde`, `dx = x - x̃`, `h = dt`):
+   ```
+   BDF1 predict : x_prevs(i) = xs(i)                       (unconditional)
+                  x̃ = x_prevs
+                  if !fx                x̃ += (g + f_ext_acc) * dt * dt
+                  if !fx && is_dynamic  x̃ += vs * dt
+   BDF1 update  : vs = (xs - x_prevs) * (1 / dt)
+   BDF2 predict : x_ns(i) = xs(i);  x_{n-1} = x_n_1s(i); v_n = vs(i); v_{n-1} = v_n_1s(i)
+                  g = gravities(i) + f_ext_acc(i)
+                  if fx              { x_{n-1} = x_n; v_n = 0; v_{n-1} = 0; g = 0 }
+                  else if !is_dynamic { x_{n-1} = x_n; v_n = 0; v_{n-1} = 0 }
+                  x̃ = 4/9 h² g + 4/3 x_n - 1/3 x_{n-1} + 2/9 h (4 v_n - v_{n-1})
+   BDF2 update  : v = 1/(2h) (3 x - 4 x_n + x_{n-1})
+                  v_n_1s = vs;  vs = v;  x_n_1s = x_n        (old values on the right!)
+   kinetic (BDF1): K = fx ? 0 : 0.5 m dot(dx,dx);  G = fx ? 0 : m dx;  H = m I
+   kinetic (BDF2): K = fx ? 0 : inv_beta/2 dot(dx, m dx);  G = fx ? 0 : inv_beta m dx;
+                   H = (inv_beta m) I
+   ```
+   `beta = 4.0/9.0`, `inv_beta = Float{1}/beta = 9.0/4.0` (both exact in `double`; the unit
+   test asserts the literals, which is what catches a `float` transcription).
+   **The Hessian is NOT guarded by `is_fixed`** in either kinetic kernel (only `E` and `G`
+   are): a fixed vertex still gets `m I` on its diagonal block. The T5.3 brief's wording
+   ("fixed => H = 0") contradicts the reference's kernels and the reference wins; the test
+   asserts the actual `m I`. By contrast `SoftPositionConstraint`'s Hessian *is* guarded
+   (`fx ? 0 : (s m) I`) -- do not "unify" the two.
+   Device form: the reference's `if` chains become `select`s of the already computed
+   candidates (`scalar_detail::select_container` / `pred_and`), in the reference's own order;
+   the selected operand passes through untouched, so the values are bit-identical.
+
+2. **The BDF2 bootstrap copies the *method's* `x_prevs`/`vs`, not the current `xs`.** The
+   reference's first `do_predict_dof` resizes `x_n_1s`/`v_n_1s` and copies
+   `info.x_prevs()`/`info.vs()` into them. `x_prevs` is `x_n` *as of the previous frame*
+   (the method initialises it from `xs` in `_build_on_device`), so writing `xs` externally
+   (e.g. through `FiniteElementStateAccessorFeature::copy_from`, which touches `xs` and `vs`
+   but **not** `x_prevs`) before the first frame makes the bootstrapped `x_{n-1}` differ from
+   the current `x_n`. Measured with a seeded `xs = P0` and `x_prevs = P_orig`: the first
+   frame's `x_tilde` came out `4/3 P0 - 1/3 P_orig + ...` (rel error 0.2495 against the
+   "obvious" expectation) and `update_state` produced `v = (P_orig - P0)/dt` -- both exactly
+   what the reference computes. The test therefore seeds **velocities only** (which *is* the
+   `vs` the bootstrap reads, and is what makes the `v dt` / `2/3 h V0` terms visible instead
+   of vanishing in a scene at rest).
+
+3. **The dependency cycle, and exactly what T5.3 pulled forward.** The reference's FEM
+   dynamics has a genuine include cycle across the plan's T5.3/T5.4/T5.5 split:
+   `FiniteElementKinetic` declares members whose parameter types are
+   `FEMLinearSubsystem::ComputeGradientHessianInfo` (T5.4) and
+   `FEMLineSearchReporter::ComputeEnergyInfo` (T5.5); `FEMLineSearchReporter` calls
+   `FiniteElementKinetic::compute_energy`; `FiniteElementAnimator::Impl::init` needs
+   `FiniteElementConstraint` and the line-search subreporter. The port's resolution (marked
+   in-file with SCOPE NOTE blocks):
+   * **pulled forward and completed:** `FEMLinearSubsystem::ComputeGradientHessianInfo`
+     (an *inline* nested class, transcribed verbatim into T5.1's scaffold),
+     `FEMLinearSubsystem::Impl::kinetic` + `add_kinetic()` (+ `friend class
+     FiniteElementKinetic`), `fem_line_search_subreporter`, `fem_line_search_reporter`,
+     `finite_element_constraint`, `constraints/soft_position_constraint`,
+     `FiniteElementElastics::Impl::compute_energy` + `FiniteElementElasticsLineSearchSubreporter`,
+     and `FiniteElementAnimatorLineSearchSubreporter`;
+   * **still T5.4:** `FEMLinearSubsystem`'s system class (`DiagLinearSubsystem` base,
+     `do_build/do_init/do_report_extent/do_assemble/do_accuracy_check/do_retrieve_solution/
+     do_diag_norm/do_mass_norm/do_report_init_extent/do_receive_init_dof_info/get_uid`), its
+     dytopo receiver, its preconditioner hooks, its assembly kernels, and the four
+     `AssembleInfo` accessor *definitions*; `FiniteElementElastics::Impl::assemble` +
+     `FiniteElementElasticsLinearSubsystemReporter`; and
+     `FiniteElementAnimator::Impl::assemble` (declared, deliberately **not defined**) +
+     `FiniteElementAnimatorLinearSubsystemReporter`. An undefined member is fine as long as
+     nothing ODR-uses it -- and nothing does until T5.4 lands -- so the interface is complete
+     without a stub (T5.1's rule 13 still holds: never invent a placeholder *type*).
+   * **still T5.5:** the diff-dof/diff-parm reporters, the active-set/stiffness pieces, and
+     `constraints/finite_element_external_vertex_force_constraint.*` (uid 671, T5.4).
+
+4. **Registering the animator changes every scene of the shared test binary -- and the
+   `constraint_uids` assert is a hard abort.** `FiniteElementAnimator` requires
+   `FiniteElementMethod` *and* `GlobalAnimator` (the base `Animator::do_build` requires the
+   latter), so it exists exactly in scenes that have both a `FiniteElement` and a
+   `Constraint` constitution type. Where it does exist, `GlobalAnimator::init()` calls
+   `Impl::init()`, which walks **every FEM geometry's** `builtin::constraint_uids` and
+   `UIPC_ASSERT`s that some registered `FiniteElementConstraint` claims each uid -- an
+   **abort**, not an exception, so it cannot be caught by a test. Hence
+   `constraints/soft_position_constraint` (uid 14) had to be ported with the animator: it is
+   the only `Constraint` the ported frontend can write into a FEM geometry's
+   `constraint_uids`. Two corrections to the T5.3 brief's planning warning, both measured:
+   (a) `luisa_half_plane_animator_test.cpp`'s four `with_constraint` scenes have **no**
+   `FiniteElement` constitution, so the method (and therefore the animator) is invalidated
+   there and the assert cannot fire -- the constraint is still required (by the general
+   case and by the brief), and the test asserts it by construction; (b) even a scene without
+   the `Constraint` type builds the `SoftPositionConstraint` *object* (the registry
+   specialisation is process-wide) but **invalidates** it (`FiniteElementConstraint::do_build`
+   throws `SimSystemException` when uid 14 is not in the scene's `ConstitutionTabular`) --
+   see rule 6.
+   The constraint is pure energy: its `do_step` only refreshes its own
+   `aim_positions`/`strength_ratios` buffers from the animation and never writes
+   `xs`/`x_tildes`/`vs`, so the dynamics of a scene with it must be **bit-identical** to one
+   without it (asserted, measured 0.0e+00).
+
+5. **`cuda_tool` idioms that must not be transcribed literally.** `DeviceBuffer::operator=`
+   deep-copies in the reference, so `fem().x_temps = fem().xs;` becomes `copy_device(...)`
+   (T5.1 rule 4b, restated because the line-search reporter does exactly this);
+   `resize_discard(n)` becomes `loose_resize(buffer, n)` with the reference's 1.5 growth
+   policy (T4.3's spelling); `DeviceReduce().Sum(in, out, n)` becomes
+   `lla::device_reduce_sum(frame_stream(), in, out, n)`, **but a zero-length reduction must
+   not pass an empty (null-handle) view as a kernel argument** -- the port writes the reduce
+   identity with a one-element copy recorded on the same stream (T4.3's
+   dytopo_effect_line_search_reporter recipe, factored here as `reduce_sum_onto`).
+
+6. **`find<T>()` returns an *invalidated* system; `require<T>()` throws.** The engine's
+   probe idiom (`T53Probe`) reads optional systems with `find<>`, and T4.x's code (and the
+   T5.3 brief's warning) treated a `nullptr` result as "not created". That is only true when
+   the `SimSystemCreator` returned `nullptr` (e.g. a flag system whose scene config does not
+   select it): a *registered-but-invalidated* system is still found
+   (`SimSystemCollection::find` looks the type up in `m_sim_system_map` and never checks
+   `is_valid()`, measured with `SoftPositionConstraint` in a scene that does not use it). A
+   test that means "is this system in play?" must assert `is_valid()` (a public
+   `ISimSystem` member), not null-ness. Also note `FEMBDF2State`'s `do_build()` only
+   requires the method, so the state *system* exists in every FEM scene -- only its two
+   history buffers are BDF2-specific (a bdf1 scene leaves them at size 0, asserted).
+
+7. **A `uipc::vector` is a `std::pmr::vector`, so Catch2 comparisons need care.**
+   `CHECK(backend_vec == std::vector<T>{...})` does **not** compile (no common
+   `operator==` between the pmr and the default allocator flavours; measured C2678 with a
+   `Catch::ExprLhs` in the diagnostic). Compare element-wise, or build the expected value as
+   the same `uipc::vector<T>`.
+
+8. **The linear-algebra views' index type is `int32_t`, `dispatch_x()` is `uint32_t`.** A
+   constitution/reporter that writes its own doublet/triplet entry
+   (`G3s(i).write(i, G)` / `H3x3s(i).write(i, i, H)`, the reference's own statements -- the
+   device views' `write` takes the numerics layer's `LVec`/`LMat` by value, so no
+   `store_vec3`/`store_mat3x3` bridge is needed) has to cast the dispatch index once
+   (`lcrt::cast<std::int32_t>(i)`, the dytopo manager's idiom); passing a `Var<uint32_t>`
+   into the view's `Storage::store` fails with C2672 inside `views.h`.
+
+9. **Passing buffers to a kernel needs `.view()`/`.cview()`.** The `laa::detail::cached_kernel`
+   invocation accepts an `LBufferView` (it converts implicitly to `lcrt::BufferView<T>`), but
+   an owning `LDeviceBuffer` does not convert at all (measured C2664); a *buffer element* is
+   still written as a `Var<LVector3>` built with `store_vec3` (T4.2's note, re-measured).
+
+10. **`AtomicRef<LVector3>` has no component-wise atomic add.** LC derives an `AtomicRef`
+    for a `LUISA_STRUCT` type whose members are `AtomicRef<member_type>`, and
+    `AtomicRef<std::array<double,3>>` exposes only the base (no `fetch_add`), so the
+    reference's `eigen::atomic_add(forces(vid), F)` has no direct DSL spelling for a
+    vector-valued buffer. Consequence for T5.4: the real
+    `FiniteElementExternalVertexForce` reporter needs either three scalar buffers or a
+    per-component kernel; T5.3's test-local mock uses a read-modify-write (exactly equivalent
+    while it is the only writer, which the `clear -> step` contract guarantees for the test).
+
+11. **The external-force manager's contract is observable from the method's buffers.**
+    `FEMExternalForceManager` (`UID = 671`, an `ExternalForceReporter`, so
+    `GlobalExternalForceManager` drives it) clears `vertex_external_forces`, fans `step()` out
+    to its reporters (scatter-add), then writes `vertex_external_force_accs = F / m`, and
+    **exactly 0 when `m <= 0`** (a *device* test, so the branch is a select). A massless
+    vertex is reachable in a scene by writing a per-vertex `mass_density` of 0 (the method's
+    mass is `density * volume`), and the `clear -> step` order is provable by silencing the
+    reporter for one frame and checking that the buffer still ends up all-zero.
+
+12. **Test-side uids reserved for mocks** (so the next task does not collide; the test binary
+    is shared, and a mock that claims a *real* uid steals the `(dim, uid)` geometry group):
+    `0x5445535456455254` "TESTVERT" (T4.1), `0x543432414E494D` "T42ANIM",
+    `0x543432464F5243` "T42FORC" (T4.2), `0x54343344594E54` "T43DYNT" (T4.3), and T5.3's
+    `0x54353346454D58` "T53FEMX" (an `FiniteElementExternalForceReporter`, uid > 2^32).
+    `FEMExternalForceManager` itself claims 671 (the same number as the reference's
+    `FiniteElementExternalVertexForce` reporter and the frontend's
+    `uipc::constitution::FiniteElementExternalForce`), which is *not* available for a mock.
+
+13. **What T5.3 deviated from, and why** (all reported, all minimal):
+    * The reference's `.cu`-only classes (`FEMBDF1Integrator`, `FEMBDF2Integrator`,
+      `FiniteElementBDF{1,2}Kinetic`) get a matching `.h` with the class declaration and the
+      generic per-vertex routines, exactly like T5.2 rule 11; the kernels, their cached
+      shaders and `REGISTER_SIM_SYSTEM` stay in the `.cpp`. Without it the T5.3 brief's
+      §2.1 rule ("one generic implementation per routine over the scalar type") cannot be
+      satisfied, because the reference gets host+device from `__host__ __device__` and the
+      DSL cannot.
+    * `FiniteElementAnimator::BaseInfo::dt()` is *declared but never defined* in the
+      reference; the port defines it (`return m_dt;`), which is the only sensible reading of
+      the member it stores.
+    * `finite_element_kinetic.cu` includes `<finite_element/finite_element_diff_dof_reporter.h>`
+      without using anything from it; the port drops the include (the diff-dof reporter is
+      T5.5 and drags in `<diff_sim/...>`).
+    * `SoftPositionConstraint`'s class is declared in a header (the same T5.2 rule 11
+      deviation) so the unit test can drive its hooks; its three host vectors and three
+      device buffers are public, as in the reference.
+
+14. **The scene oracle recipe (what makes an end-to-end dynamics test non-vacuous).**
+    Build a small tet scene with `ARAP`, `contact/enable = false`,
+    `sanity_check/enable = false` and `integrator/type` = `bdf1`/`bdf2`; write the per-vertex
+    `is_fixed`/`is_dynamic`/`gravity`/`mass_density` attributes (find-or-create: the
+    frontend's `apply_to` may already have created `is_fixed`); seed **velocities** through
+    `FiniteElementStateAccessorFeature::copy_from` (rule 2); `advance()` once and compare the
+    method's `x_prevs`/`x_tildes`/`vs` against the formulas of rule 1, with the BDF2 history
+    bootstrapped from the same inputs. The shipped kernels are only reachable this way (they
+    are anonymous-namespace-local), so this case is what proves the *plumbing*; the
+    device-buffer cases prove the *routines* (the same `*_detail` functions the kernels call)
+    over synthetic buffers, and `fem_dynamics_device_vs_host` proves they agree with their
+    host instantiation bitwise (measured 61/61 bitwise, worst abs 0.0).
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

@@ -12,22 +12,32 @@
  * therefore ports the *interface plus the offsets plumbing*
  * (finite_element_elastics.cpp: do_build + init + the subview accessors).
  * Deliberately left to the later tasks, and named here so nothing is dropped:
-   * - T5.3: `Impl::assemble(...)` and `Impl::compute_energy(...)` (pure fan-outs
-   *   over the constitution collections; the reference defines them in this same
-   *   .cu). They are *not declared here*: their parameter types are
-   *   `FEMLinearSubsystem::AssembleInfo` /
-   *   `FEMLineSearchReporter::ComputeEnergyInfo` -- nested classes of the T5.4/T5.5
-   *   headers -- and a nested type cannot be named before its enclosing class is
-   *   complete (cookbook §7.16 rule 8a). T5.3 adds the members together with those
-   *   headers.
- *   - T5.4/T5.5: `FiniteElementElasticsLinearSubsystemReporter` and
- *     `FiniteElementElasticsLineSearchSubreporter` (the two nested reporter
- *     classes at the bottom of the reference's .cu).
+ *   - T5.3 ADDS (see the T5.3 note below): `Impl::compute_energy(...)` and the
+ *     `FiniteElementElasticsLineSearchSubreporter` that drives it -- the energy
+ *     half of the reference's .cu.  The line-search reporter path is complete in
+ *     T5.3 (`FEMLineSearchReporter`/`FEMLineSearchSubreporter` are ported).
+ *   - T5.4: `Impl::assemble(...)` and `FiniteElementElasticsLinearSubsystemReporter`
+ *     (the reference's first nested reporter class): both need
+ *     `FEMLinearSubsystem::AssembleInfo`'s accessor *definitions* and the linear
+ *     subsystem's Impl members, which T5.4 owns.  `assemble` is still **not
+ *     declared here** (nothing in T5.3 ODR-uses it, and declaring it would add a
+ *     hard dependency on the T5.4 header from every constitution).
  * The later-task parameter types are forward-declared instead of included, so
  * this header does not depend on the T5.4/T5.5 headers.
+ *
+ * ---------------------------------------------------------------------------
+ * T5.3 NOTE (the energy half)
+ * ---------------------------------------------------------------------------
+ * `Impl::compute_energy(FEMLineSearchReporter::ComputeEnergyInfo&)` needs the
+ * line-search reporter to be *complete*, so this header now includes
+ * `<finite_element/fem_line_search_reporter.h>` (ported by T5.3 itself; it does
+ * not include back into the elastics, so there is no cycle).  The body is the
+ * reference's pure fan-out over the constitution collections, in the same
+ * constitution-then-extra order the offsets were laid out in `init()`.
  *********************************************************************/
 #include <sim_system.h>
 #include <finite_element/finite_element_method.h>
+#include <finite_element/fem_line_search_reporter.h>
 #include <luisa_device/linear/linear.h>
 #include <utils/offset_count_collection.h>
 
@@ -38,11 +48,9 @@ namespace uipc::backend::luisa
 namespace lla = luisa_device::linalg;
 
 class FiniteElementMethod;
-// T5.4 / T5.5 (see the scope note above).
+// T5.4 (see the scope note above).
 class FEMLinearSubsystem;
-class FEMLineSearchReporter;
 class FiniteElementElasticsLinearSubsystemReporter;
-class FiniteElementElasticsLineSearchSubreporter;
 
 class FiniteElementElastics final : public SimSystem
 {
@@ -147,20 +155,15 @@ class FiniteElementElastics final : public SimSystem
         OffsetCountCollection<IndexT> constitution_gradient_offsets_counts;
         OffsetCountCollection<IndexT> constitution_hessian_offsets_counts;
 
-        // T5.3/T5.4/T5.5 add the two fan-out members the reference declares here:
-        //   void assemble(FEMLinearSubsystem::AssembleInfo& info);            // T5.4
-        //   void compute_energy(FEMLineSearchReporter::ComputeEnergyInfo&);   // T5.5
-        // A *nested* parameter type needs its enclosing class to be complete, and
-        // neither FEMLinearSubsystem (T5.4) nor FEMLineSearchReporter (T5.5) is
-        // ported yet, so T5.1 omits the two declarations instead of inventing
-        // placeholder types. (Precedent: the reference declares them here and
-        // defines them in this same .cu -- T5.3's port of finite_element_elastics
-        // adds both the declarations and their bodies.)
+        // T5.3 adds the energy half of the reference's two fan-outs; T5.4 adds
+        //   void assemble(FEMLinearSubsystem::AssembleInfo& info);
+        // (see the file's scope note: its parameter type's accessors are T5.4's).
+        void compute_energy(FEMLineSearchReporter::ComputeEnergyInfo& info);
     };
 
   private:
     friend class FiniteElementElasticsLinearSubsystemReporter;  // T5.4
-    friend class FiniteElementElasticsLineSearchSubreporter;    // T5.5
+    friend class FiniteElementElasticsLineSearchSubreporter;    // T5.3
 
     virtual void do_build() override;
 
