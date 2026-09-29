@@ -453,11 +453,17 @@ inline constexpr U64 kFixedJointUID    = 25;
 //  (a) the test-local kinetic: a hand-written quadratic per body
 // ---------------------------------------------------------------------------
 /// Writes `hessians(body) = H_body` and `gradients(body) = H_body q_body` (the
-/// gradient/Hessian of `E = 1/2 q^T H q`).  The scene's only *other* constitution
-/// is the shared `T61ABDMockConstitution` (uid 1), whose
-/// `do_compute_gradient_hessian` is a no-op, so the shape term stays at the value
-/// `Impl::init` left it (`LDeviceBuffer::resize` zero-fills the tail).
-class T61bKinetic final : public gg::AffineBodyKinetic
+  /// gradient/Hessian of `E = 1/2 q^T H q`).  The scene's only *other* constitution
+  /// is the shared `T61ABDMockConstitution` (uid 1), whose
+  /// `do_compute_gradient_hessian` is a no-op, so the shape term stays at the value
+  /// `Impl::init` left it (`LDeviceBuffer::resize` zero-fills the tail).
+  ///
+  /// NOTE (T6.2): this class is no longer `final` and is no longer the registered
+  /// system -- `zt61b::T61bKineticOwner` below derives from it purely so that the
+  /// *registered* type's demangled name sorts after every `uipc::backend::luisa::*`
+  /// system, which is what decides who owns the dynamics' single kinetic slot (see
+  /// the block comment at the subclass).
+  class T61bKinetic : public gg::AffineBodyKinetic
 {
   public:
     using AffineBodyKinetic::AffineBodyKinetic;
@@ -545,8 +551,47 @@ inline lud::LBufferView<gg::LMatrix12x12> T61bKinetic::h_buffer()
 {
     return body_hessian_buffer().view();
 }
+}  // namespace t61b
 
-REGISTER_SIM_SYSTEM(T61bKinetic);
+// ---------------------------------------------------------------------------
+//  T6.2 spin-off — who owns `AffineBodyDynamics`' single kinetic slot
+//
+//  T6.1a's dynamics keeps *one* kinetic ("only one allowed", `register_sim_system`
+//  overwrites) and this file's stand-in above used to be the only `AffineBodyKinetic`
+//  subclass in the whole test binary, so the body term of every expectation below was
+//  whatever *it* wrote.  T6.2 adds the shipped `AffineBodyBDF1Kinetic` /
+//  `AffineBodyBDF2Kinetic`, which are just as valid in the same `bdf1`/`bdf2` scenes
+//  (both only `require` their BDF flag), so the slot's owner is decided by the build
+//  order: `SimEngine::build_systems()` sorts the SimSystem creators by **demangled
+//  type name** and `add_kinetic()` overwrites, i.e. the *last* system built wins.
+//  `t61b` is a *global* namespace, so `"class t61b::T61bKinetic"` sorts *before* every
+//  `"class uipc::backend::luisa::…"` class and the shipped kinetic took the slot.
+//  Measured (before this subclass existed): `abd_linear_chain` and
+//  `abd_linear_animator` lost 8 assertions — e.g. the device's `A_eff(0,0)` became
+//  `127.9 = 125` (the real dyadic mass `m = rho L³`) `+ 2.9` (the reporter part)
+//  instead of the hand-derived `2.5 + 2.9`, and the gradient's body term became
+//  `M (q - q̃) = 0` (the dynamics initialises `q̃ = q`) instead of `H q`.
+//
+//  The registered system is therefore this one-line subclass, in a namespace whose
+//  name sorts **after** `uipc` (`'z' > 'u'`): it inherits the whole stand-in
+//  (including `enabled` and the hand-written `H` buffer) and, being built last, is the
+//  slot's owner again — with *no* change to any value this file derives.  It is the
+//  same knowing-name-reuse pattern the uid comments above describe, recorded in the
+//  T6.2 row / cookbook §7.23.
+// ---------------------------------------------------------------------------
+namespace zt61b
+{
+class T61bKineticOwner final : public t61b::T61bKinetic
+{
+  public:
+    using T61bKinetic::T61bKinetic;
+};
+}  // namespace zt61b
+
+REGISTER_SIM_SYSTEM(zt61b::T61bKineticOwner);
+
+namespace t61b
+{
 
 // ---------------------------------------------------------------------------
 //  (b) the test-local ABD linear-subsystem reporter: the Jacobi-triple blocks

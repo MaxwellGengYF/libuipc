@@ -2721,6 +2721,143 @@ manager and the test `apps/tests/backends/luisa/luisa_abd_linear_test.cpp` (tag 
     upper-only-convention perturbation of rule 4 (`worst_sym` jumps from 4.3e-16 to 1.19) and
     the `dyt_dbl_idx` perturbation of the device round (a host-memory `kernel_assert` abort).
 
+### 7.23 Patterns established in T6.2 (ABD BDF integrators, states and kinetic)
+M6 batch **T6.2** ports `affine_body/bdf/**` — 12 files: `bdf2_function.h` +
+`sym/bdf2.inl` (the 12-dof helper templates), `abd_bdf1_time_integrator.{h,cpp}`,
+`abd_bdf2_time_integrator.{h,cpp}`, `abd_bdf2_state.{h,cpp}` (the `q_n_1s`/`q_v_n_1s`
+history + its dump/recover files), `affine_body_bdf{1,2}_kinetic.{h,cpp}` — plus
+`apps/tests/backends/luisa/luisa_abd_dynamics_test.cpp` (tag `[abd_dynamics]`, 7
+cases, 547 assertions).  It is a deliberate mirror of T5.3's FEM batch (§7.18); the
+rules below are the ones where the ABD sibling is *not* a rename of the FEM one.
+
+1. **The 12-dof BDF laws are the FEM laws with a wider container — and the *test*
+   proves it component-wise.**  `sym::abd_bdf2::{compute_q_tilde (both overloads),
+   compute_qv}` are `lps::LVec<T,12>` transcriptions of the very statements in
+   `finite_element/bdf/sym/bdf2.inl` (same temporaries `c_qn/c_qn_1/c_v/c_g`, same
+   association order, `compute_v` -> `compute_qv`); the handwritten reference has no
+   generator, so they are transcribed by hand exactly like the FEM file.  Measured:
+   driving both templates on the *same* numbers gives **|abd - fem| = 0.000e+00**
+   (bitwise) over the first three components, 180/180 samples
+   (`abd_dynamics_bdf2_host_oracle`).  The oracle itself is a hand-derived closed form
+   (60 random 12-vectors x 3 step sizes, bound 1e-14, measured **0.000e+00** for all
+   three templates).
+2. **The mass operator is the difference that matters: `M = Jᵀ Mᵢ J` is a dense
+   12x12, not the FEM scalar `m I`.**  `K = ½ dq·(M dq)`, `G = M dq`,
+   `H = M.to_mat()` where `M` is the per-body `ABDJacobiDyadicMass` aggregate and
+   `M dq` is the factored `abd_dyadic_mass_mul` (§7.21 rule 11).  The hand-derived
+   `mass_matrix_oracle(m, m x̄, m x̄⊗x̄)` (written out in the test from the jacobian's
+   own layout: `block(0,0) = m I`, `block(0,1+i)` non-zero only in row `i` with
+   `m x̄ᵀ`, `block(1+i,1+i) = m x̄⊗x̄`) is the oracle: the ported energy/gradient/
+   Hessian agree at **0.000e+00** over three hand-written triads, and the pinned
+   entries `H(0,0) = m`, `H(0,3) = m x̄(0)`, `H(0,1) = 0` prove the matrix is *not*
+   diagonal (the FEM kinetic's Hessian is).  The gradient/Hessian stage writes the
+   **dense per-body** buffers T6.1b's corrected `ComputeGradientHessianInfo` hands over
+   (§7.22 rule 6) — `gradients->write(i, G12)` / `hessians->write(i, H12)` are the
+   reference's own statements — so no device doublet/triplet view has to be rebuilt
+   (that is the FEM kernel's idiom), and there is no empty-Hessian-view host guard.
+3. **Two kinetic asymmetries that must not be "unified".**  (a) The Hessian is **not**
+   guarded by `is_fixed` in either ABD kinetic (only E and G are) — the same finding as
+   the FEM batch (§7.18 rule 1): a fixed body still receives `M` on its diagonal.  (b)
+   *The ABD energy has an extra guard the FEM one does not*:
+   `K = (is_fixed || ext_kinetic) ? 0 : …` while `G = is_fixed ? 0 : M dq` has no
+   `ext_kinetic` term.  Both are asserted (the device-vs-host dump pins `entry 122/293
+   == 0.0` for an external-kinetic body and its *non-zero* gradient).
+4. **The BDF2 predict kernel has no external-force argument — unlike its BDF1 sibling
+   and unlike the FEM BDF2 twin.**  The reference's ABD BDF2 kernel takes `gravities()`
+   alone (`g = gravity(i)`); BDF1 takes `gravities() + external_force_accs()`.  The port
+   keeps that verbatim (`bdf2_detail::predict_dof(q_n, q_n_1, q_v_n, q_v_n_1, gravity,
+   dt, is_fixed, is_dynamic)` — one fewer parameter than `bdf1_detail`), because
+   "fixing" it would silently change the port's dynamics.  The *device-vs-host* round
+   therefore has no external-force entry on the BDF2 side either.
+5. **The bootstrap copies the *dynamics'* `q_prevs`/`q_vs`, and the history rolls with
+   the old values on the right.**  `ABDBDF2State::q_n_1s`/`q_v_n_1s` are two
+   `LDeviceBuffer<LVector12>` (+ their `BufferDump` files `q_n_1.<frame>` /
+   `qv_n_1.<frame>`); the first `do_predict_dof` resizes them and deep-copies
+   `info.q_prevs()`/`info.q_vs()` (`copy_device` on the *frame* stream, §7.16 rule 4b —
+   the reference's `copy_from`).  `_build_on_device` initialises `q_tilde = q_prev = q`
+   (§7.21 rule 16's step list, line 822-824), so the *first* BDF2 frame sees
+   `q_{n-1} = q_n` and `q_v_{n-1} = q_v_n` and produces
+   `q̃ = q + 2/3 h q_v + 4/9 h² g12` — measured in a real scene at rel
+   **5.551e-17** — where BDF1 produces `q + h q_v + g12 h²` (rel `0.000e+00`).  The
+   update kernel writes `q_v_{n-1} := q_v_n`, `q_v_n := q_v`, `q_{n-1} := q_n` **in the
+   reference's order** (all three right-hand sides are read before any write; the port's
+   device round pins each with a sentinel).  In a `bdf1` scene the state *system* is
+   still built (`do_build` only requires the dynamics) but its buffers stay at size 0.
+6. **The steady-state oracle (the plan's headline) and what it actually says.**  BDF2 is
+   exact for a *consistent* steady state: with `q_{n-1} = q_n - V h`,
+   `q_v_n = q_v_{n-1} = V` and `g = 0`, the shipped BDF2 law gives
+   `4/3 q_n - 1/3 (q_n - Vh) + 2/9 h (4V - V) = q_n + V h`, i.e. **exactly BDF1's
+   `q_prev + q_v dt`**, and the update `1/(2h)(3(q_n+Vh) - 4q_n + (q_n-Vh)) = V`
+   reproduces the velocity.  Measured: `bdf1 rel 0.000e+00`, `bdf2 rel 1.110e-16`,
+   `|bdf2 - bdf1| <= 1e-14` (bound 1e-14; one ULP apart because the two sides evaluate
+   differently *associated* expressions).  With `g ≠ 0` the two **must** differ, by
+   exactly `(1 - 4/9) h² g` — asserted to **1.110e-16** and equal to `2.178e-03` for
+   `h = 0.02`, `g = 9.8` — which is what pins the `beta = 4/9` convention against
+   BDF1's coefficient 1.  *State* the two `4/9`-vs-`1` coefficients: this equality is
+   a property of the steady state, not of the schemes.  The case also asserts the
+   transform invariants: the steady-state transform's rotational block is bitwise `A`
+   (`|A_after - A| = 0.0`), `|AᵀA - I| = 5.551e-17`,
+   `|q_to_transform(q̃)'s orthonormality defect| = 5.551e-17`, the last row of
+   `q_v_to_transform_v` is exactly `0.0`, and `transform_to_q ∘ q_to_transform` is exact
+   (`0.0`).
+7. **Who owns `AffineBodyDynamics`' single kinetic slot is decided by a *name sort*
+   (measured, and the reason T6.1b's test file changed).**  `SimEngine::build_systems()`
+   sorts the `SimSystemAutoRegister` creators by **demangled type name** and
+   `AffineBodyDynamics::add_kinetic()` overwrites the slot ("only one allowed"), so the
+   **last system built wins** — and that order is a property of the class *names*, not of
+   registration or dependency order.  T6.1b's test-local stand-in (`t61b::T61bKinetic`, a
+   *global* namespace) therefore lost the slot to T6.2's
+   `uipc::backend::luisa::AffineBodyBDF1Kinetic` ('t' < 'u') the moment the shipped
+   batch landed, and `abd_linear_chain` + `abd_linear_animator` lost 8 assertions
+   (measured: the device's `A_eff(0,0)` became `127.9 = 125` — the real dyadic mass
+   `m = ρL³` — `+ 2.9`, instead of the hand-derived `2.5 + 2.9`, and the gradient's body
+   term became `M(q - q̃) = 0` because the dynamics initialises `q̃ = q`).  The fix is
+   test-side and one line: the registered system is now
+   `zt61b::T61bKineticOwner : t61b::T61bKinetic`, whose name sorts **after** every
+   `uipc::backend::luisa::*` class ('z' > 'u'), so the stand-in owns the slot again with
+   **no change to any value T6.1b derives**.  Any future test-local kinetic must know
+   this rule (a backend-namespace class always beats a globally-namespaced one with a
+   name < 'u').
+8. **The frontend's state accessor and the state's own buffers (test-side seams).**
+   (a) `copy_to` exports `q`/`q_v` — *not* `q_tilde` — through
+   `q_to_transform`/`q_v_to_transform_v`, and the *velocity* export **zeroes the last
+   row** while the transform keeps `(0,0,0,1)` (a test comparing a read-back velocity
+   with a `Matrix4x4::Identity`-based helper fails on entry (3,3); measured 1.0 vs 0.0).
+   (b) `copy_from` writes the **whole** state: a test that means "re-seed the velocity
+   between frames" must also re-write the transform, because the freshly created
+   (default-identity) `builtin::transform` attribute otherwise wipes `qs` (measured: the
+   frame-2 `q_tilde` mismatched in 5 of 12 components).  (c) `ABDBDF2State::q_n_1s()` /
+   `q_v_n_1s()` have a **public const** overload and a **private non-const** one (the
+   reference's layout: the mutable views belong to the integrator), so a test must read
+   them through a `const` pointer (the FEM batch's `state_x_n_1s` helper).
+9. **Test-side traps this batch measured** (all cheap to avoid next time):
+   * an Eigen comma initializer **inside a braced init list** is mis-parsed by MSVC
+     (`Matrix3x3() << …` in a `std::vector<Matrix3x3>{…}` initializer → C3329/C2059); use
+     a nine-argument helper (`m3(...)`);
+   * a ternary mixing `Vector12::Zero()` (an Eigen *nullary expression*) with a matrix
+     product has no common type (C2446) — write it as two statements (§7.21 rule 10's
+     trap, again);
+   * `lps` **views** (`.diagonal()`, `MatMap`) have no member `norm()`/`squaredNorm()`;
+     compare entry-wise or use the owning `LVec`/`LMat` (which do);
+   * `AffineBodyDynamics::body_count()` is **not** a public accessor on the system (it
+     exists on the *constitution-scoped* info and on `Impl`); use `qs().size()` in a
+     test;
+   * with both `using namespace uipc::constitution;` and
+     `using namespace uipc::backend::luisa;` open, `AffineBodyConstitution` is ambiguous
+     (C2872) — qualify the frontend one;
+   * a `||`/`&&` of two comparisons inside one Catch2 `CHECK` is a *chained comparison*
+     (C2338): materialise the `bool` first.
+10. **Regression shape of this batch.**  `run` -> **760710 assertions / 160 test cases**
+    (= the T6.1b baseline 760163/153 + this file's 547/7), `run "~[abd_dynamics]"` ->
+    **760163 / 153** = the T6.1b baseline *exactly*, `ctest` **1/1 passed** (20.7 s,
+    label gpu) and the standalone build (69 cases, 0 checks failed) unchanged.  The
+    device-vs-host round of every ported routine is **462/462 bitwise equal**
+    (worst abs `0.000e+00`).  Non-vacuity (3 perturbations, each patched -> built ->
+    run -> reverted -> green): `beta := 1/3` fails the 2 literal checks and moves the
+    measured `K_bdf2/K_bdf1` from 2.25 to 3.00; the BDF1 predictor `dt*dt -> dt` fails
+    7 assertions across 3 cases (worst rel 1.83 on the scalar law); removing the
+    kinetic's `ext_kinetic` guard fails 3 (`worst_k`, `ΣK1` and the dump's `entry 122`).
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
