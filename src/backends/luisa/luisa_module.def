@@ -7,7 +7,7 @@
 ; auto-generated list exceeded MSVC's 65535-export ceiling -> LNK1189).
 ;
 ; Contents: the module's C API + every symbol the in-tree consumers import from it.
-; 375 entries, generated from 1 consumer(s).
+; 391 entries, generated from 1 consumer(s).
 ; ---------------------------------------------------------------------------
 EXPORTS
     ??0?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
@@ -45,6 +45,7 @@ EXPORTS
     ?backend_name@Runtime@luisa_device@luisa@backend@uipc@@QEBA?AV?$basic_string_view@DU?$char_traits@D@std@@@std@@XZ
     ?begin@LStream@luisa_device@luisa@backend@uipc@@QEAAXXZ
     ?body_count@FilteredInfo@AffineBodyDynamics@luisa@backend@uipc@@QEBA_KXZ
+    ?body_ids@AffineBodyExternalBodyForceConstraint@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@234@XZ
     ?body_ids@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@234@XZ
     ?body_ids@VertexAttributeInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@345@XZ
     ?buffer_view@ComputeGradientInfo@GlobalLinearSystem@luisa@backend@uipc@@QEAAXV?$DenseVectorViewT@$0A@NUbuffers@storage@linalg@luisa_device@luisa@backend@uipc@@$0A@@linalg@luisa_device@345@@Z
@@ -133,6 +134,7 @@ EXPORTS
     ?do_compute_energy@ARAP3D@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@FEM3DConstitution@234@@Z
     ?do_compute_energy@AffineBodyDrivingPrismaticJoint@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@InterAffineBodyAnimator@234@@Z
     ?do_compute_energy@AffineBodyDrivingRevoluteJoint@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@InterAffineBodyAnimator@234@@Z
+    ?do_compute_energy@AffineBodyExternalBodyForceConstraint@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@AffineBodyAnimator@234@@Z
     ?do_compute_energy@AffineBodyFixedJoint@luisa@backend@uipc@@UEAAXAEAVEnergyInfo@InterAffineBodyConstitutionManager@234@@Z
     ?do_compute_energy@AffineBodyPrismaticJoint@luisa@backend@uipc@@UEAAXAEAVEnergyInfo@InterAffineBodyConstitutionManager@234@@Z
     ?do_compute_energy@AffineBodyPrismaticJointLimit@luisa@backend@uipc@@UEAAXAEAVEnergyInfo@InterAffineBodyConstitutionManager@234@@Z
@@ -143,10 +145,13 @@ EXPORTS
     ?do_compute_energy@Codim1DConstitution@luisa@backend@uipc@@EEAAXAEAVComputeEnergyInfo@FiniteElementElastics@234@@Z
     ?do_compute_energy@Codim2DConstitution@luisa@backend@uipc@@EEAAXAEAVComputeEnergyInfo@FiniteElementElastics@234@@Z
     ?do_compute_energy@DiscreteShellBending@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@FiniteElementExtraConstitution@234@@Z
+    ?do_compute_energy@ExternalArticulationConstituion@luisa@backend@uipc@@UEAAXAEAVEnergyInfo@InterAffineBodyConstitutionManager@234@@Z
+    ?do_compute_energy@ExternalArticulationConstraint@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@InterAffineBodyAnimator@234@@Z
     ?do_compute_energy@FEM3DConstitution@luisa@backend@uipc@@EEAAXAEAVComputeEnergyInfo@FiniteElementElastics@234@@Z
     ?do_compute_energy@HookeanSpring1D@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@Codim1DConstitution@234@@Z
     ?do_compute_energy@KirchhoffRodBending@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@FiniteElementExtraConstitution@234@@Z
     ?do_compute_energy@NeoHookeanShell2D@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@Codim2DConstitution@234@@Z
+    ?do_compute_energy@SoftTransformConstraint@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@AffineBodyAnimator@234@@Z
     ?do_compute_energy@StableNeoHookean3D@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@FEM3DConstitution@234@@Z
     ?do_compute_energy@StrainLimitingBaraffWitkinShell2D@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@Codim2DConstitution@234@@Z
     ?do_compute_energy@StrainPlasticDiscreteShellBending@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@FiniteElementExtraConstitution@234@@Z
@@ -158,10 +163,12 @@ EXPORTS
     ?do_compute_gradient_hessian@Codim1DConstitution@luisa@backend@uipc@@EEAAXAEAVComputeGradientHessianInfo@FiniteElementElastics@234@@Z
     ?do_compute_gradient_hessian@Codim2DConstitution@luisa@backend@uipc@@EEAAXAEAVComputeGradientHessianInfo@FiniteElementElastics@234@@Z
     ?do_compute_gradient_hessian@DiscreteShellBending@luisa@backend@uipc@@UEAAXAEAVComputeGradientHessianInfo@FiniteElementExtraConstitution@234@@Z
+    ?do_compute_gradient_hessian@ExternalArticulationConstraint@luisa@backend@uipc@@UEAAXAEAVGradientHessianInfo@InterAffineBodyAnimator@234@@Z
     ?do_compute_gradient_hessian@FEM3DConstitution@luisa@backend@uipc@@EEAAXAEAVComputeGradientHessianInfo@FiniteElementElastics@234@@Z
     ?do_compute_gradient_hessian@HookeanSpring1D@luisa@backend@uipc@@UEAAXAEAVComputeGradientHessianInfo@Codim1DConstitution@234@@Z
     ?do_compute_gradient_hessian@KirchhoffRodBending@luisa@backend@uipc@@UEAAXAEAVComputeGradientHessianInfo@FiniteElementExtraConstitution@234@@Z
     ?do_compute_gradient_hessian@NeoHookeanShell2D@luisa@backend@uipc@@UEAAXAEAVComputeGradientHessianInfo@Codim2DConstitution@234@@Z
+    ?do_compute_gradient_hessian@SoftTransformConstraint@luisa@backend@uipc@@UEAAXAEAVComputeGradientHessianInfo@AffineBodyAnimator@234@@Z
     ?do_compute_gradient_hessian@StableNeoHookean3D@luisa@backend@uipc@@UEAAXAEAVComputeGradientHessianInfo@FEM3DConstitution@234@@Z
     ?do_compute_gradient_hessian@StrainLimitingBaraffWitkinShell2D@luisa@backend@uipc@@UEAAXAEAVComputeGradientHessianInfo@Codim2DConstitution@234@@Z
     ?do_compute_gradient_hessian@StrainPlasticDiscreteShellBending@luisa@backend@uipc@@UEAAXAEAVComputeGradientHessianInfo@FiniteElementExtraConstitution@234@@Z
@@ -172,10 +179,16 @@ EXPORTS
     ?do_record_start_point@ABDLineSearchReporter@luisa@backend@uipc@@UEAAXAEAVRecordInfo@LineSearcher@234@@Z
     ?do_report@ABDToleranceChecker@luisa@backend@uipc@@UEAA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ
     ?do_report@NewtonToleranceChecker@luisa@backend@uipc@@MEAA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ
+    ?do_report_energy_extent@ExternalArticulationConstituion@luisa@backend@uipc@@UEAAXAEAVEnergyExtentInfo@InterAffineBodyConstitutionManager@234@@Z
+    ?do_report_extent@AffineBodyExternalBodyForceConstraint@luisa@backend@uipc@@UEAAXAEAVReportExtentInfo@AffineBodyAnimator@234@@Z
     ?do_report_extent@Codim0DConstitution@luisa@backend@uipc@@EEAAXAEAVReportExtentInfo@FiniteElementElastics@234@@Z
+    ?do_report_extent@ExternalArticulationConstraint@luisa@backend@uipc@@UEAAXAEAVReportExtentInfo@InterAffineBodyAnimator@234@@Z
     ?do_report_extent@FiniteElementExternalVertexForceConstraint@luisa@backend@uipc@@UEAAXAEAVReportExtentInfo@FiniteElementAnimator@234@@Z
     ?do_report_extent@HookeanSpring1D@luisa@backend@uipc@@UEAAXAEAVReportExtentInfo@FiniteElementElastics@234@@Z
     ?do_report_extent@KirchhoffRodBending@luisa@backend@uipc@@UEAAXAEAVReportExtentInfo@FiniteElementElastics@234@@Z
+    ?do_report_extent@SoftTransformConstraint@luisa@backend@uipc@@UEAAXAEAVReportExtentInfo@AffineBodyAnimator@234@@Z
+    ?do_report_gradient_hessian_extent@ExternalArticulationConstituion@luisa@backend@uipc@@UEAAXAEAVGradientHessianExtentInfo@InterAffineBodyConstitutionManager@234@@Z
+    ?do_step@AffineBodyExternalBodyForce@luisa@backend@uipc@@UEAAXAEAVExternalForceInfo@AffineBodyExternalForceManager@234@@Z
     ?do_step@FiniteElementExternalVertexForce@luisa@backend@uipc@@UEAAXAEAVExternalForceInfo@FEMExternalForceManager@234@@Z
     ?do_step_forward@ABDLineSearchReporter@luisa@backend@uipc@@UEAAXAEAVStepInfo@LineSearcher@234@@Z
     ?do_to_json@SimSystem@backend@uipc@@MEBA?AV?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_12_0@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_12_0@nlohmann@@XZ
@@ -196,6 +209,7 @@ EXPORTS
     ?external_forces@ExternalForceInfo@FEMExternalForceManager@luisa@backend@uipc@@QEAA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
     ?find_system@SimSystem@backend@uipc@@AEAAPEAV123@PEAV123@@Z
     ?flags@ComputeGradientInfo@GlobalLinearSystem@luisa@backend@uipc@@QEAAXW4EnergyComponentFlags@345@@Z
+    ?forces@AffineBodyExternalBodyForceConstraint@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@N$0M@@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?forces@FiniteElementExternalVertexForceConstraint@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?frame@VertexAttributeInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA_KXZ
     ?frame_open@LStream@luisa_device@luisa@backend@uipc@@QEBA_NXZ
@@ -356,8 +370,10 @@ EXPORTS
     ?total_count@?$OffsetCountCollection@H@luisa@backend@uipc@@QEBA_KXZ
     ?transform_to_q@luisa@backend@uipc@@YA?AV?$Matrix@N$0M@$00$0A@$0M@$00@Eigen@@AEBV?$Matrix@N$03$03$0A@$03$03@5@@Z
     ?transform_v_to_q_v@luisa@backend@uipc@@YA?AV?$Matrix@N$0M@$00$0A@$0M@$00@Eigen@@AEBV?$Matrix@N$03$03$0A@$03$03@5@@Z
+    ?uid@AffineBodyConstraint@luisa@backend@uipc@@QEBA_KXZ
     ?uid@AffineBodyExternalForceReporter@luisa@backend@uipc@@QEBA_KXZ
     ?uid@DiagLinearSubsystem@luisa@backend@uipc@@QEBA_KXZ
+    ?uid@ExternalForceReporter@luisa@backend@uipc@@QEBA_KXZ
     ?uid@FiniteElementConstitution@luisa@backend@uipc@@QEBA_KXZ
     ?uid@FiniteElementConstraint@luisa@backend@uipc@@QEBA_KXZ
     ?uid@FiniteElementExternalForceReporter@luisa@backend@uipc@@QEBA_KXZ

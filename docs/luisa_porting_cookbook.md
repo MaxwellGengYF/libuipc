@@ -4174,6 +4174,228 @@ refreshed module export list and `apps/tests/backends/luisa/luisa_abd_solve_test
     (the C API symbols are `UIPC_BACKEND_API`-exported, so the `.def` never controlled *them* —
     §7.27 rule 14's value-invariant axis).
 
+### 7.29 Patterns established in T6.4b (ABD constraints: external articulation 23/24, soft transform 16, external body force 666)
+
+**Scope.** `src/backends/luisa/affine_body/constraints/**` (a new directory, mirroring the
+reference's): `external_articulation_constraint.{h,cpp}` + `external_articulation_constraint_function.h`
++ the two new generated bodies `sym/external_articulation_{revolute,prismatic}_joint_constraint.inl`
+(the constitution uid **23** + the constraint uid **24** + its time integrator),
+`soft_transform_constraint.{h,cpp}` (uid **16**, the ABD sibling of T5.3's FEM
+`SoftPositionConstraint` uid 14) and `constraints/affine_body_external_body_force_constraint.{h,cpp}`
++ `affine_body/affine_body_external_body_force.{h,cpp}` (the pair sharing uid **666**, the ABD
+sibling of T5.4b's FEM 671 pair).  Test file `apps/tests/backends/luisa/luisa_abd_constraint_test.cpp`
+(tag `[abd_constraint]`, 9 cases / **471** assertions) and the **uid-16 collision resolution** in
+`apps/tests/backends/luisa/luisa_abd_linear_test.cpp`.  The two generated bodies are transcribed by
+`scratch/gen_abd_cons_a.py` (a second `(ref-dir, dst-dir, regions)` group was added, because the
+reference keeps the articulation's `sym/` beside the constraints' `.cu`, not beside the
+constitutions'), and the law was re-derived independently *before* a line of C++ existed
+(`scratch/t64b_oracle.py`, the §7.17 rule 30c technique).
+
+1. **A uid *pair* is a design, not a typo — and the class name's typo is transcribed.**  The
+   articulation is an empty `InterAffineBodyConstitution` (**23**) plus an
+   `InterAffineBodyConstraint` (**24**): the constitution is the (deliberately empty) owner of the
+   geometry group, the constraint is where every hook lives.  The reference's own class name for
+   the former is `ExternalArticulationConstituion` (sic) — **kept**, per the "never fix a reference
+   inconsistency" rule; the uid is the honest identifier.  (The reference's `.cu` also keeps the
+   *empty* constitution's four hooks returning zero: they are transcribed, not omitted.)
+2. **The cross-reference is data-level, and the port reproduces both directions.**  The
+   articulation does *not* `require<>` the joint constitutions: it reads each referenced joint
+   geometry's `builtin::constitution_uid` and asserts it is **18** (revolute) or **20** (prismatic)
+   — the same shape the joint-limit constitutions use for their `JointUID` — and the *uid selects
+   which of the two generated bodies a kernel calls*.  The test pins both sides: the geometry's
+   constitution uid (18/20), the *absent* `constraint_uids` on a plain joint geometry (measured:
+   a joint geometry only carries them when a driving/limit instance was applied), and the
+   articulation's own `h_joint_id_to_uid[0] == 18`.
+3. **The generated bodies share eight names with the joint-limit family and *are not* the same
+   law.**  Both files define `F`, `DeltaTheta` (twice), `dDeltaTheta_dQ`, `JT_G`, `JT_H_J`,
+   `dDeltaTheta_dF`, `ddDeltaTheta_ddF`, so the region list needs T6.3b3's `Name#2` occurrence
+   suffix; and the *revolute* body's `F` is direction-only with the **wrapped `atan2`** law while
+   the *prismatic* body's `F` carries the attachment **points** (`+ qk(0..2)`) and its
+   `DeltaTheta` is the **linear** (quadratic in `F`) projected half-distance.  The register reports
+   (statements): revolute `F` 12, `DeltaTheta` 29, `dDeltaTheta_dQ` 102, `JT_H_J` 792,
+   `DeltaTheta#2` 11, `dDeltaTheta_dF` 44, `ddDeltaTheta_ddF` 330 — *identical counts* to the
+   revolute joint-limit body (the same law); prismatic `DeltaTheta` 7, `dDeltaTheta_dQ` 63,
+   `dDeltaTheta_dF` 18, `ddDeltaTheta_ddF` 144.  **Never** infer "same names ⇒ same body".
+4. **The expression-level oracle first, and the two shape flags it produced.**  `scratch/t64b_oracle.py`
+   re-parses the *reference* `.inl` with the transcriber's own tokenizer and evaluates it against
+   hand laws written out there; worst relative residuals over 20 random states: revolute `F`
+   1.7e-16, `DeltaTheta(F,F_t)` 5.0e-16, `DeltaTheta` (6-vector) 5.6e-16, `dDeltaTheta_dF` 1.9e-10,
+   `dDeltaTheta_dQ` 2.6e-10, `ddDeltaTheta_ddF` 7.7e-07 (a *twice*-differenced transcendental law:
+   the residual is the FD's roundoff floor, which is why the Python Hessian check uses `h = 1e-4`
+   and a 1e-6 bound), `JT_G` 7.8e-11, `JT_H_J(bk,bl,bm,bn)` 2.1e-10, `JT_H_J(bk,bl,bk,bl)` 2.8e-10;
+   prismatic the same order (`F` 2.2e-16, `ddDeltaTheta_ddF` 2.2e-08, `JT_G` 1.5e-10).  The flags:
+   the **off-diagonal fraction of `ddDeltaTheta_ddF` is 1.000e+00** for both bodies — the element
+   tensor is strongly non-diagonal, so the `make_spd` clamp on `G_theta * ddDeltaTheta_ddF` is a
+   *real projection* and the sweep count is observable (§7.26 rule 10's axis).  The prismatic one is
+   additionally *purely* off-diagonal (its diagonal fraction is 4.4e-08).
+5. **The uid dispatch is a branchless select — and its two ABI assumptions are pinned by a device
+   probe.**  The reference's `if(uid == RevoluteUID) … else if(uid == PrismaticUID) … else { assert;
+   zero }` reads *device* data, so the port evaluates both candidates and selects, with the
+   else-branch's `UIPC_KERNEL_ASSERT(false, …)` routed through the `LC_LOG` facade (compiled out by
+   default) and its zero selected.  `abd_external_articulation_detail::select_if(p, a, b)` is
+   `p ? a : b` — spelled once, with the argument names carrying the polarity, because
+   `scalar_detail::select_container(f, t, p)` means `p ? t : f` (§7.26 rule 13).  The dispatch rests
+   on two ABI facts that no shipped kernel shows directly, so the test *measures* them with a tiny
+   test-local kernel (no `make_spd` chain, so §7.27 rule 2 does not apply): the two `U64` kernel
+   arguments arrive in the declared order (`a 18 b 20`), and `lcrt::select(10, 20, p)` is
+   `p ? 20 : 10` for both a `Var`-vs-`Var` and a *buffer-read* `Expr`-vs-`Var` predicate
+   (measured `eq-> 10 ne-> 20 flag 0 (read==a)-> 20 eq 1 ne 0 v 18`).
+6. **The `make_spd` sweep count is observable here (T6.3b1's rule 19 flipped twice).**  With
+   `G_theta = -3.25` (a negative coefficient, so `HF = G_theta * dd` is indefinite — measured
+   `min eig < -1e-3`), the shipped 8-sweep projection differs from the 0-sweep one by
+   **6.331e-01** while 8-vs-20 is **1.181e-15**; `kMakeSpdSweeps == 8` is `REQUIRE`d, and the test
+   asserts `|HF|max = 3.031306e+00`-scale distance stays > 1e-3.  (A 0-sweep `make_spd` is the
+   clamped *diagonal*, so a non-diagonal `dd` makes the difference large — the same argument as
+   §7.26 rule 10 / §7.27 rule 1.)
+7. **`FastSegmentalReduce` has no LC equivalent that computes its value in-kernel: port two
+   additions.**  `lla::segmented_reduce` reads *both* the sorted keys and the values from buffers,
+   so the port (a) materialises `joint_joint_id_to_key` = `ij(0)` **once in `do_init`** (the layout
+   never changes; the keys are ascending by construction because the articulations' joint offsets
+   are a prefix scan) and (b) adds a `joint_joint_id_to_value` buffer written by a
+   `..._compute_reduce_value_kernel` (`m_ij * (DeltaTheta_j - delta_theta_tilde_j)`), replacing the
+   reference's in-kernel `GetKey`/`GetValue` functors.  The reduce's output `joint_id_to_G_theta`
+   is checked against the hand sum, and it matched **exactly** (`-7.750149189e+01` revolute,
+   `-5.921598575e+00` prismatic).
+8. **The `ref_dof_prev` protocol needs a *padded* buffer and a clamped index.**  The reference's
+   `ref_q_prev_ids[s] >= 0 ? ref_q_prevs(id) : q_prevs(body)` is a device predicate, so the port
+   reads *both* candidates: the discarded one indexes the `-1` sentinel, hence the index is clamped
+   to 0 **and `ref_q_prevs` is padded to at least one element in `do_init`** (an LC `BufferView`
+   with a zero length cannot be a kernel argument at all).  The test drives the path with a
+   `ref_dof_prev` attribute whose value *differs* from the body's own state — without it every
+   scene's `DeltaTheta` is exactly 0 (the port's solve path is Phase 8's, so `q` never moves).
+9. **The assembly needs the animator's *step*, and the differencing must be done in one engine.**
+   An `InterAffineBodyConstraint`'s assembled contribution is **invisible before
+   `InterAffineBodyAnimator::step()`** (§7.26 rule 12), so the assembly case calls `world.advance()`
+   first; and instead of the two-engine idiom the [abd_joint_c] assembly case used (a second
+   `Engine`'s teardown is where T6.3b1 recorded the multi-engine hazard), the *base* assembly here
+   is the same world with the constraint's `joint_joint_id_to_mass` **device buffer zeroed between
+   the two assemblies** — the extents depend on the counts, not the values, so the COO layout is
+   identical and the difference is exactly the articulation's.  Measured: 128 triplets, 48/48 keys,
+   revolute worst `|block|` dev **2.32e-14** and gradient rel **3.53e-14**, prismatic **1.25e-12**
+   and **2.97e-13**; `|b| ≈ 7.96e4…9.30e4` (the *joint's* κ = 1e8 term dominates, so the
+   difference is a small residual — the §7.25 rule 16 discipline: state which keys speak).
+10. **The `dof_offset` meta is `-1` until the global linear system has been initialised — an oracle
+    built from it writes out of bounds.**  `body_dof_offsets`-style oracles must call
+    `prepare_dof_layout(...)` (a throwaway `GlobalLinearSystem::Impl` + `init()`, §7.22 rule 12)
+    *before* reading the per-geometry `builtin::dof_offset` metas: read too early, the second body's
+    offset is still `-1` and `want_full(-1 + …)` corrupts the heap — measured as a **0xC0000374 heap
+    corruption** that killed the *rest of the filter* after the case, with the case's own assertions
+    looking "plausible" (the shifted `want` matched 9 of the values at the wrong dofs).  The fix is
+    both the ordering and an explicit `T64B_CHECK(c, offsets[1] == 12)`.
+11. **A test-built `ComputeEnergyInfo` needs a *real* `global_animator`.**  `BaseInfo::substep_ratio()`
+    dereferences `m_impl->global_animator`, so the reference's own shape gives a **SIGSEGV** (not a
+    Catch2 failure) for a test-built `Impl`: the helper must carry the scene's
+    `find<GlobalAnimator>()` and `REQUIRE` it.  The same helper drives the three shipped kernels
+    through the *public* info constructors (§7.26 rule 12's harness) — the direct drive is the
+    primary oracle for the k1/k2 write patterns (the 2 doublets' segment indices 0/1 and values, and
+    the 3 twelve-by-twelve blocks at `(0,0)`, `(0,1)`, `(1,1)` — the reference's `upper_LR`), while
+    the assembly case adds the COO/gradient differencing on top.
+12. **`on_write_scene` is driven *only* by the engine's dump path.**  `SimEngine::event_write_scene()`
+    is called from `do_dump` (measured in `sim_engine.cpp`; `do_retrieve()` is a no-op until
+    Phase 8), so a test that wants a constraint's attribute write-back (`delta_theta`) must call
+    `world.dump()` — doing so both exercises `write_scene` and pins the *same* device buffer the
+    update-state kernel wrote (measured: the update-state device value and the frontend attribute
+    both `-1.040960811e+00` == the hand law).  Without the dump call the attribute keeps its
+    frontend default (measured `0.0`).
+13. **The soft transform is the FEM sibling's contract with a different *input*.**  One
+    `AffineBodyConstraint` (uid 16), the same `is_constrained` / `strength_ratio` / `aim_*`
+    attribute contract, the same `is_fixed`-guarded energy/gradient/Hessian — but the dof is a
+    **12-vector** (`q`, not a vertex position) and the aim is `transform_to_q(aim_transform)` from
+    the *instances*' `Matrix4x4` (shared with `transforms` by the frontend, so writing it moves the
+    geometry too — the *dynamics'* `q` is a copy taken at `init()`, which is how the case produces a
+    `dq ≠ 0` without a Newton solve).  Its one non-obvious law is
+    `M_c = s_r M + (s_t - s_r) M_cm` (`M_cm` = the ABD mass of a point mass at the centre of mass):
+    the test pins the shipped routine against a hand rebuild of `ABDJacobiDyadicMass::to_mat()` from
+    its documented `(m, m c, m c c^T)` layout, and the four identities `M_c(s,s) = s M`,
+    `M_c(1,0) = M_cm`, `M_c(0,1) = M - M_cm`, `M_c(a,b) + M_c(b,a) = (a+b) M` — plus PSD for a
+    *physically consistent* triple (`S_dy - m c c^T ⪰ 0`, a Schur-complement condition; an
+    arbitrary symmetric `S_dy` is **not** PSD and the check must not be run on one — measured
+    −1.6 eigenvalues).
+14. **The external-body-force pair is a *third* 666.**  The constraint (an `AffineBodyConstraint`,
+    reading the per-instance `external_force` **Vector12**) and its reporter (an
+    `AffineBodyExternalForceReporter`) both claim 666 — a *different registry* from the frontend
+    constitution's 666 (the T5.4b 671 / T6.3b2 667 / T6.3b3 668 precedent), and the manager claims
+    666 too: the test prints and `REQUIRE`s **all three**.  The reporter's `eigen::atomic_add` is
+    the *scalar alias* of the AoS buffer (`forces.native().as<double>()` + twelve `fetch_add`s), and
+    the test pins the atomicity with a synthetic table holding **duplicate body ids** (measured:
+    body 0 received the *sum* of its two entries, `3×` the frontend force).  The constraint's table
+    is driven *differenced* (`after - before`) because the buffer is not cleared by the reporter.
+15. **The reference's empty-upload quirk is transcribed, not fixed.**  The ABD constraint guards its
+    two uploads with the reference's `if(!h_forces.empty())`, so an empty frame leaves the device
+    buffers at their previous contents — the FEM sibling (671) deliberately *fixed* exactly this by
+    always resizing; the port documents the divergence at the call site instead of importing the
+    fix (`transcribe + pin`).
+16. **The uid-16 collision, measured first (the T6.3b1 way).**  `luisa_abd_linear_test.cpp` claimed
+    uid 16 for its synthetic `T61bConstraint` from T6.1b on.  With the *real*
+    `SoftTransformConstraint` registered but the mock still at 16: `[abd_linear]` → **rc 42, 411
+    assertions / 2 failed** at `luisa_abd_linear_test.cpp:2368/2369`
+    (`T61bConstraint::geo_info_count == 2u` and `geo_ids.size() == 2u`, both read **0**) and the
+    **full suite** → rc 42, 762402 assertions / 199 cases (2 failed) — the *real* system won the
+    group, exactly as the animator's "last equal-uid entry wins" map predicts (both constraints sort
+    equal under `std::sort(by uid)`, which is a stable-in-practice insertion sort at this size, so
+    the *registration* order — `SimEngine::build_systems()`'s demangled-type-name order, where
+    `t61b::T61bConstraint` < `uipc::backend::luisa::SoftTransformConstraint` — decides).
+    **Resolution** (the T6.3a/T6.3b1 "move the mock" precedent, no assertion weakened): the mock
+    moved to uid **27** (`uipc::constitution::AffineBodyDrivingSphericalJoint`, frontend-registered
+    *Constraint*-typed, grep-proven unused under `src/backends/luisa`, `src/backends/cuda` and
+    `apps/tests/backends/luisa`), and `claim_mock_constraint_uid(sc)` rewrites the bodies'
+    `constraint_uids` entry 16 → 27 right after `SoftTransformConstraint::apply_to` wrote it.  16 is
+    then *absent* from the scene's constitution tabular, so the real constraint is not even built
+    (its `do_build` throws the "requires Constraint UID=16" `SimSystemException`, the port's
+    explicit not-in-play signal) while the mock owns exactly the two bodies it owned before.
+    **Re-measured: `[abd_linear]` → 495 assertions in 7 test cases, rc 0 — the recorded T6.1b number
+    exactly.**
+17. **Transcribing a *flag* into an oracle is a trap; name the parameter after what it means.**
+    The first version of the new test passed its local `prismatic` bool into helpers whose first
+    parameter meant `revolute`, so the hand oracle silently computed the *other* body's law — and
+    the *assembly* case "failed" with a plausible-looking residual while the **port was right**.  The
+    measurement that separated the two was three prints: (a) the *device* basis vs the hand basis
+    (dev `0.000e+00`), (b) the hand `DeltaTheta` vs the device's *written* `joint_id_to_delta_theta`
+    (equal), and (c) the *other* branch's hand value (which matched the device's *first* reading
+    exactly).  Lesson: when an oracle and the kernel disagree, print the *intermediate* quantities
+    (the basis, the reduce's output, the branch constants) before touching the port — and prefer a
+    flag whose name matches the parameter it feeds.
+18. **The export list again: 374 → 390 symbols, and the *vtable* trap did not repeat.**  16 new
+    imports (`uid`, `forces`, `body_ids`, `do_report_extent`, `do_compute_energy`,
+    `do_compute_gradient_hessian`, `do_step`, the constitution's extent hooks, the articulation's
+    `do_compute_gradient_hessian`, …) failed the **link** loudly in two rounds (15 + 1) and were
+    merged with `scratch/t64a_def_bootstrap.py`; because the test calls them **directly** (not
+    through a vtable slot), `python scripts/luisa_module_def.py` (**rewrite**) kept every one of them
+    and `--check` is rc 0 — i.e. §7.28 rule 7's bootstrap trap did not bite this time, which is the
+    point of making the test's references *used* imports.
+19. **Regression shape, the cold-JIT budget and the reproduction recipe.**  `[abd_constraint]` →
+    **471 assertions in 9 test cases**, rc 0 (per case: closed_forms 93, finite_difference 34,
+    assembly 86, soft_transform 65, external_body_force 21, uid_ownership 10, scene 34,
+    device_vs_host 3, summary = the accounting case; the 346 `T64B_CHECK`s are the file's own
+    accounting and the rest are `REQUIRE`s and the summary's checks).  `~[abd_constraint]` →
+    **762486/199 = the T6.4a baseline *exactly*** (the batch is purely additive: `~[abd_constraint]`
+    is the whole suite, since the tag did not exist before).  The whole suite → **762957/208**
+    (= 762486+471 / 199+9).  `[abd_base]`/`[abd_linear]`/`[abd_dynamics]`/`[abd_constitution]`/
+    `[abd_joint_a]`/`[abd_joint_b]`/`[abd_joint_c]`/`[abd_solve]` = 2143/7 · 495/7 · 547/7 · 523/7 ·
+    223/8 · 402/8 · 383/8 · 245/8 (all unchanged).  ctest **1/1** (28.96 s), standalone **69/0**,
+    `python scratch/gen_abd_cons_a.py --check --selfcheck` rc 0, `python scratch/t64b_oracle.py`
+    rc 0, `python scripts/luisa_module_def.py --check` rc 0 (**390** symbols),
+    `python scripts/luisa_check_module_abi.py` rc 0.  **Cold JIT:** the first filtered run of the new
+    file took **~15 min** (the articulation's five kernels + the soft transform's three + the
+    reporter's one, i.e. three fresh generated bodies — two of them 12x12 `make_spd` chains), every
+    later run **3–4 s**; a *kernel-source* perturbation therefore costs a fresh JIT (~35 s per
+    affected case in the warm-cache runs measured here) while a *host-only* one stays warm.
+20. **Non-vacuity: two perturbations on two axes, both caught, both reverted byte-identically**
+    (`scratch/t64b_perturb.py`, the T6.3b1/b2/b3 driver pattern: patch → build → run the *owning*
+    case → revert → sha256 → re-verify the whole filter green).  **P1** the *host* registry axis
+    (`external_articulation_constraint.h`: `ConstraintUID 24 → 25`) — the constraint's uid then
+    leaves the scene's tabular and the *animator* aborts loudly (`rc 3221226505`,
+    "InterAffineBodyAnimator: No responsible backend SimSystem registered for constraint uid 25") —
+    the abort-shaped failure mode of §7.27 rule 15.  **P2** the *transcribed-arithmetic* axis
+    (`sym/external_articulation_revolute_joint_constraint.inl`: the first `lps::detail::div(1.0, 2.0)`
+    → `div(1.0, 3.0)`) — owned by the **closed-forms** case, which drives only host
+    (`S = double`) instantiations and therefore re-JITs nothing: **rc 42, 93 assertions / 4 failed**
+    (lines 1204 ×3, 1284).  Both reverts are byte-identical (sha256 `2de0ffa1…` / `afe4effb…`), the
+    generated file's revert is proven by re-running the generator, `--check --selfcheck` is rc 0
+    after each, and the reverted tree rebuilds (rc 0) and runs `[abd_constraint]` **471/9 green**.
+    A third, *cheap* axis worth recording: the test's own *uid probe* kernel pins the two ABI
+    assumptions that the dispatch rests on (rule 5), so a future reviewer does not have to trust them.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

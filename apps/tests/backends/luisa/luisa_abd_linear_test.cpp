@@ -16,7 +16,8 @@
  *  2) the dof layout + the extent budget (factored and through the real chain):
  *     uid order, offsets/counts, gradient_only both ways, the per-geometry
  *     dof_offset/dof_count meta, ReportExtentInfo::check ... abd_linear_layout
- *  3) a real scene with a test-local AffineBodyConstraint (uid 16) *and* a
+ *  3) a real scene with a test-local AffineBodyConstraint (uid 27, moved off the
+ * real uid 16 by T6.4b) *and* a
  *     test-local InterAffineBodyConstitution (uid 25): the animator's and the
  *     inter-body manager's fan-outs, the (constraint -> slice) offsets and the
  *     assembled contributions ................................ abd_linear_animator
@@ -346,7 +347,8 @@ struct PairEntry
     return g;
 }
 
-/// The test-local constraint's (uid 16) single diagonal block on body 0.
+/// The test-local constraint's (uid 27; uid 16 until T6.4b) single diagonal block on
+/// body 0.
 [[nodiscard]] inline Matrix12x12 constraint_hessian() noexcept
 {
     Matrix12x12 H;
@@ -426,22 +428,42 @@ namespace t61b
 {
 /// Reserved *reporter* uids for documentation (the reporter bases have no uid
 /// hook; `ABDLinearSubsystem::Impl::init` assigns `m_index`).  The uids in use
-/// elsewhere are listed in the T4.x/T5.x test files.  The two *constraint*
-/// uids this file claims (16 and 25) are the frontend's
-/// `SoftTransformConstraint` and `AffineBodyFixedJoint`, i.e. the same
-/// knowing-reuse arrangement T6.1a's `T61ABDMockConstitution` uses for uid 1:
-/// the reference's own numbering has no free slot (`ConstitutionTabular::insert`
-/// resolves through `ConstitutionUIDCollection::find(uid)`), and T6.4 will claim
-/// 16 with its real constraint.
+/// elsewhere are listed in the T4.x/T5.x test files.
 ///
-/// T6.3b1 REGISTERED THE REAL uid-25 *inter-body constitution*
-/// (`uipc::backend::luisa::AffineBodyFixedJoint`), so 25 is no longer free on the
-/// *constitution* side either: `T61bInterConstitution` moved to uid 28 (see
-/// `kMockInterConstitutionUID`), while the *constraint* uid 25 stays -- the animator's
-/// registry is a different one and the real joint (an `InterAffineBodyConstitution`,
-/// not a constraint) never registers there.
-inline constexpr U64 kSoftTransformUID = 16;
+/// THE uid-16 REUSE IS OVER (T6.4b, measured).  T6.1b claimed the frontend's
+/// `SoftTransformConstraint` uid (16) for the test-local `T61bConstraint`, with the
+/// note "T6.4 will claim 16 with its real constraint".  It now has: the *real*
+/// `uipc::backend::luisa::SoftTransformConstraint` is registered from T6.4b on, so a
+/// scene whose bodies carry `constraint_uids = {16}` is contended.  **Measured first**
+/// (this tree, before any edit below): run "[abd_linear]" -> rc **42**, 411 assertions
+/// / 2 failed at luisa_abd_linear_test.cpp:2368/2369 (`T61bConstraint::geo_info_count
+/// == 2u` and `geo_ids.size() == 2u`, both read 0) -- and the **full suite** -> rc 42
+/// (see the batch report).  The *real* system won the group, exactly as the animator's
+/// "last equal-uid entry wins" map predicts: both constraints sort equal under
+/// `std::sort(by uid)` (a stable-in-practice insertion sort for these few systems), so
+/// the winner is the *registration* order, i.e. `SimEngine::build_systems()`'s
+/// demangled-type-name order, where `t61b::T61bConstraint` <
+/// `uipc::backend::luisa::SoftTransformConstraint` and the map's last write takes the
+/// group.
+///
+/// **Resolution** (the T6.3a/T6.3b1 "move the mock" precedent, not a weakened
+/// assertion): the mock moved to uid **27** (`kMockConstraintUID`) --
+/// `uipc::constitution::AffineBodyDrivingSphericalJoint`'s frontend-registered
+/// *Constraint*-typed uid, grep-proven unused under src/backends/luisa,
+/// src/backends/cuda and apps/tests/backends/luisa -- and `claim_mock_constraint_uid`
+/// rewrites the body's `constraint_uids` entry 16 -> 27 right after the frontend
+/// `SoftTransformConstraint::apply_to` wrote it.  Consequence: 16 is then *absent* from
+/// the scene's constitution tabular, so the real `SoftTransformConstraint` is not even
+/// built (its `AffineBodyConstraint::do_build` throws the "requires Constraint UID=16"
+/// SimSystemException, the port's explicit "not in play" signal), while the mock owns
+/// exactly the two bodies it owned before -- so every assertion in this file keeps its
+/// meaning.  Re-measured after the move: run "[abd_linear]" -> **495 assertions in 7
+/// test cases**, rc 0 -- the recorded T6.1b number exactly.
+inline constexpr U64 kSoftTransformUID = 16;  // the *real* constraint's uid (punched out)
 inline constexpr U64 kFixedJointUID = 25;
+/// The test-local mock *AffineBodyConstraint*'s uid, moved here from 16 by T6.4b
+/// (see the block comment above).
+inline constexpr U64 kMockConstraintUID = 27;
 /// The test-local mock *inter-body* constitution's uid, moved here from 25 by T6.3b1
 /// (the full argument is at `claim_mock_inter_uid` below; the declaration lives in
 /// *this* block because `T61bInterConstitution`'s definition precedes the block that
@@ -1011,7 +1033,7 @@ inline void write_reporter_gradient(lla::LDoubletVectorView<Float, 12> gradients
 }
 
 // ---------------------------------------------------------------------------
-//  (c) the test-local AffineBodyConstraint (uid 16)
+  //  (c) the test-local AffineBodyConstraint (uid 27 since T6.4b; 16 before)
 // ---------------------------------------------------------------------------
 class T61bConstraint final : public gg::AffineBodyConstraint
 {
@@ -1067,7 +1089,9 @@ class T61bConstraint final : public gg::AffineBodyConstraint
     static inline lud::LDeviceBuffer<gg::LVector12>     s_gradient;
 
   protected:
-    U64 get_uid() const noexcept override { return kSoftTransformUID; }
+    // T6.4b: uid 27 -- the mock moved off the now-real uid 16 (see
+    // `kSoftTransformUID`'s block comment for the measurement and the proof).
+    U64 get_uid() const noexcept override { return kMockConstraintUID; }
 
     void do_build(BuildInfo& info) override
     {
@@ -1651,7 +1675,8 @@ using BlockMap = std::map<std::pair<int, int>, Matrix3x3>;
 ///  * the body term's 12x12 blocks (upper-triangular in 3x3 blocks, the reference's
 ///    `zero_out_lower`),
 ///  * the reporter's vertex-pair Jacobi triples (`J_v^T H3 J_w` in Eigen),
-///  * the constraint's (uid 16) diagonal block and the inter-body constitution's
+///  * the constraint's (uid 27; 16 until T6.4b) diagonal block and the inter-body
+///    constitution's
 ///    (uid 25) coupling block when `with_constraints` is set.
 [[nodiscard]] inline BlockMap expected_blocks(bool with_constraints, bool with_pairs)
 {
@@ -1810,9 +1835,34 @@ inline void claim_mock_inter_uid(SimplicialComplex& sc)
     view(*cuid).front() = kMockInterConstitutionUID;
 }
 
+/// Route an ABD body into the mock `AffineBodyConstraint`'s group (T6.4b).  The
+/// frontend's `SoftTransformConstraint::apply_to` wrote the *real* constraint's uid
+/// (16) into `builtin::constraint_uids`, which is now contended by
+/// `uipc::backend::luisa::SoftTransformConstraint`; the entry is rewritten to
+/// `kMockConstraintUID` (27).  This is the `claim_mock_uid`/`claim_mock_inter_uid`
+/// idiom, and it is what keeps this file's assembly oracle meaningful: see the block
+/// comment at `kSoftTransformUID` for the measurement and the ownership proof.
+inline void claim_mock_constraint_uid(SimplicialComplex& sc)
+{
+    auto uids = sc.meta().find<VectorXu64>(builtin::constraint_uids);
+    UIPC_ASSERT(uids, "t61b: the body has no `constraint_uids`");
+    auto& v = view(*uids).front();
+    bool  hit = false;
+    for(auto& uid : v)
+    {
+        if(uid == kSoftTransformUID)
+        {
+            uid = kMockConstraintUID;
+            hit = true;
+        }
+    }
+    UIPC_ASSERT(hit, "t61b: the body's `constraint_uids` does not carry uid 16");
+}
+
 /// `kBodyCount` marked ABD cubes (identity affine rest+deformed state) plus, when
 /// `with_constraints`, the frontend `SoftTransformConstraint` on every instance
-/// (uid 16 -> the test-local `T61bConstraint`) and a fixed-joint geometry (uid 25
+/// (uid 16 -> rewritten to the test-local `T61bConstraint`'s uid 27 by
+/// `claim_mock_constraint_uid`) and a fixed-joint geometry (uid 25
 /// -> the test-local `T61bInterConstitution`); the joint geometry carries
 /// `constraint_uids = {25}` so the inter-body *animator* has a geometry to hand to
 /// `T61bInterConstraint`.
@@ -1844,11 +1894,15 @@ inline void claim_mock_inter_uid(SimplicialComplex& sc)
 
         sc.meta().create<IndexT>(kMarker, 1);
 
-        if(with_constraints)
-        {
-            SoftTransformConstraint stc;
-            stc.apply_to(sc, Vector2{100.0, 1.0e6});
-        }
+      if(with_constraints)
+      {
+          SoftTransformConstraint stc;
+          stc.apply_to(sc, Vector2{100.0, 1.0e6});
+          // T6.4b: the frontend just wrote the *real* constraint's uid (16) into
+          // `constraint_uids`; move the body into the mock's group (uid 27) -- see
+          // `claim_mock_constraint_uid`.
+          claim_mock_constraint_uid(sc);
+      }
 
         auto [slot, rest] = object->geometries().create(sc);
         slots.push_back(slot);
@@ -2363,8 +2417,10 @@ TEST_CASE("abd_linear_animator", "[luisa][abd_linear]")
     REQUIRE(T61bProbe::animator->is_valid());
     T61B_CHECK(c, T61bConstraint::build_count >= 1);
     T61B_CHECK(c, T61bConstraint::init_count == 1);
-    // both bodies carry `constraint_uids = {16}` (SoftTransformConstraint), so the
-    // constraint's slice holds exactly those two geometries, in geometry order
+    // both bodies' `constraint_uids = {16}` (written by the frontend
+    // `SoftTransformConstraint::apply_to`) were rewritten to 27 by
+    // `claim_mock_constraint_uid` (T6.4b), so the constraint's slice holds exactly
+    // those two geometries, in geometry order
     T61B_CHECK(c, T61bConstraint::geo_info_count == 2u);
     REQUIRE(T61bConstraint::geo_ids.size() == 2u);
     T61B_CHECK(c, T61bConstraint::geo_ids[0] == 0);
