@@ -48,6 +48,7 @@
  *    so the numerics layer can be used on it.
  *********************************************************************/
 #include <uipc/common/type_define.h>
+#include <vector>
 
 #include <luisa_device/luisa_device.h>
 #include <luisa_device/math/vec.h>
@@ -97,6 +98,10 @@ using LVector3i = lps::LVec<IndexT, 3>;
 // attribute and `Dm3x3_invs` a Matrix3x3 attribute.
 using LVector4i  = lps::LVec<IndexT, 4>;
 using LMatrix3x3 = lps::LMat<Float, 3, 3>;
+// T5.2 (batch b): the shell membrane constitutions store a per-triangle 2x2 rest
+// metric inverse (`inv_B_matrices`), exactly like the reference's
+// `DeviceBuffer<Matrix2x2>`.
+using LMatrix2x2 = lps::LMat<Float, 2, 2>;
 
 static_assert(sizeof(LVector2) == sizeof(Vector2));
 static_assert(sizeof(LVector3) == sizeof(Vector3));
@@ -109,6 +114,14 @@ static_assert(sizeof(LVector4i) == sizeof(Vector4i));
 // portable between the two backends.
 static_assert(sizeof(LMatrix3x3) == sizeof(Matrix3x3));
 static_assert(alignof(LMatrix3x3) == alignof(Matrix3x3));
+static_assert(sizeof(LMatrix2x2) == sizeof(Matrix2x2));
+// Eigen over-aligns fixed-size types whose byte size is a multiple of 16
+// (EIGEN_MAX_ALIGN_BYTES), so `Matrix2x2` (32 B) is alignas(16) while LMatrix2x2 is
+// naturally aligned to its four doubles.  The host<->device conversion is
+// element-wise, so only the size and the storage order have to agree -- unlike
+// LMatrix3x3, whose 72 B is *not* a multiple of 16 and therefore matches Eigen's
+// alignment exactly.
+static_assert(alignof(LMatrix2x2) == alignof(Float));
 
 // Host <-> device element conversion (identical layout, unrelated types).
 [[nodiscard]] inline LVector2 to_luisa(const Vector2& v) noexcept
@@ -167,6 +180,41 @@ static_assert(alignof(LMatrix3x3) == alignof(Matrix3x3));
             r(i, c) = m(i, c);
     return r;
 }
+[[nodiscard]] inline LMatrix2x2 to_luisa(const Matrix2x2& m) noexcept
+{
+    LMatrix2x2 r;
+    for(int c = 0; c < 2; ++c)
+        for(int i = 0; i < 2; ++i)
+            r(i, c) = m(i, c);
+    return r;
+}
+[[nodiscard]] inline Matrix2x2 to_eigen(const LMatrix2x2& m) noexcept
+{
+    Matrix2x2 r;
+    for(int c = 0; c < 2; ++c)
+        for(int i = 0; i < 2; ++i)
+            r(i, c) = m(i, c);
+    return r;
+}
+
+/// Convert a host `vector<EigenType>` to the matching device element buffer
+/// (`to_luisa(v)` element-wise; used by the constitutions' `do_init`, which reads
+/// Eigen-typed attributes and uploads the corresponding `L*` element type).
+template <typename Dst, typename SrcContainer>
+void copy_host_to_device(lud::LDeviceBuffer<Dst>& dst, const SrcContainer& src)
+{
+    std::vector<Dst> host;
+    host.reserve(src.size());
+    for(const auto& v : src)
+        host.push_back(to_luisa(v));
+    dst.resize(host.size());
+    if(!host.empty())
+        // NOTE: the *parenthesised* form is required here -- `span` is a
+        // using-declared class template (`using std::span;` in uipc/common/span.h),
+        // and MSVC does not parse `span<const Dst>{host}` as a type-id in this
+        // dependent context (measured C2760/C3878: "unexpected '{'; expected ')'").
+        dst.view().copy_from(span<const Dst>(host));
+}
 }// namespace uipc::backend::luisa
 
 // ---------------------------------------------------------------------------
@@ -183,6 +231,9 @@ LUISA_STRUCT(uipc::backend::luisa::LVector3i, data){};
 // T5.1: the FEM method's `tets` and `Dm3x3_invs` element types.
 LUISA_STRUCT(uipc::backend::luisa::LVector4i, data){};
 LUISA_STRUCT(uipc::backend::luisa::LMatrix3x3, data){};
+// T5.2 (batch b): the shell membrane constitutions' 2x2 per-triangle inverse of
+// the rest shape matrix.
+LUISA_STRUCT(uipc::backend::luisa::LMatrix2x2, data){};
 
 namespace uipc::backend::luisa
 {
@@ -277,5 +328,23 @@ inline void store_mat3x3(lcrt::Var<LMatrix3x3>& dst,
     for(int c = 0; c < 3; ++c)
         for(int r = 0; r < 3; ++r)
             dst.data[c * 3 + r] = m(r, c);
+}
+
+// T5.2 (batch b): the 2x2 flavour used by the shell membrane constitutions.
+[[nodiscard]] inline lps::LMat<lcrt::Var<Float>, 2, 2> load_mat2x2(
+    const lcrt::Expr<LMatrix2x2>& e) noexcept
+{
+    lps::LMat<lcrt::Var<Float>, 2, 2> m;
+    for(int c = 0; c < 2; ++c)
+        for(int r = 0; r < 2; ++r)
+            m(r, c) = e.data[c * 2 + r];  // column-major, LMat's own layout
+    return m;
+}
+inline void store_mat2x2(lcrt::Var<LMatrix2x2>& dst,
+                         const lps::LMat<lcrt::Var<Float>, 2, 2>& m) noexcept
+{
+    for(int c = 0; c < 2; ++c)
+        for(int r = 0; r < 2; ++r)
+            dst.data[c * 2 + r] = m(r, c);
 }
 }// namespace uipc::backend::luisa

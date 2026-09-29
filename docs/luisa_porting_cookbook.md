@@ -1498,6 +1498,135 @@ the shared `utils/matrix_assembler.h`. The rules below are what the port turned 
    The energy kernels are cheap (no `evd`). If that ever matters, the lever is `make_spd`'s sweep
    count (`lps::make_spd_inplace(H, sweeps)`), which is T2.2's documented fidelity choice — not
    something T5.2 changed silently.
+  14. **The batch-b generator *imports* batch a's transformer; it does not re-implement it.**
+     `scratch/gen_fem_cons_b.py` adds `sym/discrete_shell_bending.inl` and
+     `sym/neo_hookean_shell_2d.inl` to the same tokenizer/parser/emitter/`--selfcheck` machinery
+     (`import gen_fem_cons_a as g`, reusing `g.DST_DIR`/`g.REF_DIR`/`g.rewrite`), so the two batches
+     cannot drift apart. `--check --selfcheck` is green for both regions (3 + 763 statements). One
+     *generator* fix was needed: `--selfcheck`'s value comparison draws each free variable uniformly
+     from (0.5, 2.0), and the shell energy's `x29 = log((det IB) * (a signed determinant expression))`
+     legitimately leaves the logarithm's domain there — both sides evaluate the *same* function, so the
+     script installs a domain-safe `math.log` (one sentinel for `x <= 0`) instead of raising
+     `ValueError`. The tree-identity check (the property transcription relies on) is unaffected.
+  15. **`cross` is a free function in the numerics layer.** Eigen spells it `a.cross(b)`; `lps` has
+     `lps::cross(a, b)` and *no* `LVec::cross` member (`dot`/`norm`/`squaredNorm`/`normalized` are
+     members on both sides). Every transcription of the reference's dihedral-angle utility and of
+     Baraff-Witkin's `Dm2x2` must re-spell it (otherwise measured C2039).
+  16. **`uipc::Vector`/`uipc::Matrix` are `using Eigen::Vector/Matrix`** — a generic test-side shim
+     therefore needs `Vector<Float, N>` / `Matrix<Float, R, C>` (three template arguments), never
+     `Vector<N>`. Related MSVC parser trap in a *dependent* context: `span<const Dst>{host}` (a
+     using-declared class template) is **not** parsed as a type-id — measured C2760/C3878
+     "unexpected '{'; expected ')'" — and the parenthesised form `span<const Dst>(host)` is required.
+     Non-dependent uses (`span<const Float>{h_kappas}`) are fine, which is why batch a never hit it.
+  17. **`utils/scalar_util.h` is the "possibly-DSL scalar" toolkit batch b needed.** Three primitives
+     the shell constitutions cannot express with a single layer call: `select_scalar(f, t, p)` (the same
+     dispatcher `matrix_assembler.h` carries privately — `lps::select` is host-only by design and LC's
+     `select` is ADL-only, so a *qualified* call never finds it), `pred_and`/`pred_or` (LC needs `&`/`|`
+     for DSL scalars, the host needs `&&`/`||` to avoid `bool & bool -> int`), and
+     `is_finite_scalar`/`is_finite_vec3` (`!(isnan | isinf)`: LC has no DSL `isfinite`, and the
+     `x - x == 0` trick would rest on fast-math assumptions), plus `select_container` for element-wise
+     LVec/LMat selects. Batch c can reuse all of it.
+  18. **`select(f, t, p)` is `p ? t : f` — a reversed argument pair is a *silent* behaviour change.**
+     One debugging round in batch b: `select_container(rotation_singular, rotation_general, singular)`
+     returned the *singular* matrix for every non-singular input, i.e. the Baraff-Witkin rest metric came
+     out as a fixed 180-degree rotation instead of the isometric projection. The "canonical triangle
+     gives `IB == I`" and "arbitrary rest triangles give `F^T F == I`" invariants caught it immediately,
+     while a gradient/Hessian-only test would have "passed" against a consistently wrong model.
+  19. **The reference's `bool`-returning guard chains become `select`s, not early returns.** Both plastic
+     constitutions guard every per-element routine (`safe_dihedral_angle`, `try_angle_delta`,
+     `try_trial_state`, `augmented_response_from_angle_delta`, `update_plastic_state`) and *return* on
+     failure. A device predicate cannot drive host control flow (RULE M2), so the port evaluates the whole
+     computation (all of it NaN-safe: the cosine is clamped before `acos`), folds the guards into one
+     predicate in the reference's own order and selects where the reference returns — `return 0.0` ->
+     `select(0.0, value, ok)`, `G.setZero()` -> a container select, and for the out-parameter routines the
+     outputs are selected back to their input value, so the caller's write becomes an identity.
+     Equivalence argument: a select passes its chosen operand through untouched.
+  20. **The plastic history is a *return mapping*, and it needs its own test.** `update_plastic_state`
+     does `theta_bar += sign(delta) * (|delta| - yield)` — the new `theta_bar` is *not* `theta` (the
+     first hand-computed sequence written for this batch was wrong for exactly that reason, and the
+     oracle caught it). Two gates matter: `plastic_excess <= 1e-6`
+     (`plasticity_write_threshold`) and, for the stress-plastic variant, the whole `try_trial_state`
+     guard chain (`L0 <= 0`, `h_bar <= 0`, `yield_stress < 0`, non-finite inputs). The port's kernel
+     writes both attributes unconditionally (`update_plastic_state` already returns the input value when
+     its guard fails), which is the port's formulation of the reference's conditional write: an unmoved
+     history is not a change. The unit test drives the reference's sequence step by step (host, with
+     literal expectations including a "yield not met" step) *and* the constitution's own device buffers
+     through the shipped generic routine (a test kernel with the same body as the TimeIntegrator's).
+  21. **Three fidelity notes worth pinning rather than "fixing".**
+     (a) The reference's `while(angle > Pi) angle -= TwoPi;` loops are device loops with data-dependent
+     trip counts; the port uses a fixed 5-step predicated form (bit-identical to the loops for
+     |a| <= 11 pi, asserted over 4000 random angles in ±11 pi) and every call site is provably inside
+     |a| <= 3 pi.
+     (b) `lps::min/max` compare as `x < y ? x : y` while `std::min/std::max` keep their *first* argument
+     on a NaN comparison, so a fully degenerate stencil's `theta_bar` is `pi` (port) vs `0` (reference):
+     both finite, and the energy is non-finite either way (`h_bar` is 0/0). Recorded in the
+     degenerate-state case.
+     (c) The extra constitutions' `ComputeEnergyInfo`/`ComputeGradientHessianInfo` cannot be reached from
+     a test through the base (the hooks are `protected` there *and* the info types need the elastics'
+     `Impl`); the batch-b scene test builds a test-local `FiniteElementElastics::Impl`
+     (`constitution_*_offsets_counts` sized + `scan()`) plus a test-local
+     `FiniteElementExtraConstitution::Impl` pointing at the *real* method, and calls the hooks through the
+     *concrete* type (public there, like the reference's class layout). The dim-2 constitutions'
+     `Compute*Info` constructors are public, so they need no such trick — but their hooks still have to be
+     called through the concrete type (the base declares them `protected`).
+  22. **The Baraff-Witkin Hessian is a *stabilised* Hessian, not the exact derivative.** Measured with an
+     independent Eigen re-transcription *and* with central differences: `ddEddF` matches `d(dEdF)/dx` in
+     the regime the model was derived for (`I6 == 0` with both anisotropic invariants >= 1) — rel 3.6e-10 —
+     but deviates by 0.07–1.5 x the Hessian's own scale in sheared states and in the shrunk regime, where
+     the *true* Hessian is indefinite (`I5 < 1` is the concave branch) and the reference keeps a PSD
+     surrogate. The port is therefore pinned against the reference formula (independent Eigen
+     transcription, 2.3e-13) rather than against FD, and the FD deviation is asserted only in the model's
+     own regime. Consequence for later tasks: do not tighten a Baraff-Witkin gradient/Hessian FD bound
+     below ~1e-2 in a general state.
+  23. **`-use_fast_math` shows up as a device-vs-host bound, and only through `acos`.** LC compiles its
+     CUDA shaders with `-use_fast_math`; the DSL's `+ - * / sqrt` on `double` stay bit-accurate (Baraff-
+     Witkin's energy/gradient/Hessian agree with the host instantiation to 1.4e-13), but `acos` carries
+     ~1e-8. Everything that turns the dihedral angle into a physical quantity inherits that: the
+     discrete-shells energy agrees with the host to 7.7e-07 and the plastic *history* (a difference of two
+     O(1) angles) to ~2e-7 on the device, while the *host* instantiation of the same generic routine is
+     **bitwise** equal to the independent oracle (measured 0.0). Assert the device bound per routine and
+     the host path bitwise.
+24. **A stationary state needs its own FD step -- and the step has a *measured* optimum.** At the rest
+state the bending gradient is `2 L0 kappa (theta - theta_bar) / h_bar`, a cancelling difference of two
+O(1) angles, so an h = 1e-6 central-difference Hessian is pure round-off (its smallest eigenvalue goes
+negative by 1e-4, measured -2.8e-04). A sweep over 40 random rest stencils (`kFdRestH` in
+`luisa_fem_constitution_b_test.cpp`, |H| ~ 1.9e1) measures `|dH| = 7.3e-2 (h = 1e-6), 8.6e-6 (1e-4),
+4.4e-5 (1e-3), 4.4e-3 (1e-2)`: the round-off falls as `1/h^2` while the truncation rises as `h^2`, so
+1e-4 is the optimum. Compare it *relative to the analytic Hessian's own scale* and assert the
+*analytic* Hessian's PSD-ness, not the FD one's.
+25. **`triangle_thickness(t0, t1, t2)` returns `t0`; it is not an average -- and every membrane energy is
+proportional to the thickness.** The reference's `utils/codim_thickness.h` helper returns the *first*
+vertex's thickness, and its kernel asserts that the three agree (the frontend writes the thickness
+attribute uniformly). An oracle that averages with `0.5 * (t0 + t1 + t2)` is therefore 1.5x the
+thickness, i.e. 1.5x *every* energy, gradient and Hessian of a codim-2d constitution -- while
+Baraff-Witkin's energy ignores the thickness buffer, so that constitution stays green and hides the
+oracle bug. Read the reference's reduction, and assert the equality its kernel asserts.
+26. **A *constant* ratio between the device and the oracle is never rounding: look for a multiplicative
+*input*.** Measured symptom: the device's Neo-Hookean density was exactly 2/3 of the host's for all six
+scene elements, while the state-dependent part of each agreed to 1e-7. Rounding cannot produce 2/3 of a
+value in every state; only a factor every term is homogeneous in (`lambda`, `mu`, `rest_area`,
+`thickness`, `dt` for a membrane) can. In this case it was the oracle's thickness (rule 25: `0.5 * 3 =
+1.5` instead of `t0`) -- i.e. the *device* was right and the independently written oracle was wrong,
+which is why the symptom had to be chased to the end instead of being "fixed" in the port.
+27. **Split a mismatch with a *density* probe before blaming the formula.** `element_energy` is
+`density * Vdt2`. A tiny kernel that calls the generated density (`sym::...::E`) and writes it per
+element separates "the generated code is wrong" from "an argument/scaling is wrong" in a single run
+(the scene's temporary `nh_density_kernel` did exactly that and localised the 2/3). Its permanent
+version lives in the `device_vs_host` case (`nh_element_energy_kernel`): device vs host 1.9e-9 for the
+generated Neo-Hookean density -- including states translated far from the origin, because the generated
+expansion computes `det(A)` from *raw* coordinates, so a translated stencil exercises its cancellation.
+28. **A device-vs-host bound belongs to the routine's *transcendentals*, not to the module.** Measured on
+this port: Baraff-Witkin (no `acos`) 3.1e-15/3.6e-15/1.4e-13 (E/G/H), the discrete-shells *energy* (one
+`acos`) 1.0e-6, the plastic *history* (a difference of two `acos`) 2.2e-7, the generated Neo-Hookean
+density (one `log` of a 2x2 determinant) 1.9e-9. Do not carry one number across routines: assert ~1e-5
+where `acos` is involved and ~1e-9 where only `log`/`sqrt` are.
+29. **Run the *filtered* suite and the *full* suite: the RNG stream is process-wide.** The new test's
+`std::mt19937` is a file-local singleton seeded once (`20240917u`), so a case's random states depend on
+how many cases ran before it. Measured consequence: the same stationary-state FD check reads worst
+`4.5e-7` alone but `1.8e-5` in `[constitution_b]` and in the full run. Bounds for random-state checks
+must hold in *both* streams (and the filtered run is the one that has all six cases in one process, so
+it is the sharper one).
+
 
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
