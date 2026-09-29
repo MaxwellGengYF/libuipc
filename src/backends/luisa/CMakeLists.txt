@@ -21,7 +21,32 @@ uipc_add_backend(luisa)
 # generates the .def from this target's objects (the foundation layer keeps its
 # own UIPC_LUISA_DEVICE_API export macro; this covers the system classes).
 if(WIN32)
-    set_target_properties(luisa PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    # T6.3b3: WINDOWS_EXPORT_ALL_SYMBOLS used to export *every* symbol this module's objects
+    # define.  Each kernel signature instantiates a large amount of LuisaCompute DSL
+    # machinery (~345 symbols), so the auto-generated list grew to **69295** entries and the
+    # link died with "fatal error LNK1189: cannot have more than 64K exports" (MSVC's export
+    # table is capped at 65535; the T6.3b2 tree already sat at 65482, i.e. 53 below the
+    # ceiling, so *any* new kernel tipped it over — this is a latent limit, not a T6.3b3
+    # regression).  The module now exports an explicit, checked-in list instead: its C API
+    # (uipc_create_engine / uipc_destroy_engine / uipc_init_module / uipc_query_module, which
+    # are resolved with GetProcAddress and therefore imported by nobody) plus every symbol the
+    # in-tree consumers import from it.  That file is
+    # `src/backends/luisa/luisa_module.def`, maintained by `scripts/luisa_module_def.py`
+    # (`--check` verifies it).  A test that uses a *new* backend symbol makes the link fail
+    # with an unresolved external — the intended, loud signal: re-run that script and commit
+    # the refreshed file.  Production consumers (apps/uipc core) only need the C API.
+    set_target_properties(luisa PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS OFF)
+    # NOTE: the four C entry points (`uipc_query_module` / `uipc_init_module` /
+    # `uipc_create_engine` / `uipc_destroy_engine`) carry `UIPC_BACKEND_API`
+    # (`__declspec(dllexport)`), so they are in the export table whatever this list says;
+    # `scripts/luisa_check_module_abi.py` proves that dynamically (LoadLibrary +
+    # GetProcAddress).  The list below is what the *C++* consumers need.
+    target_link_options(luisa PRIVATE
+        "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/luisa_module.def")
+    # `/DEF:` alone is not a build dependency: without this the module is not relinked when
+    # the export list changes, and a refreshed list would silently have no effect.
+    set_property(TARGET luisa APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/luisa_module.def")
 endif()
 
 # LuisaCompute must be PUBLIC: this backend's headers (luisa_device, type_define.h)

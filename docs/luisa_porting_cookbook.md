@@ -3688,6 +3688,231 @@ assertions.
     `_hf_probe.obj` a device-vs-host probe left in the repository root was removed before the
     commit (check `git status` for stray artefacts — the build dir is ignored, the root is not).
 
+### 7.27 Patterns established in T6.3b3 (ABD joints, batch 3: revolute, driving, external force, limit)
+
+   The last joint batch ports the **revolute** family: `AffineBodyRevoluteJoint` (uid 18) with its
+   dof reporter and time integrator, `AffineBodyDrivingRevoluteJoint` (uid 19, the animator-driven
+   `atan2` constraint), the external-force pair (`AffineBodyRevoluteJointExternalForceConstraint` /
+   `AffineBodyRevoluteJointExternalForce`, both uid 668 — the shared constraint/reporter registry
+   again) and `AffineBodyRevoluteJointLimit` (uid 670, whose `JointUID` cross-references
+   `AffineBodyRevoluteJoint::ConstitutionUID`).  Seven classes as four `.h`/`.cpp` pairs plus the
+   shared `affine_body_revolute_joint_function.h` and three generated `sym/*.inl`
+   (`affine_body_revolute_joint.inl` 927 statements, `affine_body_driving_revolute_joint.inl`
+   1192 — the project's largest body, 1.1 MB of SymEigen source — and
+   `affine_body_revolute_joint_limit.inl` 1344), and `apps/tests/backends/luisa/
+   luisa_abd_joint_c_test.cpp` (tag `[abd_joint_c]`, 8 cases / 383 assertions).  It reuses
+   `joint_limit_penalty.h` unchanged, which is the b2 deliverable paying off.
+
+1. **The *revolute* joint's element Hessian is DIAGONAL, so §7.26 rule 10 does not carry over to
+   it — but it does carry over to its two companions.**  The joint's `Faxis` is a 6-vector of two
+   coincident *point* differences, so `ddEaxisddFaxis = κ I₆` exactly (`|H| = κ·5` for
+   `κ = 1`, the 6x6's only non-zeros are the six κ's) and `make_spd` is a pure no-op:
+   0-vs-8 sweeps differ by **0.000e+00**, `‖H_raw − H_shipped‖ = 0.0`, a *negative* κ is clamped to
+   exactly zero, and the FD case asserts `dev(H_raw, FD) == dev(H_shipped, FD) == 8.8e-11`
+   (the transcribed arithmetic).  The **driving** (uid 19) and the **limit** (uid 670), however,
+   are 12x12 and *indefinite* (the non-diagonal magnitudes are 1.589 / 0.690), so the sweep count
+   is a real projection there: **0-vs-8 = 7.270e-01 (driving) / 7.237e-01 (limit)**, 8-vs-20 =
+   0.000e+00, and the test *pins* `kMakeSpdSweeps == 8` for both while the FD case asserts both
+   ends of the driving's Hessian (raw chain vs FD 1.1e-10, shipped vs FD 3.0e-01).  Read rule 10
+   of §7.26 as a statement about *those* two, not about the joint.
+
+2. **The revolute element Hessians are 12x12 where the prismatic ones were 9x9, and that size is
+   what deadlocks LC's `Device::compile` (this batch's headline finding).**  A *test-local* kernel
+   containing either the driving's `body_hessian` or the limit's `hessian` (both a 12x12
+   `make_spd` chain) parks forever inside `luisa::compute::Device::compile`: process CPU time and
+   GPU utilisation freeze at 0, memory stops growing, only `taskkill` ends it.  Measured by
+   `#if 0` bisection plus per-constructor `stderr` markers, all reproducible in isolation:
+
+   - one kernel with joint + driving + limit + external force -> **deadlock**;
+   - disabling any *one* of {driving block, limit Hessian, external force} -> **still deadlock**;
+   - disabling *two* of them -> compiles and runs (rc 42 against the now-wrong layout);
+   - a five-kernel split (joint / driving E+G / limit chain / limit E+G / external force) ->
+     the four "small" kernels compile, and the two `make_spd` kernels deadlock **on their own**.
+
+   The *same* templates compile and run fine inside the shipped subsystem kernels — the assembly
+   case drives the driving's real k1/k2 shaders directly and measures Hessian dev 1.709e-15 — so
+   this is an LC compile-path limitation triggered by these particular test kernels, not a defect
+   in the transcription.  Consequences the next batch must live with: (a) keep test-local kernels
+   to *one* big generated chain each; (b) the device-vs-host round can cover every chain except
+   those two Hessians, and their device instantiation must be evidenced through the *subsystem*
+   path (the k1/k2 direct drive).  The `[abd_joint_c]` round says so in a comment at the point of
+   exclusion rather than silently skipping a comparison.
+
+3. **`unwrap_angle(wrapped, ref) = ref + remainder(wrapped − ref, 2π)`, and `lps` has no
+   `remainder`.**  The reference's helper (in `affine_body_revolute_joint_function.h`, *before* the
+   three `.inl` includes) is `::remainder(wrapped_angle − ref, 2*pi) + ref`; the port spells the
+   IEEE identity `remainder(x, y) == x − y*round(x/y)` with `lps::round`.  The two agree everywhere
+   except an exact half-quotient tie (where `std::remainder` rounds half-to-even and `lps::round`
+   half-away), and the test measures that difference on every sampled state: **0.000e+00**.
+
+4. **An oracle that spells that law with the operands swapped is off by exactly
+   `(ref − wrapped)`, and it fails "plausibly".**  Two transcriptions of the same sentence are
+   both natural and only one is the reference:
+   `ref + remainder(wrapped − ref, 2π)` (correct) versus `wrapped + remainder(ref − wrapped, 2π)`
+   (which *returns `ref`* whenever the two are within π — the most common case).  The
+   `[abd_joint_c]` device-vs-host round had exactly this for one field and reported
+   `unwrap 6.388e-01` — a deviation of the same order as the data, i.e. indistinguishable from a
+   real numerics bug.  When an oracle and a device disagree by "a plausible amount" on a
+   *wrapping* helper, re-read the reference's own argument order before touching the port.
+   (The closed-forms case pins the identity in both spellings, which is what caught it.)
+
+5. **The revolute function header includes all three `.inl` — the limit body included *there*, not
+   in the limit `.cpp`.**  The reference's `affine_body_revolute_joint_function.h` pulls in
+   `sym/affine_body_revolute_joint.inl`, `sym/affine_body_driving_revolute_joint.inl` and
+   `<affine_body/constitutions/sym/affine_body_revolute_joint_limit.inl>`, and the port keeps that
+   shape (quoted relative includes for all three).  Consequence for the reader: the joint's own
+   `.cpp` parses the 12x12 chains of all three bodies even though it only *calls* the joint's, and
+   the 1.1 MB driving source shrinks to ~120 KB once the SymEigen comments are dropped.  Compile
+   time for that TU is dominated by the driving body — budget for it.
+
+6. **The first *overloaded* generated function in the project, and the transcriber's occurrence
+   suffix.**  `sym/affine_body_revolute_joint_limit.inl` defines `DeltaTheta` **twice** — a
+   6-vector `basis_k/qk/qk_t` frame form and a 12-vector `F/F_t` form.  The region contract is
+   "one sentinel pair == every generated function between them", so `rewrite()` needed no change at
+   all; only the *verification* names needed to be addressable, so `scratch/gen_fem_cons_a.py`
+   gained `split_name_spec("DeltaTheta#2")` + `find_function(text, name, occurrence)` and the
+   region list names the second overload `DeltaTheta#2`.  Every other region in the project is
+   occurrence 1, so the extension is backward compatible (verified: `--check --selfcheck` rc 0 with
+   unchanged output for all pre-existing regions).
+
+7. **`Vector12`/`Vector24`/`Vector6` staging stays element-wise (the §7.26 rule-15 trap), and the
+   revolute joint hits it in `do_init`.**  Uploading `rest_positions` with `copy_host_to_device`
+   is a C2668 (a dependent unqualified call in an earlier template cannot see the later overload
+   while Eigen's converting constructor makes every older overload viable); the working spelling is
+   an explicit `to_luisa` staging loop, which is what all four revolute classes do.
+
+8. **The external-force pair (uid 668) uses the *edge's own* rest endpoints and `torque_to_F`
+   contributes no translational dof.**  The reporter takes the axle from `l1 − l0` / `r1 − r0`
+   (the joint's own two rest points, not the `A·l0 + t` world points), normalises per body and
+   *symmetrises* (`e_i = −e_j`); `torque_to_F` then returns a 12-vector whose translational 3 dofs
+   are exactly zero and whose rotational 3x3 is the torque's cross-product operator.  The
+   uid-ownership case proves the sharing positively (asserting the geometry's constraint set is
+   `{19, 668}` and that a registry perturbation flips the diagnostic to `uid668 = ANOTHER
+   SYSTEM`), which is what makes 668-as-two-systems safe.
+
+9. **The round's *cursor* is as load-bearing as its stride.**  §7.26 rule 16's "consume every slot"
+   has a twin: when a field is deliberately reserved (see rule 2) the writer must *jump* the cursor
+   over the reserved block instead of writing the next field contiguously.  The first split of
+   `[abd_joint_c]`'s round kernel wrote the penalty scalars straight after the limit chain because
+   the loop that used to sit between them had moved to another kernel — the layout then read
+   `limit E 0.0 / G 1.0, penalty 3.2e+02`, exactly the signature of a shifted field.  Keep the
+   reader's `kk == kRoundStride` assertion (it stays valid) *and* keep every writer's `k =` jump
+   next to the constant it jumps to.
+
+10. **Regression shape of this batch, the cold-JIT budget and the harness limits.**  `[abd_joint_c]`
+    383 assertions / 8 cases rc 0; `~[abd_joint_c]` 761858/183 rc 0 — bit-identical to the T6.3b2
+    full-suite count, i.e. the batch is purely additive; the whole suite 762241/191; `[abd_base]`/
+    `[abd_linear]`/`[abd_dynamics]`/`[abd_constitution]`/`[abd_joint_a]`/`[abd_joint_b]` =
+    2143/7 · 495/7 · 547/7 · 523/7 · 223/8 · 402/8; ctest 1/1; standalone 69 cases / 0 checks
+    failed; `scratch/gen_abd_cons_a.py --check --selfcheck` rc 0; `scratch/t63b3_oracle.py` rc 0.
+    A *cold* `[abd_joint_c]` run re-JITs the 12x12-shape kernels; once warm the whole 8-case filter
+    runs in ~3 s, and `~[abd_joint_c]` in ~47 s.
+
+11. **Non-vacuity: two perturbations on two axes** (`scratch/t63b3_perturb.py`, the T6.3b1/b2
+    driver pattern: patch -> build -> run -> revert -> sha256 -> re-verify).
+    **P1** the *host staging* axis (`affine_body_revolute_joint.cpp`,
+    `init_angles_list.push_back(init_angle_view[i])` -> `+ 0.25`) — a pure host-side data-staging
+    change, so the PTX cache stays valid and the owning case (`abd_joint_c_scene`) re-runs in
+    seconds; **P2** the *transcribed-arithmetic* axis
+    (`sym/affine_body_driving_revolute_joint.inl`, the first `lps::pow(x3, 2.0)` -> `3.0`) — the
+    1.1 MB driving body, chosen to be observable through `abd_joint_c_closed_forms`, which drives
+    only *host* (`S = double`) instantiations of the generated bodies and therefore re-JITs
+    nothing.  Both exit with rc 42 and at least one `FAILED:` line, and the reverted tree rebuilds with
+    0 warnings and runs the whole `[abd_joint_c]` filter green again with a byte-identical
+    (`sha256`) revert.  Measured: **P1 -> 5 failures** in `abd_joint_c_scene` — the two staging
+    pins (`h_init_angles[0/1] == 0.0` read `0.25 == 0.0`) plus the three angle-dependent checks
+    they feed (`worst <= 1e-12` -> 0.25, `worst_adopt <= 1e-12` -> 0.25, `worst <= 1e-9` ->
+    0.25000000000027711); **P2 -> 1 failure** in `abd_joint_c_closed_forms`, the driving's
+    `dEdF01` oracle (`worst_dE <= 1e-12` -> 1.2480488231944847e-01), i.e. the transcribed
+    arithmetic itself, not the plumbing.  Both reverts are byte-identical and both reverted
+    `[abd_joint_c]` runs are 383/8 green.
+
+12. **Disaster recovery: the agent session's `wire.jsonl` is a complete, replayable edit log.**
+    A heredoc `Path.write_text(..., newline='\n')` truncated the brand-new 190 KB test file to zero
+    bytes mid-batch (the heredoc turns the escape into a real newline, so the `newline` argument is
+    left unterminated and the write happens on a partially-parsed payload).  Everything was
+    recovered, byte-for-byte, from
+    `.kimix_cache/<session-uuid>/wire.jsonl`, which records **every** tool call with its full
+    arguments — `write` (with `mode`), `edit` (old/new strings) **and** `bash`, including inline
+    `python -c "…"` edits.  The working recipe is a replay driver that walks the calls in order,
+    applies `write`/`edit` verbatim, extracts each `python` heredoc / `-c` body out of the `bash`
+    command and runs it in a *sandbox* directory holding only the file under repair.  Two lessons:
+    replay `bash` too (the "missing" edits were all `python -c` blocks, not tool `edit` calls), and
+    treat "the file compiles" as the recovery's *entry* criterion, never its exit criterion —
+    only a green run pins it.
+
+
+13. **The module export ceiling (LNK1189) and the explicit `luisa_module.def` that replaces
+    `WINDOWS_EXPORT_ALL_SYMBOLS` — a latent limit this batch tripped.**  On Windows the `luisa`
+    module used to set `WINDOWS_EXPORT_ALL_SYMBOLS ON`, which exports *every* symbol its objects
+    define.  Each kernel signature instantiates ~345 symbols of LuisaCompute DSL machinery, so at
+    T6.3b2 the auto-generated list was already **65482** entries — **53 below** MSVC's 65535-export
+    ceiling — and T6.3b3's eleven new kernels pushed it to **69295**, where the link dies with
+    `LINK : fatal error LNK1189: cannot have more than 64K exports` (measured: the generated
+    `build/src/backends/luisa/CMakeFiles/luisa.dir/exports.def` has 69295 lines; the tree at
+    T6.3b2 links only by luck).  **Fix in the tree:** `WINDOWS_EXPORT_ALL_SYMBOLS OFF` + an
+    explicit, *checked-in* export list `src/backends/luisa/luisa_module.def` (passed as
+    `/DEF:<abs path>`), generated and verified by `scripts/luisa_module_def.py`
+    (`--check` → rc 1 when stale).  Contents = the module's four C entry points
+    (`uipc_create_engine`, `uipc_destroy_engine`, `uipc_init_module`, `uipc_query_module` — resolved
+    with `GetProcAddress`, so *nothing* imports them) **plus every symbol the in-tree consumers
+    import** (mechanically: `dumpbin /imports` over the build's PE files, keeping only the sections
+    whose DLL header is `uipc_backend_luisa.dll`; a naive whole-dump scan mis-attributes other
+    DLLs' imports).  Measured: 361 consumer symbols + 4 C API = the `.def`; the rebuilt DLL
+    exports **502** symbols (the extra ones are the foundation layer's own
+    `UIPC_LUISA_DEVICE_EXPORT` API).  **Maintenance protocol:** a test that uses a *new* backend
+    symbol now fails the **link** with an unresolved external — the intended loud signal; re-run
+    `python scripts/luisa_module_def.py` and commit the refreshed file.  Both name-loading paths
+    still pass on the explicit list (`ctest -R backend_luisa` 1/1 and
+    `python scripts/luisa_standalone.py cuda` 69/0), which is the evidence that the list is
+    complete for the module ABI.  **Rejected alternatives:** (a) moving the kernel TUs into a
+    static library linked into the module — the in-tree tests would then link a *second* copy of
+    every backend class, i.e. two sets of the `REGISTER_SIM_SYSTEM` registries and two type
+    identities (RTTI/`dynamic_cast` across the boundary would break); (b) post-filtering CMake's
+    auto-generated `.def` — CMake passes it to the linker itself, so a filter cannot be inserted
+    between its generation and the link without a second, conflicting `/DEF`; (c) keeping the
+    auto-export and pruning our own symbols — the noise is *LC's* template machinery, not ours.
+14. **Parent verification of T6.3b3 (independent pass) — and one perturbation that turned out to be
+    value-invariant, plus the coverage it exposed.**  The parent re-ran the whole battery on the
+    frozen tree *after* re-establishing the build (the export policy of rule 13): build rc 0 with
+    0 warnings; `[abd_joint_c]` **383/8** rc 0; `~[abd_joint_c]` **761858/183** rc 0 == the T6.3b2
+    full-suite baseline exactly (so the batch is purely additive); the full suite **762241/191**
+    rc 0; `[abd_base]`/`[abd_linear]`/`[abd_dynamics]`/`[abd_constitution]`/`[abd_joint_a]`/
+    `[abd_joint_b]` = 2143/7 · 495/7 · 547/7 · 523/7 · 223/8 · 402/8 (all unchanged); ctest 1/1;
+    standalone 69/0; generator `--check --selfcheck` rc 0.  Two further axes (not the agent's):
+    **(A) the export list** — deleting the C API entries (and later the *loader's* two) from
+    `luisa_module.def` changed **nothing** (build ok, ctest 1/1, standalone 69/0): the four C entry
+    points carry `UIPC_BACKEND_API` (`__declspec(dllexport)`, `src/backends/common/module.h`), so
+    the `.def` never controlled them — a genuine *value-invariant* axis, not a coverage gap.  That
+    experiment did expose two real defects, both now fixed: (i) a `.def` is **not** a build
+    dependency of the link step, so a refreshed list silently had no effect until
+    `LINK_DEPENDS` was set (verified by watching the module's link step); (ii) **nothing in the
+    battery exercised the module's dynamic-loading ABI** — the in-tree tests *link* the module and
+    the standalone suite builds its own copy, so `uipc::core`'s `LoadLibrary` +
+    `get_function<...>("uipc_query_module")` path (`src/core/core/internal/engine.cpp`) was never
+    run.  `scripts/luisa_check_module_abi.py` now closes that gap (LoadLibrary + `GetProcAddress`
+    on all four entry points, rc 0) and belongs in the battery after any export-policy change.
+    **(B) the uid registry** — the revolute joint claiming `19` instead of `18`: **caught**, via the
+    reference's own host assert ("Assertion uid && uid->view()[0] == JointUID failed.
+    AffineBodyRevoluteJointLimit must be attached on base revolute joint"), after which the harness
+    aborts with rc 3221226505 (0xC0000409) rather than reporting a Catch2 failure — the same
+    abort-shaped failure mode §7.26 rule 21 records.
+15. **Coverage gaps this batch records (do not read them as "verified").**  (i) Two 12x12
+    `make_spd` kernel chains are **excluded** from the test-local device-vs-host round because
+    holding them in one test kernel *deadlocks* `luisa::compute::Device::compile` (bisected: any one
+    of the four chains alone compiles; two of them together deadlock; the two excluded ones deadlock
+    even alone) — their device instantiation is evidenced only through the *subsystem* shaders (the
+    assembly case drives the real reporters).  (ii) The scene case's second `Engine` is gone: after a
+    second engine is initialised, the next `frame_stream().synchronize()` from the test reproducibly
+    SIGSEGVs or hangs (`LStream::synchronize`), a **pre-existing multi-engine hazard** that T6.4's
+    multi-engine tests will hit; the driving's world-level differencing is therefore not exercised
+    (its kernels are pinned by the direct k1/k2 drive + the assembly differencing instead).  (iii)
+    Every number above was measured on a relinked module exporting **502** symbols rather than 69k —
+    same code, different export table.  (iv) The regression suite is **order-fragile**: `--order
+    rand` fails one or two assertions at *every* seed on the T6.3b2 baseline too (default
+    declaration order is green), so the battery's green runs are only meaningful in the default
+    order — worth a look if a future batch ever sees a spurious single-assertion failure.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
