@@ -190,7 +190,7 @@ This plan is too large for one session. State MUST be persisted so a fresh sessi
 | M2 Math layer | T2.1–T2.3 | LVec/LMat + ops/SVD/distance host+device parity vs Eigen/CUDA-ref within tol |
 | M3 Linear algebra | T3.1–T3.4 | Containers, converter, SpMV, BLAS kernels verified vs references |
 | M4 Base systems | T4.1–T4.3 | Geometry/manager/animator systems build + unit-tested |
-| M5 FEM | T5.1–T5.5 | All FEM constitutions & dynamics verified (E/G/H vs CUDA) |
+| M5 FEM | T5.1–T5.4b | All FEM constitutions & dynamics verified (E/G/H vs CUDA); T5.5 re-scoped (AL reporters → M8, diff reporters → M9), MAS preconditioner → M6 |
 | M6 ABD | T6.1–T6.4 | All ABD constitutions/joints/constraints verified |
 | M7 Collision | T7.1–T7.2 | BVH + trajectory filters equivalent to CUDA |
 | M8 Contact→Engine | T8.1–T8.5 | Contact models, coupling, PCG, full engine link; frame 0 of a gravity case advances |
@@ -372,17 +372,21 @@ This plan is too large for one session. State MUST be persisted so a fresh sessi
 - **Validate**: `test_fem_kinetic` — fixed 2-tet mesh, BDF1/BDF2 states: kinetic energy & inertia terms match hand-derived values within 1e-6.
 - **Milestone**: M5 — commit `[luisa-backend] T5.3 fem-dynamics-bdf-animator`.
 
-**T5.4 — FEM linear subsystem + preconditioners** (depends T3, T5.1)
-- Port: `fem_linear_subsystem`, `diag_linear_subsystem` pattern owner, `fem_diag_preconditioner`, `fem_mas_preconditioner`, `mas_preconditioner_engine`, `finite_element_constraint`, `constraints/soft_position_constraint`, `constraints/finite_element_external_vertex_force_constraint`, `finite_element_external_vertex_force`.
-- **Done**: local Hessian assembly → converter → SpMV round-trip test passes vs reference.
-- **Validate**: `test_fem_linear` — assemble local Hessians for a 5-tet mesh → convert → SpMV → y matches direct dense A·x within 1e-5; MAS engine produces SPD preconditioner.
-- **Milestone**: M5 — commit `[luisa-backend] T5.4 fem-linear-subsystem-preconditioners`.
+  **T5.4 — FEM linear subsystem + preconditioners** (depends T3, T5.1)
+  - Port: `fem_linear_subsystem`, `diag_linear_subsystem` pattern owner, `fem_diag_preconditioner`, `fem_mas_preconditioner`, `mas_preconditioner_engine`, `finite_element_constraint`, `constraints/soft_position_constraint`, `constraints/finite_element_external_vertex_force_constraint`, `finite_element_external_vertex_force`.
+  - **Done**: local Hessian assembly → converter → SpMV round-trip test passes vs reference.
+  - **Validate**: `test_fem_linear` — assemble local Hessians for a 5-tet mesh → convert → SpMV → y matches direct dense A·x within 1e-5; MAS engine produces SPD preconditioner.
+  - **Milestone**: M5 — commit `[luisa-backend] T5.4 fem-linear-subsystem-preconditioners`.
+  - **EXECUTED AS T5.4a/T5.4b (measured, 2026-09):** T5.4a (`38052f30`) = `global_linear_system`'s *assembly half* + `diag_linear_subsystem` + `local_preconditioner` + `fem_linear_subsystem` + `fem_dytopo_effect_receiver` + the elastics/animator assembly fan-outs; validation met (5-tet → `MatrixConverter` → `SpMV` vs dense `A·x` **1.339e-15**, bound 1e-5). T5.4b = `fem_diag_preconditioner` + `finite_element_external_vertex_force` + `constraints/finite_element_external_vertex_force_constraint` + the preconditioner-apply half of `GlobalLinearSystem`. **Descriptor of the split, with reasons: (1) the reference's `GlobalLinearSystem::solve()` is what *triggers* the assembly (via `_update_subsystem_extent`/`_assemble_linear_system`), and `solve()` needs `IterativeSolver`/`LinearPCG`/`GlobalPreconditioner`/`OffDiagLinearSubsystem`/`CurrentFrameDiffDofReporter`, none of which exist before T8.3 — so T5.4a ports the assembly/layout half and leaves the solve path declared-but-undefined under `SCOPE NOTE (T8.3)` markers, and the assembly is reached from the test through header-level factored routines plus a standalone `GlobalLinearSystem::Impl` (see cookbook §7.19). (2) `mas_preconditioner_engine` + `fem_mas_preconditioner` are **deferred to M6 (new task)**: the engine is consumed by *both* FEM and ABD, so one validation in M6 covers both, it is ~2400 lines of warp-level/shared-memory device code (Eigen-in-shared-memory, float atomics, `cub::WarpReduce`) that is orthogonal to "FEM constitutions & dynamics", and its end-to-end purpose is exercised by T8.3 anyway. The `LocalPreconditioner` interface it plugs into is already ported, so the deferral is structural no-op.
 
-**T5.5 — FEM diff/extra constitutions + reporters** (depends T5.2)
-- Port: `codim_*_constitution_diff_parm_reporter` (3), `fem_3d_constitution_diff_parm_reporter`, `finite_element_constitution_diff_parm_reporter`, `finite_element_extra_constitution`, `finite_element_extra_constitution_diff_parm_reporter`, `finite_element_diff_dof_reporter`, `finite_element_diff_parm_reporter`, `fem_active_set_reporter`, `fem_al_stiffness_estimator`, `fem_line_search_reporter`, `fem_line_search_subreporter`, `fem_dytopo_effect_receiver`.
-- **Done**: builds; diff reporters produce same-shaped outputs as CUDA run for a fixed input (equivalence harness in Phase 9 will do full compare).
-- **Validate**: `test_fem_diff_reporters` — fixed synthetic input: reporter output shapes/dtypes match, values finite; codim diff-parm paths exercised.
-- **Milestone**: M5 — commit `[luisa-backend] T5.5 fem-diff-extra-constitutions`; `git tag luisa-m5`.
+  **T5.5 — FEM diff/extra constitutions + reporters** (depends T5.2) — **RE-SCOPED (measured, 2026-09): this task cannot complete inside M5.**
+  - Port: `codim_*_constitution_diff_parm_reporter` (3), `fem_3d_constitution_diff_parm_reporter`, `finite_element_constitution_diff_parm_reporter`, `finite_element_extra_constitution`, `finite_element_extra_constitution_diff_parm_reporter`, `finite_element_diff_dof_reporter`, `finite_element_diff_parm_reporter`, `fem_active_set_reporter`, `fem_al_stiffness_estimator`, `fem_line_search_reporter`, `fem_line_search_subreporter`, `fem_dytopo_effect_receiver`.
+  - **Measured dependency findings (they re-route the task):**
+    * already delivered early (structural include cycles): `fem_line_search_reporter`/`fem_line_search_subreporter` + `finite_element_extra_constitution` in **T5.3** (`da86f09a`), `fem_dytopo_effect_receiver` in **T5.4a** (`38052f30`);
+    * `fem_active_set_reporter` and `fem_al_stiffness_estimator` include `active_set_system/active_set_reporter.h` / `active_set_system/al_stiffness_estimator.h` — the AL active-set layer, which does not exist in this backend and belongs to the **M8** contact/AL work;
+    * every `*_diff_*_reporter` (and the three `codim_*_constitution_diff_parm_reporter`) includes `diff_sim/diff_dof_reporter.h` / `diff_sim/diff_parm_reporter.h` — the **diff-sim/adjoint** layer, which belongs to **M9 (T9.4)** and drags in `<diff_sim/...>` (this is also why T5.3/T5.4a dropped the reference's unused diff-reporter includes).
+  - **Therefore**: the remaining T5.5 files are re-assigned — the two AL reporters to M8 (with `active_set_system`), the diff reporters to M9 (with `diff_sim`). `git tag luisa-m5` is cut after **T5.4b**, not after T5.5: M5's stated deliverable (“all FEM constitutions & dynamics verified, E/G/H vs CUDA”) is exactly what T5.1–T5.4b deliver, and the re-assigned reporters are validation (shape/finiteness) shims over layers that do not exist yet.
+  - **Milestone**: M5 — `git tag luisa-m5` after T5.4b; the re-assigned files are tracked in the M8/M9 task tables.
 
 ### PHASE 6 — Affine Body System (depends T2.2, T3, T5.1; parallelizable after T6.1)
 

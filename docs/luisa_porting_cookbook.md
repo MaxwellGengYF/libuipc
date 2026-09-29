@@ -2166,6 +2166,212 @@ crux of the task.
     the real build is fine).  `python scripts/luisa_check_compile.py <backend-src> --syntax
     --filter /backends/luisa/` is the invocation to use.
 
+### 7.20 Patterns established in T5.4b (the diagonal preconditioner, the preconditioner-apply path, the external vertex force)
+M5 batch **T5.4b** ports the last M5 pieces: `finite_element/fem_diag_preconditioner.{h,cpp}`
+(+ `fem_diag_preconditioner_function.h`), `linear_system/global_linear_system.cpp`'s
+`Impl::apply_preconditioner`, `finite_element/constraints/finite_element_external_vertex_force_constraint.{h,cpp}`
+and `finite_element/finite_element_external_vertex_force.{h,cpp}`.  It also closes the
+two `SCOPE NOTE (T8.3)` items the T5.4a row listed for it (`LocalPreconditioner`'s
+defined members — already done in T5.4a — and `apply_preconditioner`).  The rules
+below are what the port turned out to depend on; the first one is the brief's §1.1
+"one genuinely hard design problem".
+
+1. **The vector-valued atomic add is the *scalar alias* of the AoS buffer
+   (`BufferView::as<U>()` + three scalar atomics) — measured, not assumed.**  The
+   reference's `eigen::atomic_add(forces(vid), F)` adds a `Vector3` into an
+   `AoS BufferView<Vector3>`; rule 10 above says LC's `AtomicRef<LVector3>` exposes
+   the struct's `std::array<double,3>` member as an `AtomicRef<std::array<double,3>>`,
+   which has no `fetch_add`, so there is no direct DSL spelling.  The three
+   candidate designs were (a) three scalar buffers, (b) a read-modify-write kernel,
+   (c) something LC offers.  **(c) exists:** `BufferView<T>::as<U>()`
+   (`luisa/runtime/buffer.h`) reinterprets a buffer view as another element type
+   (same handle, same byte offset, element stride `sizeof(U)`, size
+   `size_bytes / sizeof(U)`; it is `requires(!is_custom_struct_v<U>)`), and the
+   dispatch path encodes only `(handle, offset_bytes, size_bytes)`
+   (`ShaderInvokeBase::operator<<(BufferView<T>)` → `encode_buffer`), so a shader
+   whose prototype is `Buffer<double>` accepts the alias.  Because
+   `element_stride == sizeof(LVector3)` (24 B = 3 x 8) the flat index of component
+   `c` of vertex `v` is `3 * v + c`, and the reference's add becomes the three
+   per-component atomic adds of `finite_element_external_vertex_force_detail::scatter_add_vec3`.
+   Measured evidence (all in `luisa_fem_preconditioner_test.cpp`):
+   * the shipped `do_step` asserts the contract before dispatching and the test
+     prints the measured stride: **`LVector3` buffer element stride 24 B
+     (`sizeof(LVector3)` 24 B)** — i.e. LC does not pad the registered struct;
+   * the **duplicate-vertex case**: a synthetic table adds three entries on vertex 3
+     and two on vertex 0; the scatter reproduces the hand-derived sums exactly
+     (`worst abs 0.000e+00`, vertex 3 = `(11.500, 20.250, 29.125)` =
+     `(1.0+0.5+10.0, 0+0.25+20.0, -1+0.125+30.0)`) and nothing else is touched.
+     This is exactly what design (b) could not do: a single writer performing three
+     sequential whole-`LVector3` read-modify-writes on the *same* vertex would keep
+     one of the three adds (and a parallel read-modify-write would lose an
+     unspecified number of them);
+   * the device-vs-host round evaluates the same routine over `storage::memory`
+     views and gets the 9 doubles back exactly (`dev_aos[0] = (7, 8, 9)`).
+   *Trade-off (documented, guarded):* the alias is a raw reinterpretation of the
+   buffer's memory, so it is only valid while LC lays a custom-struct buffer out as
+   `sizeof(T)`-strided contiguous elements.  That is asserted at the call site
+   (`UIPC_ASSERT(native.stride() == sizeof(LVector3), ...)`) so a future LC that
+   padded the element would trip the assert instead of silently writing to the wrong
+   words.  Design (a) (three scalar buffers) was rejected because it would change
+   T5.3's `FiniteElementMethod::vertex_external_forces` layout, which its clear/step
+   kernels and the external-force contract already fix as AoS.
+   *Portability note:* the same trick would work for any `LVectorK` AoS buffer whose
+   element stride is `K * sizeof(scalar)`; it is the LC answer to "CUDA's
+   `atomicAdd` on a user type" (`cuda_tool::eigen::atomic_add`).
+2. **`Impl::apply_preconditioner` — the slice semantics and a *constant-true* copy
+   fallback.**  Ported verbatim from `global_linear_system.cu:466-511`: for every
+   registered `LocalPreconditioner`,
+   `index = preconditioner->m_subsystem->m_index`,
+   `(offset, count) = diag_dof_offsets_counts[index]`, and the info hands over
+   `z.subview(offset, count)` / `r.subview(offset, count)` — so a preconditioner
+   works in a **window-local index space** (`i * 3`, not `offset + i * 3`), which is
+   exactly what the reference's `do_apply` kernel assumes.  Then the copy fallback
+   runs over `no_precond_diag_subsystem_indices` (filled by `Impl::init()`), as
+   `z_sub.buffer_view().copy_from(r_sub.buffer_view(), stream)`: the port's
+   `LBufferView` *is* a windowed handle (`m_offset`/`m_size`), so the d2d copy copies
+   the window — unlike `DenseVectorView::native()`-style whole-buffer handles.  Two
+   deviations, both forced:
+   * the reference's `if(!global_preconditioner)` **cannot be spelled**: testing the
+     slot instantiates `SimSystemSlot<GlobalPreconditioner>::lazy_init()` on the
+     incomplete (T8.3) type — measured C2027.  Since the slot's only writer is the
+     T8.3 `add_preconditioner(GlobalPreconditioner*)` (a no-op here, T5.1 rule 13),
+     the guard is constant-true and the fallback runs unconditionally; the comment
+     above the loop records the reference's guard so T8.3 restores it in one line;
+   * the global-preconditioner fan-out itself stays a `SCOPE NOTE (T8.3)` comment.
+3. **What is still T8.3** (so T8.3 does not re-derive it): `solve()`,
+   `Impl::solve_linear_system`, `spmv`, `spmv_dot`, `matrix_data_ptrs`, `_dump_A_b`/
+   `_dump_x`, `need_debug_dump`/`debug_dump_path`, `triplet_count_dev`, the
+   off-diag subsystem branches, the *global*-preconditioner branch of
+   `apply_preconditioner`, and the `SimEngine` wiring.  `apply_preconditioner`,
+   `build_linear_system`, `diag_norm`/`mass_norm` and every assembly kernel are now
+   defined and test-reachable.
+4. **The preconditioner's slice arithmetic is the reference's, including the
+   signed-guard subtlety.**  `do_assemble` sizes `diag_inv` by the FEM vertex count
+   (`xs().size()`, one 3x3 block per DoF block), dispatches over
+   `info.A().triplet_count()` (the *whole* assembled matrix, not the FEM window) and
+   converts `g_i - dof_offset()/3` into the window.  The guard is
+   `!(i >= fem_segment_count || j >= fem_segment_count)` — the reference's two early
+   `return`s.  Note it is **signed**: an `i < 0` passes the guard (the reference has
+   the same hole), so the port's factored routine returns `{index, inverse(H3x3),
+   in_window, is_diagonal}` and the caller gates the store (`$if` in the shipped
+   kernel, an `if` on the host) — the same shape T5.4a chose for `diag_block_norm_row`
+   (§7.19 rule 4).  The inverse is computed unconditionally (the discarded lanes are
+   never stored), so a multi-subsystem layout computes an inverse of a zero block in
+   the discarded lanes — harmless, and it keeps the routine a single shared body.
+5. **The `converged != 0` early-out is a scalar read that wraps the whole body.**
+   The reference's `if(*converged != 0) return;` is per-thread; the port reads the
+   one-element `converged` buffer once and wraps the body in
+   `$if(converged->read(0) == 0)`.  Measured: with `converged = 1` **all 24 z
+   entries keep their pre-filled sentinel** (24/24 unchanged); with `converged = 0`
+   the apply matches the oracle.
+6. **The preconditioner inverts the *assembled* block-diagonal A, and a fixed
+   vertex's diagonal block is `(1 + #incident tets) * Identity` — a measured
+   reference quirk, not a port bug.**  The assembly writes the kinetic `m I`
+   (unconditional, T5.3 rule 1) and every element's 10 upper-packed blocks as
+   *separate triplets*, and `triplet -> BCOO` is a sort + a segmented **sum**, so
+   duplicates accumulate (the CUDA reference's `MatrixConverter` is the same
+   `FastSegmentalReduce`).  `fix_hessian_row` replaces the block of *every* triplet
+   whose `(row, col)` touches a fixed vertex by `Identity()`, and those replacements
+   then sum.  Measured on the 5-tet scene: vertex 0 (fixed, 3 incident tets) has an
+   assembled diagonal block of exactly **`4.0 * Identity`** — one kinetic triplet +
+   three elastic ones.  Consequence for the preconditioner: a fixed vertex's
+   residual is mapped to `r / (1 + #incident tets)`, not to `r`.  The test's oracle
+   models the reference's triplet arithmetic (not the "obvious" `Identity`), which is
+   what makes the assembled block comparison 2.4e-15 instead of 7.5e-1.
+7. **`diag_norm()` / `mass_norm()` are max-reductions over the assembled diagonal.**
+   The reference's two kernels (`fem_linear_subsystem.cu`):
+   `diag_norm`: `diag_blocks_norm(i) = is_fixed(i) ? 0 : max(|H_ii(0,0)|, |H_ii(1,1)|,
+   |H_ii(2,2)|)` where `H_ii` is the *assembled* diagonal block;
+   `mass_norm`: `diag_blocks_norm(i) = is_fixed(i) ? 0 : mass(i)`; then
+   `GlobalLinearSystem::Impl::{diag_norm,mass_norm}` take the max over the diag
+   subsystems (here: one), each a device max-reduction.  The `is_fixed` guard is a
+   *device* predicate, so it is a select in the shipped kernels (T5.4a's factored
+   routines).  Measured against hand-derived values built from the ported T5.2
+   element Hessians and the frontend's mass law (`m = density * sum_e V_e / 4`):
+   diag_norm **4.430390e+02** (hand-derived 4.430390e+02), mass_norm **2.578125e+02**
+   (hand-derived 2.578125e+02) — exact, and the mass law itself matches the method's
+   device masses to 0.000e+00.  These are the norms the AL pipeline scales `mu` by
+   (T8.x); they are shipped kernels now.
+8. **The external-force contract is observable end to end, and uid 671 lives in
+   *three different registries*.**  The schedule is
+   `SimEngine::step_animation_and_external_forces()`:
+   `GlobalExternalForceManager::clear()` → `GlobalAnimator::step()` (→
+   `FiniteElementAnimator` → the constraints' `do_step`, which re-upload the
+   `external_force` attributes) → `GlobalExternalForceManager::step()` (→
+   `FEMExternalForceManager`: every `FiniteElementExternalForceReporter` scatter-adds
+   → `vertex_external_force_accs = F / m`, **0 when `m <= 0`**).  The three
+   registries are: the *constraint-uid* registry
+   (`FiniteElementExternalVertexForceConstraint::UID = 671`), the
+   *external-force-reporter* registry (`FEMExternalForceManager::UID = 671`, T5.3)
+   and the *constitution* registry
+   (`uipc::constitution::FiniteElementExternalForce`, uid 671).  They are separate
+   `(kind, uid)` namespaces, so the collision is by design (the reference's own
+   numbering); it is *not* available for a test mock.  Measured on the frontend
+   scene: 4 constrained vertices collected in vertex order {1, 3, 5, 6},
+   `worst |F - expected| = 0.000e+00`, `worst |a - F/m| = 0.000e+00`, the massless
+   vertex (`mass_density = 0`) has `|F| = 4.0e-7 > 0` and `a` **exactly 0**, and the
+   unconstrained vertex keeps `F = 0` even though its `external_force` attribute was
+   set (the frontend's contract: "in" is `is_constrained`, not the attribute's
+   presence).
+   *Frontend trap measured here:* `uipc::constitution::FiniteElementExternalForce::apply_to(sc, F)`
+   creates `is_constrained` (**all zero**) if missing and fills `external_force`
+   uniformly; a scene must create `is_constrained` *before* `apply_to` (it keeps the
+   existing attribute) and overwrite `external_force` afterwards.
+9. **The constraint's extents are 0/0/0 and one test seam was added for it.**
+   `do_report_extent` declares zero energy/gradient/Hessian (the reference's comment:
+   "forces are applied through x_tilde in the time integrator") and
+   `do_init == do_step`.  `FiniteElementAnimator::ReportExtentInfo` had no read
+   accessor (the animator is its only reader), so T5.4b added three const overloads
+   (`energy_count()`, `gradient_count()`, `hessian_count()`) — a pure test seam, no
+   behaviour change, the same rationale as T5.4a's public `GlobalLinearSystem::init()`.
+   The constraint's hooks and `m_impl` are public for the same reason (T5.2 rule 11):
+   the duplicate-vertex case writes a synthetic (vertex_id, force) table into the
+   constraint's own device buffers, which is the only way to produce two entries on
+   one vertex (the frontend gives every geometry vertex a distinct global id).
+10. **Device-vs-host: integer outputs are *exact*, floating outputs agree to ~1 ulp
+   because the CUDA codegen contracts into FMAs.**  Measured over one round of every
+   factored routine (`diag_inv_row`, `diag_apply_row`, `scatter_add_vec3`):
+   **65/69 doubles bitwise equal, worst 1.110e-16 (1 ulp)**, and **15/15
+   guards/indices exactly equal** (`in_window`, `is_diagonal`, the local index).  T2.1
+   /§7.16's "bitwise" convention therefore holds only where no `a*b+c` is contractible;
+   `lps::inverse`'s adjugate and the matrix-vector product are not, and the assertion
+   is stated at 1e-15 relative with the measured absolute/relative numbers printed.
+11. **Two compile traps this batch measured** (both cost a round):
+    * **`Var<Buffer<T>>` is move-only**: a generic routine must not take a kernel's
+      `BufferVar<T>` parameter **by value** — measured C2280
+      (`Var<Buffer<LMatrix3x3>>::Var(const Var<Buffer<LMatrix3x3>>&)` is deleted).
+      Scalar/`double` buffer vars convert to `Expr<Buffer<T>>` (copyable) on the way
+      into `from_handles`, which is why T5.4a's routines never hit it.  The batch's
+      answer: the shared routines take a **view** (`DiagInvDeviceView` /
+      `DiagInvHostMemoryView`, built at both call sites with `from_handles`), never a
+      raw buffer var.
+    * **`lps::inverse` needs `#include <luisa_device/math/matrix_ops.h>`**: neither
+      `type_define.h` nor `luisa_device/linear/linear.h` pulls it in (measured C2039
+      "`inverse` is not a member of `lps`"), because `mat.h` only *declares* it.
+12. **A T5.4a test mesh cannot be reused for a *scene*.**  The five-tet connectivity of
+    `luisa_fem_linear_test.cpp` has two negative-determinant tets
+    (`{0,2,3,6}` -> -0.25, `{4,3,1,7}` -> -0.75), which `ARAP`'s/`SNH`'s `apply_to`
+    accepts only through `compute_vertex_volume`, which **asserts `D > 0`** and aborts
+    the test.  T5.4b's scene uses a 5-tet mesh with all-positive rest determinants
+    (`{1,0,3,2}`, `{0,1,2,4}`, `{0,3,2,6}`, `{1,2,4,5}`, `{2,4,6,7}`), keeping one
+    *non-ascending* even permutation so the `upper_LR` swap is still exercised.
+13. **Test uids: T5.4b reserves none.**  It drives the *real* systems instead of mocks
+    (the real `FEMDiagPreconditioner` registered into a standalone
+    `GlobalLinearSystem::Impl`, the real constraint/reporter pair), and the new test
+    registers only `T54bProbe` — a plain `SimSystem` with no uid.  The reservations
+    from §7.18 rule 12 stay in force; in particular **671 is still not available**
+    (it is the constraint/reporter/constitution uid above).
+14. **Regression shape of this batch.**  `run` -> 757525 assertions / 139 test cases
+    (= the T5.4a baseline 757421/135 + this file's 104/4) and `run "~[fem_precond]"`
+    -> **757421 assertions / 135 test cases**, i.e. *no* pre-existing expectation
+    moved even though two new systems (a `LocalPreconditioner` and a
+    `FiniteElementConstraint` + its reporter) are now registered in every scene of the
+    shared binary: the preconditioner is inert until `_assemble_preconditioner`/
+    `apply_preconditioner` are called, the constraint throws `SimSystemException`
+    unless uid 671 is in the scene's constitution table (and then its reporter is
+    invalidated with it), and the filters `[half_plane]` 426/7, `[constitution_a]`
+    2362/7, `[fem_dynamics]` 135/8 and `[fem_linear]` 323/4 are unchanged.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

@@ -13,9 +13,9 @@
  * reference's, so they plug in without reworking anything here.
  *
  * The apply path (`do_apply(GlobalLinearSystem::ApplyPreconditionerInfo&)`) is
- * part of the T8.3 solve path: the port keeps the interface (T5.4b defines
- * `do_apply`) but nothing calls `LocalPreconditioner::apply()` yet — the only
- * caller in the reference is `GlobalLinearSystem::Impl::apply_preconditioner()`.
+ * called by `GlobalLinearSystem::Impl::apply_preconditioner()`, which T5.4b
+ * defined (the local fan-out + the no-local-preconditioner copy fallback); only
+ * the *global*-preconditioner branch of that entry stays T8.3's.
  *********************************************************************/
 #include <sim_system.h>
 #include <linear_system/global_linear_system.h>

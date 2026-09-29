@@ -399,6 +399,58 @@ void GlobalLinearSystem::Impl::_assemble_preconditioner()
     }
 }
 
+void GlobalLinearSystem::Impl::apply_preconditioner(lla::LDenseVectorView<Float>  z,
+                                                    lla::LCDenseVectorView<Float> r,
+                                                    lud::LCBufferView<IndexT>     converged,
+                                                    lud::LStream*                 stream)
+{
+    auto diag_dof_counts  = diag_dof_offsets_counts.counts();
+    auto diag_dof_offsets = diag_dof_offsets_counts.offsets();
+
+    // SCOPE NOTE (T8.3): the reference's *first* step is the fan-out to the
+    // *global* preconditioner:
+    //   ApplyPreconditionerInfo info{this};
+    //   info.m_z = z; info.m_r = r; info.m_converged = converged; info.m_stream = stream;
+    //   global_preconditioner->apply(info);
+    // `GlobalPreconditioner` is T8.3's type (forward-declared here, exactly as in
+    // the reference header), so it cannot be dereferenced yet; the slot stays
+    // declared and is empty in every scene of this backend.
+
+    for(auto& preconditioner : local_preconditioners.view())
+    {
+        ApplyPreconditionerInfo info{this};
+        auto                    index  = preconditioner->m_subsystem->m_index;
+        auto                    offset = diag_dof_offsets[index];
+        auto                    count  = diag_dof_counts[index];
+        info.m_z                       = z.subview(offset, count);
+        info.m_r                       = r.subview(offset, count);
+        info.m_converged               = converged;
+        info.m_stream                  = stream;
+        preconditioner->apply(info);
+    }
+
+    // The reference wraps the fallback in `if(!global_preconditioner)`.  The slot
+    // is *never* set in this port — its only writer is the T8.3
+    // `add_preconditioner(GlobalPreconditioner*)`, which is a no-op because the
+    // type does not exist yet (T5.1 rule 13) — so the guard is constant-true and
+    // the copy fallback always runs; spelling it out would instantiate
+    // `SimSystemSlot<GlobalPreconditioner>::operator bool()` on an incomplete type
+    // (measured C2027), exactly like `_assemble_preconditioner`'s global branch.
+    // For diag subsystems without local preconditioner, just copy r to z
+    for(auto i : no_precond_diag_subsystem_indices)
+    {
+        auto offset = diag_dof_offsets[i];
+        auto count  = diag_dof_counts[i];
+        auto z_sub  = z.subview(offset, count);
+        auto r_sub  = r.subview(offset, count);
+        // the reference's `cuda_tool::BufferLaunch(stream).copy(z_sub.buffer_view(),
+        // r_sub.buffer_view())`: a device->device copy of the two *windowed*
+        // views (each LBufferView carries its own offset, so the subview windows
+        // are copied, not the whole buffers).
+        z_sub.buffer_view().copy_from(r_sub.buffer_view(), stream);
+    }
+}
+
 void GlobalLinearSystem::Impl::distribute_solution()
 {
     auto diag_dof_counts  = diag_dof_offsets_counts.counts();
@@ -584,7 +636,6 @@ void GlobalLinearSystem::ComputeGradientInfo::buffer_view(DenseVectorView grad) 
 //
 //   void  GlobalLinearSystem::solve();
 //   void  GlobalLinearSystem::Impl::solve_linear_system();
-//   void  GlobalLinearSystem::Impl::apply_preconditioner(...);
 //   void  GlobalLinearSystem::Impl::spmv(...);
 //   void  GlobalLinearSystem::Impl::spmv_dot(...);
 //   std::array<const void*, 3> GlobalLinearSystem::Impl::matrix_data_ptrs() const;

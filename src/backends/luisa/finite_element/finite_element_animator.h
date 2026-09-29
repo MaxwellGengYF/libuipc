@@ -152,6 +152,15 @@ class FiniteElementAnimator final : public Animator
         }
         void check(std::string_view name) const;
 
+        /// DEVIATION (T5.4b): read-only accessors for the three counts.  The
+        /// reference has none (the animator is its only reader), but a unit test
+        /// that drives a constraint's `do_report_extent` directly has no way to
+        /// observe the 0/0/0 contract otherwise; the setters above keep the
+        /// reference's names and signatures.
+        [[nodiscard]] SizeT energy_count() const noexcept { return m_energy_count; }
+        [[nodiscard]] SizeT gradient_count() const noexcept { return m_gradient_segment_count; }
+        [[nodiscard]] SizeT hessian_count() const noexcept { return m_hessian_block_count; }
+
       private:
         friend class FiniteElementAnimator;
         friend class FiniteElementConstraint;

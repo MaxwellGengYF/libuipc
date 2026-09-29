@@ -5,11 +5,9 @@
 * T5.4a — LocalPreconditioner (port of
 * src/backends/cuda/linear_system/local_preconditioner.cu — namespace only).
 *
-* `apply()` has no caller in T5.4a: the reference's only caller is
-* `GlobalLinearSystem::Impl::apply_preconditioner()`, which is part of the T8.3
-* solve path (see global_linear_system.h's scope note).  It is defined here so the
-* class has no undefined member at all -- T5.4b only has to add the two concrete
-* preconditioners and T8.3 only has to call it.
+* All four forwarding members are defined here (T5.4a already defined them, so
+* T5.4b only had to add the two concrete preconditioners): `apply()` is called by
+* `GlobalLinearSystem::Impl::apply_preconditioner()`, which T5.4b defined.
 *************************************************************************************************/
 namespace uipc::backend::luisa
 {

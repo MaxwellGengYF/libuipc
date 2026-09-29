@@ -42,18 +42,24 @@
  *     `ComputeGradientInfo::{flags,buffer_view}` and the `add_*()` definitions.
  *
  * DEFERRED TO T8.3 (declared here, not defined — `SCOPE NOTE (T8.3)`)
- *   * `do_build()` — only defined as an empty body, because it is a pure-virtual
- *     override (a system must be constructible) and the reference's whole body is
- *     the *debug dump* config (`extras/debug/dump_linear_system`), which is
- *     decidable only together with `solve()`;
- *   * `solve()`, `Impl::solve_linear_system()`, `Impl::apply_preconditioner()`,
- *     `Impl::spmv()`, `Impl::spmv_dot()`, `matrix_data_ptrs()`;
- *   * `_dump_A_b()` / `_dump_x()` (they need `utils/matrix_market` + the
- *     `BackendPathTool` workspace plumbing, i.e. the debug path) — the references
- *     to them are inside `solve()`, which is itself deferred;
- *   * `need_debug_dump` / `debug_dump_path` and the graph-stability key
- *     `triplet_count_dev` (whose only purpose is a launch shape that does not
- *     change when nnz varies inside the reserved capacity).
+ * * `do_build()` — only defined as an empty body, because it is a pure-virtual
+ *   override (a system must be constructible) and the reference's whole body is
+ *   the *debug dump* config (`extras/debug/dump_linear_system`), which is
+ *   decidable only together with `solve()`;
+ * * `solve()`, `Impl::solve_linear_system()`, `Impl::spmv()`,
+ *   `Impl::spmv_dot()`, `matrix_data_ptrs()`;
+ * * `_dump_A_b()` / `_dump_x()` (they need `utils/matrix_market` + the
+ *   `BackendPathTool` workspace plumbing, i.e. the debug path) — the references
+ *   to them are inside `solve()`, which is itself deferred;
+ * * `need_debug_dump` / `debug_dump_path` and the graph-stability key
+ *   `triplet_count_dev` (whose only purpose is a launch shape that does not
+ *   change when nnz varies inside the reserved capacity).
+ *
+ * COMPLETED BY T5.4b: `Impl::apply_preconditioner()` — the local-preconditioner
+ * fan-out plus the no-local-preconditioner `z <- r` copy fallback.  It was under
+ * this file's SCOPE NOTE (T8.3) because T5.4a had no `LocalPreconditioner`
+ * implementation to call and no `LocalPreconditioner` static apply helper; the
+ * *global* preconditioner branch inside it stays deferred (that type is T8.3's).
  *
  * Container mapping onto T3.1/T3.3/T3.4 (cookbook §7.9/§7.11/§7.12)
  * ----------------------------------------------------------------
@@ -75,11 +81,15 @@
  *   assembly: `DiagExtentInfo{gradient_only=true}` + `DiagInfo` +
  *   `DiagSubsystem::assemble`, i.e. `FEMLinearSubsystem::Impl::assemble` and the
  *   whole reporter/constitution fan-out), and — through a test-local `Impl`
- *   instance, which is a *public* nested class — `_update_subsystem_extent()`,
- *   `_assemble_linear_system()`, `distribute_solution()`, `accuracy_statisfied()`,
- *   `diag_norm()`, `mass_norm()`;
- * solver-only (T8.3): the `solve()` chain, `apply_preconditioner`, `spmv`,
- *   `spmv_dot`, the debug dump and the CUDA-graph validity key.
+ * instance, which is a *public* nested class — `_update_subsystem_extent()`,
+ * `_assemble_linear_system()`, `distribute_solution()`, `accuracy_statisfied()`,
+ * `diag_norm()`, `mass_norm()`; and, since T5.4b, `build_linear_system()` (the
+ * extent -> assemble -> convert -> `_assemble_preconditioner()` chain) and
+ * `apply_preconditioner()` on such an instance, once a `FEMDiagPreconditioner` is
+ * registered in it;
+ * solver-only (T8.3): the `solve()` chain, the *global*-preconditioner branch of
+ * `apply_preconditioner`, `spmv`, `spmv_dot`, the debug dump and the CUDA-graph
+ * validity key.
  *
  * DEVIATION (T5.4a, reported): `init()` is declared **public** here.  The
  * reference keeps it private + `friend class SimEngine`, because only
@@ -423,7 +433,9 @@ class GlobalLinearSystem : public SimSystem
         bool  empty_system          = true;
         SizeT last_solve_iterations = 0;
 
-        // SCOPE NOTE (T8.3): the apply/spmv entries of the solve path.  The
+        // SCOPE NOTE (T8.3): the remaining apply/spmv entries of the solve path —
+        // only the *global*-preconditioner branch of `apply_preconditioner` is left
+        // to them (T5.4b defined the local fan-out + the copy fallback).  The
         // `cudaStream_t` parameters map onto the port's `lud::LStream*`.
         void apply_preconditioner(lla::LDenseVectorView<Float>  z,
                                   lla::LCDenseVectorView<Float> r,
