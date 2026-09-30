@@ -5589,6 +5589,59 @@ T8.5 keeps only `diff_sim/*`, `line_search/*`, `newton_tolerance/*` and the engi
  out-of-band vertex; the port's `PHs` capacity/retry kept the count honest at 2, which the first
  spelling of the oracle got wrong).
 
+### 7.36 Findings from T8.1b (the IPC contact models) -- batch IN PROGRESS, work stashed
+
+T8.1b ported the IPC contact models (`simplex_{normal,frictional}_contact.{h,cpp}`,
+`vertex_half_plane_{normal,frictional}_contact.{h,cpp}`, the four `contact_models/ipc_*` files,
+the `ipc_*_contact_function.h`/`codim_*` device-math headers, the transcribed generated
+`sym/*.inl` and the concrete exporters) and then hit a wall that belongs in this cookbook even
+though the batch is not finished.  The evidence, the transformer script and the exact remaining
+work are in `scratch/t81b_state.md`; the work itself is in `git stash` (`stash@{0}`,
+`T8.1b WIP (IPC contact models)`), and HEAD/working tree are back at the green T8.1a commit.
+
+ 1. **LC does not merely dislike a kernel with two big `make_spd` chains -- it deadlocks on a
+    *batch* of them, and that is a different rule.**  The reference's assemble pass keeps all
+    four contact types in one launch (four `make_spd` chains: 12x12 PT, 12x12 EE, 9x9 PE,
+    6x6 PP); that kernel never returns from `luisa::compute::Device::compile` (measured twice:
+    > 900 s and > 15 min, with the process *blocked* at ~50 s of CPU -- a deadlock, not a slow
+    compile).  Splitting it into four per-type kernels (one chain each) still deadlocked; the
+    bisection that pinned it was: **the PT kernel alone runs, PT+EE in one batch deadlocks**.
+    The cure is host-only and exact: a `frame_stream().synchronize()` between the per-type
+    dispatches, so each kernel is committed -- and therefore compiled -- on its own.  Measured
+    after that: the formerly-hanging case finishes in 2-3 s.
+ 2. **Splitting a fused kernel mechanically needs two things a naive block extraction loses.**
+    The fused body's leading `using namespace ...;` lines live *outside* the type guards, so
+    each re-emitted kernel needs them prepended; and the extracted block's single terminating
+    `;` (the one that closes the whole `$if`/`$else` *expression statement*) must be re-emitted
+    too -- without it MSVC reports `expected '}'` at the end of every kernel whose block ends in
+    `}` (and only the last one, whose block already ended in `};`, compiles).  A brace counter
+    used for the extraction must strip `//` comments, because these files carry braces inside
+    doc comments.  `scratch/split_assemble.py` does all of this and asserts the fused kernel's
+    parameter list against a per-file signature table before it writes anything.
+ 3. **A nested central difference is not an oracle for a second derivative.**  The port's first
+    attempt pinned the barrier's second derivative against a doubly-nested central difference:
+    measured **0.85 relative error**, because the third derivative blows up towards the active
+    band's edges and the roundoff is amplified by 1/h1^2.  The fix is an analytic second
+    derivative derived *in the test* (verified independently against 60-digit arithmetic at
+    1e-26) compared at 1e-12; the value-level FD stays only as a coarse 1e-2 sanity net.
+ 4. **Never compare a device result with `==`** (restated from 7.35 rule 6): LC's codegen
+    contracts multiply-adds, so `device == host` fails on the last ulp while printing two
+    identical spellings.  Use a tight relative comparison and say why.
+ 5. **`ipc_simplex_frictional_contact_function.h` is dead code in the reference itself**: its
+    two includes (`contact_models/ipc_contact_function.h`, `sym/ipc_friction.inl`) exist nowhere
+    in the tree, and its bodies call the four-argument `dKappaBarrierdD` while the live codim one
+    takes a fifth `xi`.  Transcribe it as data, include it in no TU, and pin the status.
+ 6. **The contact models claim no uid.**  `grep -n get_uid src/backends/cuda/contact_system/` is
+    empty (so T8.1b's premise that they would carry one was wrong); the only uid in the contact
+    path is the T4.2 `HalfPlaneVertexReporterUID = 2`.  Measured extent arithmetic is exact:
+    `IPCSimplexNormalContact: Grad3 13, Hess3x3 29` = 4+4+3+2 doublets / 10+10+6+3 triplets, 0
+    for the other three models.
+ 7. **Still owed by T8.1b** (resume from `git stash pop`): the ~20 assertion failures in 6 of the
+    8 `[contact_model]` cases (all of which now *run*, max 3 s; `t81b_simplex_normal_pairs` also
+    aborts after its failed energy checks, so start there), the full battery (`~[contact_model]`
+    must equal 764653 + the `[contact_core]` delta, i.e. **764971/257**), the two perturbations
+    on two axes, and the progress-doc/plan rows for T8.1b.
+
 
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
