@@ -5643,6 +5643,90 @@ work are in `scratch/t81b_state.md`; the work itself is in `git stash` (`stash@{
     on two axes, and the progress-doc/plan rows for T8.1b.
 
 
+### 7.37 Findings from the xmake build path (T10.1) — making the LuisaCompute backend build and run under xmake
+
+Context: `src/backends/luisa/xmake.lua` had existed since T1.1 but had **never been
+exercised** (the whole port was validated through CMake). Exercising it needed eight
+fixes; seven are xmake-specific traps, the eighth is a version pin.
+
+1. **`option()` only registers from the root script.** `xmake f --luisa_prefix=...` failed
+   with `error: Invalid option` although the option was declared in
+   `src/backends/luisa/xmake.lua`: that file is only `includes()`ed when
+   `has_config("backend_luisa")` is already true, which it is not while the CLI is parsed,
+   so an option declared there can never be set from the command line. `--luisa_root` was
+   dead for exactly this reason. `--luisa_root`, `--luisa_prefix` and `--luisa_deps_bin`
+   now live in the ROOT `xmake.lua`.
+2. **Target scripts are sandboxed read-only; rule scripts are not.** A target-level
+   `after_build` sees an `os` module with no `mkdir`/`cp`/`exec`
+   (`core/sandbox/modules/interpreter/os.lua` exports read interfaces only: isdir, isfile,
+   exists, files, dirs, ...). xmake's own `rules/wdk/xmake.lua` copies `*.dll` from an
+   `after_build` **inside a rule**, where the full `os` module exists — hence
+   `rule("luisa.runtime")`.
+3. **File-scope globals of an included script do not survive into its hooks.**
+   `attempt to call a nil value (global 'uipc_luisa_install_prefix')`; a `local function`
+   helper is captured as an upvalue and works.
+4. **Mirror the LC INTERFACE properties as *public*.** `install-msvc/lib/cmake/
+   LuisaCompute/LuisaComputeTargets.cmake` is the contract: 15 define
+   (`MARL_USE_SYSTEM_STL=1` is load-bearing — without it marl includes
+   `<EASTL/unique_ptr.h>`, which is not in the install tree → `fatal error C1083`
+   `EASTL/bit.h`), `/Zc:preprocessor /Zc:__cplusplus /wd4068 /wd5105`,
+   `include/luisa/ext`, `include/luisa/ext/xxhash`, the six `luisa-*.lib` names **and their
+   `lib` directory** (LNK1181 otherwise), `dbghelp`. All of them must be
+   `{public = true}`, like CMake's
+   `target_link_libraries(luisa PUBLIC uipc_geometry uipc_io luisa::compute)`; a private
+   define never reaches `uipc_test_backend_luisa`.
+5. **The export list must be a *file*, not a flag.** `add_ldflags("/DEF:...")` and
+   `target:add("ldflags", ...)` are silently dropped: `xmake show -t luisa` lists the flag,
+   `xmake build -v luisa` shows a link command line without it, and the module exported 208
+   instead of 652 symbols, so the test link failed with 444 unresolved externals. The form
+   that works is xmake's own rule — `add_files("luisa_module.def")` +
+   `add_rules("platform.windows.def")` — which emits `/def:<path>` for the shared link and
+   registers the file in `linkdepfiles` (the xmake equivalent of CMake's `LINK_DEPENDS`).
+   Measured after the fix: 652 exports, the same list as the CMake module.
+6. **Deploy the LC runtime, its helpers *and* its external dependencies.** Three separate
+   discoveries, each a hard failure:
+   * `luisa_nvrtc.exe` (96 MB) sits in the prefix's `bin` beside the DLLs; copying only
+     `*.dll` starts the tests and then aborts with
+     `Cannot find standalone NVRTC compiler 'luisa_nvrtc.exe'`.
+   * LC was built with `LUISA_USE_SYSTEM_SPDLOG=ON`, so `luisa-core.dll` imports the system
+     **fmt** runtime, which the install prefix does not ship: `fmt.dll` comes from
+     `--luisa_deps_bin`, else `<luisa_root>/build-msvc/bin`, else the repo's
+     `build/vcpkg_installed/x64-windows/bin` (the standalone harness resolves it the same
+     way through `UIPC_VCPKG_INSTALLED_DIR`).
+   * xmake does **not** deploy the DLLs of `add_packages()` dependencies (it aborts at run
+     time with `STATUS_DLL_NOT_FOUND` and asks you to copy them yourself), so the target's
+     package `bin` dirs are scanned as well. `target:pkgs()` returns only a target's *own*
+     packages, while spdlog arrives as a *public* package of `uipc_core`, so the traversal
+     follows `orderdeps()` + `get("packages", {interface = true})` (what xmake's own
+     `target:pkgenvs()` does). The vcpkg `spdlog.dll` must NOT be deployed — xmake's spdlog
+     links fmt statically while vcpkg's imports `fmt.dll` — so package DLLs are copied last
+     and `fmt.dll` first.
+7. **Pin Catch2 (default case order changed).** vcpkg resolves **catch2 3.8.1**, but
+   `apps/app/xmake.lua` had an unpinned `add_requires("catch2")` → xmake pulled **3.15.2**,
+   whose default test-case execution order is no longer declaration order (measured with
+   `--reporter xml`: `[abd_solve]` ran shuffled and the file's own `abd_solve_summary` case
+   — which asserts on counters accumulated by its siblings — landed second). This suite is
+   order-sensitive by construction, so results silently changed: `[abd_constraint]` 466 vs
+   CMake's 471, `[abd_solve]` 238 vs 245. Pinning `catch2 3.8.1` restored declaration order
+   and both tags now match CMake exactly. With an explicit `--order rand --rng-seed N` both
+   builds produce the *same* order, so the whole difference was the default.
+8. **Open issue (unexplained): the xmake-built binary stalls inside LC's JIT for one FEM
+   case.** `fem_constitution_b_scene` (its `StrainPlasticDSB` config) drives
+   `luisa_nvrtc.exe` into a multi-minute compile: three consecutive full-suite runs did not
+   finish within 240 s, and a single-case run had nvrtc at 100 % of a core for >15 min and
+   still climbing — while the CMake-built binary runs that same case, and all 257 cases
+   (764967 assertions), in **64 s** against the same LC DLLs (md5-verified identical in both
+   build directories). nvrtc is *busy*, not deadlocked, so the likely mechanism is a much
+   larger/slower-to-compile kernel produced by this build's module. Consequence: the xmake
+   build is verified for the module/targets and for the filtered batteries
+   (`[contact_core]` 314/9, `[abd_constraint]` 471/9, `[abd_solve]`, `[mas_preconditioner]`
+   — all identical to CMake) but **not yet for a full-suite run**; use the CMake build for
+   that.
+   Two operational notes from the same session: kill the test exe with `taskkill /T` (an
+   orphaned `luisa_nvrtc.exe`/`cmd.exe` keeps inherited pipes open and wedges any wrapper
+   that captured stdout through a pipe), and `luisa.runtime` cannot copy the LC DLLs while a
+   test binary is running — it surfaces as *"cannot copy file ... busy"*.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

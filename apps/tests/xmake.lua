@@ -13,8 +13,14 @@ includes("common")
 includes("core")
 includes("geometry")
 includes("sanity_check")
-if has_config("backend_cuda") then
+-- The backend test directories are per-backend (backends/xmake.lua gates cuda/luisa
+-- itself), so they are included whenever *either* backend is enabled -- a
+-- luisa-only configuration used to skip them entirely.
+if has_config("backend_cuda") or has_config("backend_luisa") then
     includes("backends")
+end
+
+if has_config("backend_cuda") then
     includes("sim_case")
     includes("regression")
 end
