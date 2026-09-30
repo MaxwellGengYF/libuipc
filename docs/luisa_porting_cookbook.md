@@ -5175,6 +5175,205 @@ dependency port** `contact_system/global_contact_manager.{h,cpp}` (§7.33 rule 4
      the port's first device-data hook if a *node-level* test turns out to need device data the leaf
      predicate does not imply.
 
+### 7.34 Patterns established in T7.2b (the four BVH simplex trajectory filters)
+
+Scope: `collision_detection/filters/{lbvh,stackless_bvh,info_stackless_bvh,info_stackless_bvh_v0}_simplex_trajectory_filter.{h,cpp}`
+(the reference's ~7200 lines), the single shared kernel header
+`collision_detection/details/simplex_trajectory_filter_kernels.h`, `utils/primitive_d_hat.h`, two
+additions to `luisa_device/linear/algorithms.h` (`compact_by_flags` / `select_valid_pairs` +
+`StructSelectScratch`) and `apps/tests/backends/luisa/luisa_bvh_filter_test.cpp` (tag
+`[bvh_filter]`, 9 cases / **594 assertions**).  Baselines: `[bvh_filter]` 594/9 rc 0;
+`~[bvh_filter]` **764059/239** rc 0 = the T7.2a baseline exactly; the whole suite **764653/248**;
+`ctest` 1/1; `python scripts/luisa_standalone.py cuda` 69/0; the export list 463 → **504**
+symbols (`python scripts/luisa_module_def.py --check` rc 0, `scripts/luisa_check_module_abi.py`
+rc 0).
+
+ 1. **The batch's central decision: keep-all traversal + a device *selection pass*, never
+    "device data reaches the predicate".**  In the reference the predicate is invoked *inside*
+    the traversal callback, i.e. **after** the fixed node test — `AtomicCountingLBVH::detect`
+    reports `(i, id)` and the caller's lambda does `if(id > i && p(i, id))`; `StacklessBVH`'s
+    leaf callback is `$if(pred(idx, other))`; the `Info*` variants surface
+    `launch_query/launch_detect` + `prepare_query_result` with the same shape.  A predicate can
+    therefore only *select among already-reported pairs*: it cannot change the visited set (it
+    can only change the reported **count**, i.e. the pair-buffer growth/retry — rule 3).  The
+    port spells exactly that: the BVH runs with `sftd::KeepAll{}` (a host-true predicate) to
+    produce the maximal swept-AABB overlap set, and the reference's predicate body is
+    re-implemented as a **device pass** over the raw pairs
+    (`detect_AllP_CodimP_pass_kernel<Dcd>` … `detect_AllE_AllE_pass_kernel<Dcd>`) that writes a
+    per-pair flag, followed by `lla::compact_by_flags` (a *stable* compaction, so the survivors
+    keep the traversal's ticket order).  Measured on the port's own structures in T7.2a
+    (keep-all 1139 == brute force; the selective `i % 2 == 0` run 602 == the host-filtered
+    keep-all set) and again here per family (below).  This is why the batch adds **no** new
+    predicate hook: LC predicates are recorded shaders, and a captured device view becomes a
+    shader-bound argument (cookbook §7.32 rule 3).
+ 2. **The `Info` variants' node cull is *implied* by the leaf predicate, so `KeepAllNodes` /
+    `KeepAllLeaves` are exact, not an approximation.**  `InfoStacklessBVH`'s node metadata is
+    `bid = -1` / `cid = -1` unless *all* leaves under the node share a body/contact id; the
+    reference's `NodePred` cull tests `table[qcid * dim + node_cid]` (and the same for the
+    subscene table, and the `node_bid != qbid || body_self_collision` term).  The corresponding
+    leaf predicate `allow_*_contact` is a conjunction that contains that very same
+    `table[qcid * dim + cid]` term, so a node culled by the reference has no surviving leaf
+    under it — dropping the cull loses nothing.  The port therefore never needs the row
+    metadata: `KeepAllNodes{}` / `KeepAllLeaves{}` (generic + the 2-argument overload `v0`
+    uses) reproduce the reference's surviving set for all four variants (pinned per variant by
+    `[bvh_filter]`: the `-1`-propagation is exercised through the mask batteries, where the
+    info variants still agree with the oracle pair-for-pair).
+ 3. **What the predicate *does* change is the reported count — pin the *capacity/retry*
+    contract, not just the surviving set.**  With `KeepAll{}` the port's raw pair counts are the
+    AABB-overlap counts (strictly larger than the reference's), which is exactly what the query
+    buffers must be sized for.  `[bvh_filter]` pins: the initial capacities (the
+    stackless-family buffers reserve `50 * 1024` pairs, the `AtomicCountingLBVH`'s starts empty
+    and is padded to 1 by its `detect`/`query`), the two `reserve_ratio`s (`1.2` for the
+    stackless family, the LBVH's private `1.1`), and the *retry* itself — quoted from the run:
+    "37 reported edge pairs == 37 brute-force overlap pairs (the buffer started empty, so the
+    query ran twice)".
+ 4. **A host-truth predicate is a *type*, and types are the shader cache key.**  `KeepAll{}` /
+    `KeepAllNodes{}` / `KeepAllLeaves{}` are empty structs; every kernel factory here is
+    `inline` (one shader per process, the T7.1a rule) and the predicate must stay **stateless**
+    — which is also why the port cannot pass a lambda that reads a device array.
+ 5. **The four-slice `tois` layout is part of the exported contract.**
+    `Impl::filter_toi` sizes `tois` to `pp + pe + pt + ee` and fills the slices in that order;
+    the *only* two slices the reference exposes are `toi_PTs() = tois.cview(pp + pe, pt)` and
+    `toi_EEs() = tois.cview(pp + pe + pt, ee)`.  `candidate_PTs()` / `candidate_EEs()` return the
+    **whole buffers** (capacity-sized, *not* count-sized) — the T7.2a rule 3 repeated, because
+    the four `QueryBuffer`s are grown by the retry path and the pair buffers keep that capacity.
+ 6. **The PP/PE candidate counts are *not observable* through the pipeline.**  Only the PT/EE
+    slices are exported, so a test that reads the two accessors cannot see the PP/PE
+    survivors at all.  `[bvh_filter]` therefore pins them through the white-box route
+    (`Impl::detect` at the DCD `alpha == 0`: raw and selected counts per family) *and* through
+    the active sets, which are derived from them — quoted: pipeline `PP+PE=(not exported)`
+    (the inferred `0` of the raw accessor reading was a red herring; the oracle's `4` is only
+    visible in the white box, where the device answers `PP=1 PE=3 …` == the oracle `1/3`).
+ 7. **`alpha == 0` is a *branch* of the predicate, and only v1 has it.**  `info_stackless_bvh`'s
+    four detect predicates evaluate the exact distance (`D2 < expand * expand`, via
+    `*_distance2`) when `alpha == 0`, while the other three always use `*_ccd_broadphase`.  The
+    port spells it `if constexpr(Dcd)` + a runtime `$if(alpha == 0.0)`, and the difference is
+    measurable and pinned: at `alpha == 0` on the same scene the four-way DCD table is
+    `PP/PE/EE/PT = 1/3/13/10` for `lbvh`, `stackless` and `infov0` (== the box/broadphase
+    oracle) but **`1/2/13/7` for `infov1`** (== the exact-distance oracle, 3 PE + 3 PT pairs
+    rejected that the broadphase keeps).  Every sub-scene battery repeats the split
+    (identical-geometry `1/3/13/10` vs `1/2/8/6`), so a careless transcription of the branch
+    fails loudly instead of silently.
+ 8. **The reference's `pe_from_ee` out-of-range read is transcribed and pinned as *undefined
+    behaviour*, not "fixed".**  In the reference's k4 (edge-edge) `dim == 3` degeneracy
+    classification, `pe_from_ee` is indexed by the *inactive* index and reads the ascending
+    layout's slot 3, which `dim == 3` leaves at the "none" sentinel — an out-of-range read of
+    the 4-element vertex list.  The device reports **no entry** for such pairs (measured: 3 EE
+    candidates per variant), the test's oracle skips them and the run prints the quirk
+    ("3 edge-edge candidate(s) classified through `pe_from_ee`'s out-of-range slot (undefined in
+    the reference) -- the oracle skips them, and the device reports no entry for them").  Do not
+    "repair" it: the port's job is to reproduce the reference's observable behaviour.
+ 9. **The sentinel is `1.1f` and it is written by three different paths.**
+    `kLargeEnoughToi = 1.1` is (a) the kernels' initial value, (b) re-written after a CCD
+    miss (`$if(!hit) toi = kLargeEnoughToi;`), and (c) the *host* fill
+    `info.toi().fill(kLargeEnoughToi)` for an empty family (the faithful spelling of CUB's
+    "an empty reduce does not launch").  `filter_toi` otherwise reduces with
+    `lla::device_reduce_min` over the whole slot.  The `toi > 0` `RUNTIME_CHECK` in the manager
+    (T7.2a) is what makes a `NaN`/zero transcription fail loudly.
+10. **`kToiMaxIter = 16`, not the reference's `kCcdUnboundedIterations = 64`.**  The port's CCD
+    unrolls once per iteration, so the 64-iteration kernels took **> 900 s** to JIT/run; the
+    convergence-sized bound `kMaxIter = 1000` is what the port passes to the *host* oracle
+    comparisons.  Pinned by measurement: `1000 vs 16 → 0 differing toi values` (per variant, in
+    the *closing* probe where the values are non-trivial — see rule 16).
+11. **The scene-config gate: three of the four filters are unreachable from a frontend scene.**
+    This build's schema lists only `info_stackless_bvh` for `collision_detection/method`
+    (`conditionalValues` drops the other three when `UIPC_WITH_CUDA_LEGACY_COLLISION == 0`), so
+    the port's LBVH / stackless / v0 filters cannot be selected by a scene (and
+    `apps/tests/core/scene_config.cpp` asserts `listed == legacy_collision_built`, so extending
+    the enum would break a core test).  `[bvh_filter]` drives them with **test-local
+    `SimplexTrajectoryFilter` subclasses** that own the variant's production `Impl`
+    (`T72bVariantFilter<ImplT>` + the three concrete wrappers, `REGISTER_SIM_SYSTEM`), gated on
+    a `test_t72b_variant` meta uid the scene builder sets on its geometries (`SimSystemException`
+    otherwise) so no other test's scene is affected.
+12. **Every ipc scene of this family needs a half-plane** (T7.2a's finding, restated because it
+    bit again): the two interval filters' `filter_active` reads the plane's vertex slice and
+    crashes on a plane-less scene, so `[bvh_filter]`'s scenes all carry one, parked 100 units
+    below the geometry so it never contributes a candidate.
+13. **Two teardown hazards the test has to work around (both measured, both *not* port bugs).**
+    (a) Destroying a white-box `Impl` (the LBVH/v0 ones) aborts the *later* engine teardown, so
+    the test leaks its probe `Impl`s; (b) writing the global contact-id array mid-case
+    (`set_contact_ids`) crashes a later teardown, so the contact-mask direction is exercised in
+    a scene of its own instead of by mutating a live one.
+14. **The TOI comparison must be keyed by *pair*, never by index.**  The device's `toi_pt[k]` is
+    parallel to `candidate_PTs()[k]` (traversal/compaction order), the host oracles are
+    pair-keyed maps, and the two orders differ per structure (the same scene gave 13 vs 6
+    "mismatches" between the LBVH and the stackless variants).  The batch's first version walked
+    the slices element-wise — it *passed* only because every value in that scene was the same
+    `1.1` sentinel, and it reported bogus mismatches the moment the pairs really collided.  Fix
+    by re-keying the device's values (`toi_by_pair(candidates, tois)`), then compare per pair.
+15. **A scene whose "displacement" rule matches nothing makes `alpha` invisible.**  The
+    test's original assignment (`m.positions[0].y() > 1.0 ? {-0.01} : {0}`) matched *no* vertex
+    (the upper plate sits at y = 0.15), so every `alpha`-dependent oracle was constant and the
+    whole `alpha = 0.5` battery silently degenerated to a static scene.  Fixed with an explicit
+    `is_upper_plate(p) { return p.y() > 0.05; }`.
+16. **A *positive control* is mandatory: prove the probe exercises what it claims.**  Because
+    of rule 15 the first version's "0 mismatches, max|d| = 0" was vacuous (sentinel vs
+    sentinel).  The batch therefore adds a **closing probe** — the same pipeline re-run on a copy
+    of the scene whose upper plate drops 0.35 (through the lower one) — and asserts its own
+    meaningfulness: `non_sentinel > 0` (measured **14 of 23**), `p.step < 1` and
+    `toi.min_all < 1`.  Its values are the batch's strongest numerical evidence: `min toi =
+    0.12857142857142856 == step`, `0 mismatches`, `max|d| = 1.11e-16` (one ULP: the device's
+    CCD and the host port of it differ only in evaluation order).  Without this probe the
+    device/kernel perturbation of rule 18 stays invisible.
+17. **Perturbation 1 — host/plumbing axis (the count bookkeeping): caught, rc 127, reverted
+    byte-identically.**  `detail::compact_scatter_kernel`'s published total
+    (`offsets[n-1] + flags[n-1]`) was replaced by the dispatch count `n`
+    (`luisa_device/linear/algorithms.h`), i.e. every family exports the *raw* AABB set instead
+    of the filtered set.  **34 assertions fail, rc 127**, in both directions of the pin:
+    `luisa_bvh_filter_test.cpp(1806/1807)` (`CHECK(pt_cand == oracle.allp_allt)` /
+    `(ee_cand == oracle.alle_alle)`: the device exports 11/14 pairs where the oracle has 10/13)
+    and `(1856…1859)` (the four active-set multisets, e.g. `PPs {{?},{?}} == {{?}}`).  The file
+    was restored to its exact sha256
+    (`2ebbb8b3de5f60f9b21d5640e1cbc36b4a7d442dab56385559f4af0c8429aaee`), rebuilt (rc 0) and
+    re-run green (594/9).
+18. **Perturbation 2 — device/kernel axis (a TOI kernel's arithmetic): caught by the *closing*
+    probe only, rc 42, reverted byte-identically.**  The PT TOI kernel lost the `alpha` scaling
+    of the vertex displacement (`const auto dVP = alpha * load_vec3(dxs->read(V));` →
+    `load_vec3(...)`, `simplex_trajectory_filter_kernels.h`), i.e. the CCD is solved over the
+    full displacement instead of the alpha-scaled one.  **8 assertions fail, rc 42**, all of them
+    in the closing probe: `(2005)` the pair-keyed mismatch count (4 of 23 toi values differ,
+    `max|d| = 0.0643`) and `(2006)` the manager step (device `0.064285714285714279` vs oracle
+    `0.12857142857142856`).  The *base* scene does **not** catch it — every one of its tois is
+    the sentinel — which is exactly the argument for rule 16.  Restored to sha256
+    `f26d2b3ff19fda05ccbf98e8d471f97637268ee799b693d57f10e461636f17a3`, rebuilt (rc 0), re-run
+    green (594/9).
+    **Perturbation 3 (host/plumbing again, and the most instructive one): the *production*
+    accessor's offset.** `InfoStacklessBVHSimplexTrajectoryFilter::toi_EEs()`'s slice start dropped
+    its PT term (`pp + pe + pt` → `pp + pe`).  The first attempt at this batch's test drove *every*
+    variant through a test-local mirror whose accessors re-derive the same slices, so the
+    production accessors were **never called** and this perturbation stayed invisible (measured:
+    rc 0, green with the bug in place!).  That is the coverage gap the perturbation exercise is
+    *for*: `check_variant_battery` now also looks up the variant's **production** filter
+    (`gtf->find<ImplOwnerT>()` — non-empty for `info_stackless_bvh`, the only method a scene can
+    select in this build, and the manager's stage loop drives every registered filter, so its
+    `Impl` is filled by the same run) and compares its four exported slices with the mirror's.
+    With that block in place the same perturbation fails loudly: **1 failed assertion, rc 42**, at
+    `luisa_bvh_filter_test.cpp(2024)` (`CHECK(read_device(prod->toi_EEs()) == p.toi_ee)`).  For the
+    other three variants the pin cannot exist by construction (their production filters are
+    unregisterable — the config gate of rule 11), which is the honest limit of this check.
+    Restored to sha256 `f0f44a415bbf29b2cc8ac502e4d4de846fb711e9e3781d5f85a820882bff8593`, rebuilt
+    (rc 0), re-run green (594/9).
+19. **Reproduction and battery.**  `python scripts/luisa_build.py build backend_luisa` (rc 0,
+    0 warnings) → `run "[bvh_filter]"` (9 cases / 594 assertions, rc 0) → `run "~[bvh_filter]"`
+    (764059/239 = the T7.2a baseline exactly) → the whole suite (764653/248 = +594/+9) → the
+    seventeen sibling tags unchanged (`[filter]` 423/7, `[bvh]` 219/8, `[bvh_info]` 226/9,
+    `[half_plane]` 426/7, `[mas_preconditioner]` 234/7, `[fem_precond]` 104/4, `[fem_linear]`
+    323/4, `[fem_dynamics]` 135/8, `[abd_base]` 2143/7, `[abd_constitution]` 523/7,
+    `[abd_constraint]` 471/9, `[abd_dynamics]` 547/7, `[abd_joint_a/b/c]` 223/8 · 402/8 · 383/8,
+    `[abd_linear]` 495/7, `[abd_solve]` 245/8) plus `[luisa][t43]` 238/4 → `ctest` 1/1 →
+    `python scripts/luisa_standalone.py cuda` 69/0 → `python scripts/luisa_module_def.py --check`
+    rc 0 (504 symbols) → `python scripts/luisa_check_module_abi.py` rc 0.  The export list needed
+    two bootstrap rounds again (24 then 17 unresolved mangled names, harvested from the LNK2019
+    lines — take only the **first** `(?…)` match on a line: MSVC prints the symbol *and* the
+    referencing function on the same line).
+20. **What T7.2b owes the next milestones.**  The four filters are wired into
+    `GlobalTrajectoryFilter` (T7.2a's registry) and export exactly the reference's surface
+    (`candidate_PTs/EEs`, `toi_PTs/EEs`, plus the base's friction/active-set accessors); their
+    Newton-loop callers are still T8.4's (`run_stage` remains the test seam), and the
+    `GlobalActiveSetManager` / `GlobalContactManager` consumers of
+    `candidate_PTs/EEs` + `toi_PTs/EEs` are T8.1/T8.5's.  M7 has no uid of its own: the port
+    claims **none** in this batch.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

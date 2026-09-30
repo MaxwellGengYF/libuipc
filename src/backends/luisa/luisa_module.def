@@ -7,7 +7,7 @@
 ; auto-generated list exceeded MSVC's 65535-export ceiling -> LNK1189).
 ;
 ; Contents: the module's C API + every symbol the in-tree consumers import from it.
-; 464 entries, generated from 1 consumer(s).
+; 505 entries, generated from 1 consumer(s).
 ; ---------------------------------------------------------------------------
 EXPORTS
     ??0?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
@@ -31,7 +31,11 @@ EXPORTS
     ??1LStream@luisa_device@luisa@backend@uipc@@QEAA@XZ
     ??A?$OffsetCountCollection@H@luisa@backend@uipc@@QEBA?AV?$tuple@HH@std@@_K@Z
     ?Dm_invs@BaseInfo@FEM3DConstitution@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LMat@N$02$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
+    ?EEs@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$03@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?PEs@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?PHs@VertexHalfPlaneTrajectoryFilter@luisa@backend@uipc@@QEAA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?PPs@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?PTs@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$03@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?_assemble_linear_system@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?_update_subsystem_extent@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAA_NXZ
     ?abd_dyadic_mass_center_of_mass_eigen@luisa@backend@uipc@@YA?AV?$Matrix@N$02$00$0A@$02$00@Eigen@@AEBUABDJacobiDyadicMass@123@@Z
@@ -66,8 +70,16 @@ EXPORTS
     ?build@StacklessBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@234@PEAVLStream@6234@@Z
     ?build_linear_system@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?cached_object@LStream@luisa_device@luisa@backend@uipc@@QEAAPEAXPEBXP6APEAXXZP6AXPEAX@Z@Z
+    ?candidate_EEs@InfoStacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?candidate_EEs@InfoStacklessBVHV0SimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?candidate_EEs@LBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?candidate_EEs@StacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?candidate_PHs@ALVertexHalfPlaneTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?candidate_PHs@EasyVertexHalfPlaneTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?candidate_PTs@InfoStacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?candidate_PTs@InfoStacklessBVHV0SimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?candidate_PTs@LBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?candidate_PTs@StacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?cfl_enabled@GlobalContactManager@luisa@backend@uipc@@QEBA_NXZ
     ?check@NewtonToleranceManager@luisa@backend@uipc@@QEAAXAEAVResultInfo@1234@@Z
     ?check@ReportExtentInfo@ABDLinearSubsystem@luisa@backend@uipc@@QEBAXV?$basic_string_view@DU?$char_traits@D@std@@@std@@@Z
@@ -122,6 +134,10 @@ EXPORTS
     ?d_hats@VertexAttributeInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@N@luisa_device@345@XZ
     ?default_blas_stream@linalg@luisa_device@luisa@backend@uipc@@YAAEAVLStream@2345@XZ
     ?default_program_path@luisa_device@luisa@backend@uipc@@YA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ
+    ?detect@Impl@InfoStacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXAEAVDetectInfo@SimplexTrajectoryFilter@345@@Z
+    ?detect@Impl@InfoStacklessBVHV0SimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXAEAVDetectInfo@SimplexTrajectoryFilter@345@@Z
+    ?detect@Impl@LBVHSimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXAEAVDetectInfo@SimplexTrajectoryFilter@345@@Z
+    ?detect@Impl@StacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXAEAVDetectInfo@SimplexTrajectoryFilter@345@@Z
     ?device@Runtime@luisa_device@luisa@backend@uipc@@QEAAAEAVDevice@compute@3@XZ
     ?device@luisa_device@luisa@backend@uipc@@YAAEAVDevice@compute@2@XZ
     ?device_reduce_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXW4ReduceKind@123456@AEAVLStream@3456@AEBV?$LBufferView@H@3456@2_KAEAUScanScratch@23456@@Z
@@ -137,6 +153,7 @@ EXPORTS
     ?displacements@VertexDisplacementInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
     ?distribute_solution@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?do_apply_recover@ISimSystem@backend@uipc@@MEAAXAEAVRecoverInfo@123@@Z
+    ?do_apply_recover@SimplexTrajectoryFilter@luisa@backend@uipc@@MEAAXAEAVRecoverInfo@ISimSystem@34@@Z
     ?do_build@ABDLineSearchSubreporter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@ABDLinearSubsystemReporter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@AffineBodyConstitution@luisa@backend@uipc@@EEAAXXZ
@@ -159,12 +176,15 @@ EXPORTS
     ?do_build@InterAffineBodyConstraint@luisa@backend@uipc@@EEAAXXZ
     ?do_build@JointDofReporter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@NewtonToleranceChecker@luisa@backend@uipc@@UEAAXXZ
+    ?do_build@SimplexTrajectoryFilter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@SimplicialSurfaceReporter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@TimeIntegrator@luisa@backend@uipc@@EEAAXXZ
     ?do_build@VertexReporter@luisa@backend@uipc@@EEAAXXZ
     ?do_check@ABDToleranceChecker@luisa@backend@uipc@@UEAAXAEAVCheckResultInfo@NewtonToleranceManager@234@@Z
     ?do_check@MaxTranslationChecker@luisa@backend@uipc@@UEAAXAEAVCheckResultInfo@NewtonToleranceManager@234@@Z
+    ?do_clear_friction_candidates@SimplexTrajectoryFilter@luisa@backend@uipc@@EEAAXXZ
     ?do_clear_recover@ISimSystem@backend@uipc@@MEAAXAEAVRecoverInfo@123@@Z
+    ?do_clear_recover@SimplexTrajectoryFilter@luisa@backend@uipc@@MEAAXAEAVRecoverInfo@ISimSystem@34@@Z
     ?do_compute_energy@ABDLineSearchReporter@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@LineSearcher@234@@Z
     ?do_compute_energy@ARAP3D@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@FEM3DConstitution@234@@Z
     ?do_compute_energy@AffineBodyDrivingPrismaticJoint@luisa@backend@uipc@@UEAAXAEAVComputeEnergyInfo@InterAffineBodyAnimator@234@@Z
@@ -208,9 +228,15 @@ EXPORTS
     ?do_compute_gradient_hessian@StrainLimitingBaraffWitkinShell2D@luisa@backend@uipc@@UEAAXAEAVComputeGradientHessianInfo@Codim2DConstitution@234@@Z
     ?do_compute_gradient_hessian@StrainPlasticDiscreteShellBending@luisa@backend@uipc@@UEAAXAEAVComputeGradientHessianInfo@FiniteElementExtraConstitution@234@@Z
     ?do_compute_gradient_hessian@StressPlasticDiscreteShellBending@luisa@backend@uipc@@UEAAXAEAVComputeGradientHessianInfo@FiniteElementExtraConstitution@234@@Z
+    ?do_detect@SimplexTrajectoryFilter@luisa@backend@uipc@@EEAAXAEAVDetectInfo@GlobalTrajectoryFilter@234@@Z
     ?do_dump@ISimSystem@backend@uipc@@MEAA_NAEAVDumpInfo@123@@Z
+    ?do_dump@SimplexTrajectoryFilter@luisa@backend@uipc@@MEAA_NAEAVDumpInfo@ISimSystem@34@@Z
+    ?do_filter_active@SimplexTrajectoryFilter@luisa@backend@uipc@@EEAAXAEAVFilterActiveInfo@GlobalTrajectoryFilter@234@@Z
+    ?do_filter_toi@SimplexTrajectoryFilter@luisa@backend@uipc@@EEAAXAEAVFilterTOIInfo@GlobalTrajectoryFilter@234@@Z
     ?do_init@DyTopoEffectReceiver@luisa@backend@uipc@@MEAAXAEAVInitInfo@1234@@Z
     ?do_init@DyTopoEffectReporter@luisa@backend@uipc@@MEAAXAEAVInitInfo@1234@@Z
+    ?do_label_active_vertices@SimplexTrajectoryFilter@luisa@backend@uipc@@EEAAXAEAVLabelActiveVerticesInfo@GlobalTrajectoryFilter@234@@Z
+    ?do_record_friction_candidates@SimplexTrajectoryFilter@luisa@backend@uipc@@EEAAXAEAVRecordFrictionCandidatesInfo@GlobalTrajectoryFilter@234@@Z
     ?do_record_start_point@ABDLineSearchReporter@luisa@backend@uipc@@UEAAXAEAVRecordInfo@LineSearcher@234@@Z
     ?do_report@ABDToleranceChecker@luisa@backend@uipc@@UEAA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ
     ?do_report@NewtonToleranceChecker@luisa@backend@uipc@@MEAA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ
@@ -228,6 +254,7 @@ EXPORTS
     ?do_step_forward@ABDLineSearchReporter@luisa@backend@uipc@@UEAAXAEAVStepInfo@LineSearcher@234@@Z
     ?do_to_json@SimSystem@backend@uipc@@MEBA?AV?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_12_0@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_12_0@nlohmann@@XZ
     ?do_try_recover@ISimSystem@backend@uipc@@MEAA_NAEAVRecoverInfo@123@@Z
+    ?do_try_recover@SimplexTrajectoryFilter@luisa@backend@uipc@@MEAA_NAEAVRecoverInfo@ISimSystem@34@@Z
     ?dof_count@DiagLinearSubsystem@luisa@backend@uipc@@QEBAHXZ
     ?dof_count@GlobalLinearSystem@luisa@backend@uipc@@QEBA_KXZ
     ?dof_offset@DiagLinearSubsystem@luisa@backend@uipc@@QEBAHXZ
@@ -243,6 +270,12 @@ EXPORTS
     ?exclusive_scan_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXAEAVLStream@3456@AEBV?$LBufferView@N@3456@1_KAEAUScanScratch@23456@@Z
     ?external_forces@ExternalForceInfo@FEMExternalForceManager@luisa@backend@uipc@@QEAA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
     ?filter_active@Impl@EasyVertexHalfPlaneTrajectoryFilter@luisa@backend@uipc@@QEAAXAEAVFilterActiveInfo@VertexHalfPlaneTrajectoryFilter@345@@Z
+    ?filter_active@Impl@InfoStacklessBVHV0SimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXAEAVFilterActiveInfo@SimplexTrajectoryFilter@345@@Z
+    ?filter_active@Impl@LBVHSimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXAEAVFilterActiveInfo@SimplexTrajectoryFilter@345@@Z
+    ?filter_active@Impl@StacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXAEAVFilterActiveInfo@SimplexTrajectoryFilter@345@@Z
+    ?filter_toi@Impl@InfoStacklessBVHV0SimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXAEAVFilterTOIInfo@SimplexTrajectoryFilter@345@@Z
+    ?filter_toi@Impl@LBVHSimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXAEAVFilterTOIInfo@SimplexTrajectoryFilter@345@@Z
+    ?filter_toi@Impl@StacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXAEAVFilterTOIInfo@SimplexTrajectoryFilter@345@@Z
     ?find_system@SimSystem@backend@uipc@@AEAAPEAV123@PEAV123@@Z
     ?flags@ComputeGradientInfo@GlobalLinearSystem@luisa@backend@uipc@@QEAAXW4EnergyComponentFlags@345@@Z
     ?flush@LStream@luisa_device@luisa@backend@uipc@@QEAAXXZ
@@ -434,8 +467,16 @@ EXPORTS
     ?thicknesses@BaseInfo@VertexHalfPlaneTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@N@luisa_device@345@XZ
     ?thicknesses@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@N@luisa_device@234@XZ
     ?thicknesses@VertexAttributeInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@N@luisa_device@345@XZ
+    ?toi_EEs@InfoStacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@N@luisa_device@234@XZ
+    ?toi_EEs@InfoStacklessBVHV0SimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@N@luisa_device@234@XZ
+    ?toi_EEs@LBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@N@luisa_device@234@XZ
+    ?toi_EEs@StacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@N@luisa_device@234@XZ
     ?toi_PHs@ALVertexHalfPlaneTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@N@luisa_device@234@XZ
     ?toi_PHs@EasyVertexHalfPlaneTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@N@luisa_device@234@XZ
+    ?toi_PTs@InfoStacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@N@luisa_device@234@XZ
+    ?toi_PTs@InfoStacklessBVHV0SimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@N@luisa_device@234@XZ
+    ?toi_PTs@LBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@N@luisa_device@234@XZ
+    ?toi_PTs@StacklessBVHSimplexTrajectoryFilter@luisa@backend@uipc@@UEBA?AV?$LBufferView@N@luisa_device@234@XZ
     ?toi_safety_margin@BaseInfo@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBANXZ
     ?total_count@?$OffsetCountCollection@H@luisa@backend@uipc@@QEBA_KXZ
     ?transform_to_q@luisa@backend@uipc@@YA?AV?$Matrix@N$0M@$00$0A@$0M@$00@Eigen@@AEBV?$Matrix@N$03$03$0A@$03$03@5@@Z

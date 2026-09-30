@@ -625,6 +625,166 @@ void select_if_predicated(LStream& stream, const LCBufferView<T>& in, const LBuf
 }
 
 // ---------------------------------------------------------------------------
+//  select_if for *struct* element types (T7.2b) — cub::DeviceSelect::If over the
+//  port's pair elements (LVector2i / LVector3i / LVector4i)
+// ---------------------------------------------------------------------------
+/**
+ * @brief Temporaries for `compact_by_flags` / `select_valid_pairs`.
+ *
+ * The scalar `select_if`/`select_if_predicated` spell their exclusive scan through
+ * `CompactScratch`; the struct-element path needs its own offsets array (the scan of
+ * the flags) because a `ScanScratch` already owns the same int32 buffer for its own
+ * partial sums, so carving the offsets from it would alias the scan.
+ */
+struct StructSelectScratch
+{
+    LDeviceBuffer<std::int32_t> offsets;  ///< n (the exclusive scan of the flags)
+    LDeviceBuffer<std::int32_t> flags;    ///< n (only `select_valid_pairs` needs it)
+    ScanScratch                 scan;     ///< the scan's own partial sums
+    std::vector<std::shared_ptr<void>> retired;
+
+    void clear() noexcept
+    {
+        offsets.clear();
+        flags.clear();
+        scan.clear();
+        retired.clear();
+    }
+};
+
+namespace detail
+{
+/// `flags[i] = (in[i].data[0] != -1) ? 1 : 0` — the reference's four
+/// `filter_active_{PP,PE,PT,EE}_pred` (`pair(0) != -1`) are literally this one test.
+template <typename T>
+auto& component0_valid_flag_kernel()
+{
+    static auto& k = cached_kernel<lcrt::Buffer<T>, lcrt::Buffer<std::int32_t>,
+                                   std::uint32_t>(
+        [](lcrt::BufferVar<T> in, lcrt::BufferVar<std::int32_t> flags,
+           lcrt::Var<std::uint32_t> n) noexcept
+        {
+            lcrt::set_block_size(kScanBlockSize);
+            const auto i = lcrt::dispatch_x();
+            $if(i < n)
+            {
+                const auto e = in->read(i);
+                flags->write(i,
+                             lcrt::select(std::int32_t{0},
+                                          std::int32_t{1},
+                                          e.data[0] != std::int32_t{-1}));
+            };
+        });
+    return k;
+}
+
+/// The stable scatter of `compact_by_flags`: `out[offsets[i]] = in[i]` for every
+/// flagged element, and the last thread publishes the total.
+template <typename T>
+auto& compact_scatter_kernel()
+{
+    static auto& k = cached_kernel<lcrt::Buffer<T>, lcrt::Buffer<std::int32_t>,
+                                   lcrt::Buffer<std::int32_t>, lcrt::Buffer<T>,
+                                   lcrt::Buffer<std::uint32_t>, std::uint32_t>(
+        [](lcrt::BufferVar<T> in, lcrt::BufferVar<std::int32_t> flags,
+           lcrt::BufferVar<std::int32_t> offsets, lcrt::BufferVar<T> out,
+           lcrt::BufferVar<std::uint32_t> out_count, lcrt::Var<std::uint32_t> n) noexcept
+        {
+            lcrt::set_block_size(kScanBlockSize);
+            const auto i = lcrt::dispatch_x();
+            $if(i < n)
+            {
+                $if(flags->read(i) != 0)
+                {
+                    out->write(lcrt::cast<std::uint32_t>(offsets->read(i)), in->read(i));
+                };
+                // the total: the exclusive scan's last offset plus the last flag
+                $if(i + 1u == n)
+                {
+                    out_count->write(
+                        0u,
+                        lcrt::cast<std::uint32_t>(offsets->read(i) + flags->read(i)));
+                };
+            };
+        });
+    return k;
+}
+}  // namespace detail
+
+/**
+ * @brief Write the "component 0 is not the -1 sentinel" flag of every element.
+ *
+ * This is the port's spelling of `cub::DeviceSelect::If`'s predicate kernel for the
+ * port's *pair* element types (which `select_if_predicated` cannot serve: its flag
+ * kernel and `select_if_impl` are instantiated for arithmetic scalars only).  All four
+ * reference predicates this batch needs (`filter_active_PP_pred`, `..._PE_pred`,
+ * `..._PT_pred`, `..._EE_pred`) are the same `pair(0) != -1` test.
+ */
+template <typename T>
+void flag_component0_valid(LStream& stream, const LCBufferView<T>& in,
+                           const LBufferView<std::int32_t>& flags, size_t n)
+{
+    if(n == 0u)
+        return;
+    stream.record(detail::component0_valid_flag_kernel<T>()(
+                      in, flags, static_cast<std::uint32_t>(n))
+                      .dispatch(static_cast<std::uint32_t>(n)));
+}
+
+/**
+ * @brief Stable stream compaction of a *struct* element type given an int32 flags array.
+ *
+ * `out[i] = in[j]` for the i-th `j` (in input order) with `flags[j] != 0`, and
+ * `out_count[0]` receives the number kept -- the semantics of
+ * `cub::DeviceSelect::If(in, out, count, n, pred)` with `pred = flags[j] != 0`.
+ * `n == 0` writes `out_count[0] = 0` and dispatches nothing.
+ *
+ * The exclusive scan of the flags is the same primitive `select_if` uses; the
+ * scatter is a second kernel, so a caller that needs the flags for another purpose
+ * can call `flag_component0_valid` (or write its own flag kernel) first.
+ */
+template <typename T>
+void compact_by_flags(LStream& stream, const LCBufferView<T>& in,
+                      const LCBufferView<std::int32_t>& flags, const LBufferView<T>& out,
+                      const LBufferView<std::uint32_t>& out_count, size_t n,
+                      StructSelectScratch* scratch = nullptr)
+{
+    auto& sc = scratch ? *scratch : detail::default_scratch<StructSelectScratch>(stream);
+    auto  offsets = detail::carve(sc.offsets, sc.retired, n);
+    if(n == 0u)
+    {
+        out_count.fill(std::uint32_t{0});
+        return;
+    }
+    exclusive_scan(stream, flags, offsets, n, &sc.scan);
+    stream.record(detail::compact_scatter_kernel<T>()(
+                      in, flags, offsets, out, out_count, static_cast<std::uint32_t>(n))
+                      .dispatch(static_cast<std::uint32_t>(n)));
+}
+
+/**
+ * @brief `DeviceSelect::If(temp.data(), out.data(), count.data(), n, {pair(0) != -1})`.
+ *
+ * The reference's four filter-active selections in one call: flag the valid
+ * (non-sentinel) pairs and compact them stably into `out`.
+ */
+template <typename T>
+void select_valid_pairs(LStream& stream, const LCBufferView<T>& in, const LBufferView<T>& out,
+                        const LBufferView<std::uint32_t>& out_count, size_t n,
+                        StructSelectScratch* scratch = nullptr)
+{
+    auto& sc = scratch ? *scratch : detail::default_scratch<StructSelectScratch>(stream);
+    if(n == 0u)
+    {
+        out_count.fill(std::uint32_t{0});
+        return;
+    }
+    auto flags = detail::carve(sc.flags, sc.retired, n);
+    flag_component0_valid<T>(stream, in, flags, n);
+    compact_by_flags<T>(stream, in, flags, out, out_count, n, &sc);
+}
+
+// ---------------------------------------------------------------------------
 //  run_length_encode — cub::DeviceRunLengthEncode::Encode
 // ---------------------------------------------------------------------------
 /**
