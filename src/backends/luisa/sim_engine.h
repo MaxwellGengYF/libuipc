@@ -42,6 +42,11 @@ class InterAffineBodyConstitutionManager;
 // build() and calls its init() after the time-integrator manager's -- it is the
 // ABD tolerance checker's registry, and it always exists).
 class NewtonToleranceManager;
+// T7.2a: the trajectory-filter manager and its contact-attribute dependency
+// (GlobalContactManager is the M7 slice of the reference's contact system; the
+// reference resolves both with `find<>` in the same position of build()).
+class GlobalTrajectoryFilter;
+class GlobalContactManager;
 
 class SimEngine final : public backend::SimEngine
 {
@@ -137,6 +142,14 @@ class SimEngine final : public backend::SimEngine
     // themselves on the scene's systems), so the engine `require<>`s it like the
     // LineSearcher.
     NewtonToleranceManager* m_newton_tolerance_manager = nullptr;
+    // T7.2a: the reference resolves the contact manager and the trajectory-filter
+    // manager with `find<>` (both are created only when the scene enables contact:
+    // their SimSystemCreators test `contact/enable`). The engine calls the contact
+    // manager's init() in its 3.1 forwards; the trajectory filter is driven by the
+    // Newton loop (`detect`/`filter_active`/`filter_toi`/`record_friction_candidates`),
+    // which is Phase 8 / T8.4 -- see GlobalTrajectoryFilter's header.
+    GlobalContactManager*    m_global_contact_manager    = nullptr;
+    GlobalTrajectoryFilter*  m_global_trajectory_filter  = nullptr;
 
     PipelineType m_pipeline_type = PipelineType::Basic;
 

@@ -7,6 +7,9 @@
 // T4.2: the reference's GlobalVertexManager::do_build() also resolves the
 // GlobalJointDofManager slot (now that the system is ported).
 #include <joint_dof_system/global_joint_dof_manager.h>
+// T7.2a: ... and the GlobalTrajectoryFilter slot (the trajectory-filter manager is
+// ported; `find<GlobalTrajectoryFilter>()` needs the complete type).
+#include <collision_detection/global_trajectory_filter.h>
 
 #include <luisa_device/linear/algorithms.h>
 
@@ -237,12 +240,12 @@ void GlobalVertexManager::do_build()
     // m_impl.global_trajectory_filter  = find<GlobalTrajectoryFilter>();
     // m_impl.global_active_set_manager = find<GlobalActiveSetManager>();
     // m_impl.global_joint_dof_manager  = find<GlobalJointDofManager>();
-    // GlobalTrajectoryFilter and GlobalActiveSetManager are not ported yet
-    // (T4.3/T8.x) and `find<T>()` needs a complete, ISimSystem-derived T, so those
-    // slots stay empty: with them empty the reference's bodies are no-ops too
-    // (`if(auto& gtf = ...)`), i.e. the behaviour is identical until the systems
-    // land. GlobalJointDofManager *is* ported by T4.2, so its slot is resolved
-    // (the one addition to the T4.1 port; see the T4.2 report).
+    // T7.2a resolved the first one (the manager now exists and its
+    // `require_discard_friction()` half is live again -- the reference's `if(auto& ...)`
+    // guard keeps it a no-op in a scene without contact). GlobalActiveSetManager is
+    // still un-ported (T8.x) and `find<T>()` needs a complete, ISimSystem-derived T, so
+    // that slot stays empty; GlobalJointDofManager was resolved by T4.2.
+    m_impl.global_trajectory_filter  = find<GlobalTrajectoryFilter>();
     m_impl.global_joint_dof_manager = find<GlobalJointDofManager>();
 }
 
@@ -426,9 +429,12 @@ void GlobalVertexManager::VertexAttributeInfo::require_discard_friction() const 
     // Without discarding, incorrect frictional forces would be applied.
     // ref: https://github.com/spiriMirror/libuipc/issues/303
     //
-    // T4.1: GlobalTrajectoryFilter (T7) and GlobalActiveSetManager (T8) are not
-    // ported yet, so their slots are always empty and the reference's two
-    // `if(auto& ...)` bodies are no-ops. Restore them together with the systems.
+    // T7.2a restored the GlobalTrajectoryFilter half (the system is ported now);
+    // GlobalActiveSetManager is still un-ported (T8.x), so its slot is always empty and
+    // the reference's second `if(auto& ...)` body is a no-op. Restore it together with
+    // that system.
+    if(auto& gtf = m_impl->global_trajectory_filter)
+        gtf->require_discard_friction();
 }
 
 void GlobalVertexManager::Impl::record_prev_positions()

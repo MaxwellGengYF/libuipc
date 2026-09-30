@@ -4959,6 +4959,222 @@ standalone 69/0, `scripts/luisa_module_def.py --check` rc 0, `scripts/luisa_chec
      test really does pin the capacity contract *and* the resolved-pair assignment, and neither pin survives a
      guess.
 
+### 7.33 Patterns established in T7.2a (the trajectory filters, batch 1: the filter bases + the vertex-half-plane filters)
+
+**Scope.** The first M7 filter batch: `collision_detection/trajectory_filter.{h,cpp}` (the
+interface), `collision_detection/global_trajectory_filter.{h,cpp}` (the manager),
+`collision_detection/simplex_trajectory_filter.{h,cpp}` (the simplex-pair base),
+`collision_detection/vertex_half_plane_trajectory_filter.{h,cpp}` (the vertex/half-plane base),
+`collision_detection/filters/easy_vertex_half_plane_trajectory_filter.{h,cpp}` and
+`collision_detection/filters/al_vertex_half_plane_trajectory_filter.{h,cpp}`, plus the **scoped
+dependency port** `contact_system/global_contact_manager.{h,cpp}` (§7.33 rule 4), the wiring
+(`sim_engine`, `global_vertex_manager`) and `apps/tests/backends/luisa/luisa_trajectory_filter_test.cpp`
+(tag `[filter]`, **7 cases / 423 assertions**).  Baseline shape: `[filter]` **423/7**,
+`~[filter]` = **763636/232** = the T7.1b baseline *exactly*, the whole suite **764059/239**
+(measured twice: `763636 + 423` / `232 + 7`), every sibling filter unchanged (`[abd_base]` 2143/7,
+`[abd_linear]` 495/7, `[abd_dynamics]` 547/7, `[abd_constitution]` 523/7, `[abd_solve]` 245/8,
+`[abd_joint_a/b/c]` 223/8 · 402/8 · 383/8, `[bvh]` 219/8, `[bvh_info]` 226/9, `[mas_preconditioner]`
+234/7, `[fem_precond]` 104/4, `[fem_linear]` 323/4, `[fem_dynamics]` 135/8, `[luisa][t43]` 238/4,
+`[half_plane]` 426/7), ctest 1/1, standalone 69/0, the module export list **410 → 463** symbols
+(`--check` rc 0, ABI probe rc 0).
+
+  1. **The one structural decision of the batch: the trajectory filters need no "device data
+     reaches the predicate" hook — the host-filter shape is exact.** The reference's *simplex*
+     filters pass a device functor into `AtomicCountingLBVH::detect/query` or
+     `StacklessBVH::detect/query`, but that functor is applied **inside the traversal callback**,
+     i.e. only for objects whose AABB already passed the *fixed* node test:
+     `LinearBVHViewer::query(aabb, callback)` hard-wires `Intersect = node.intersects(Q)` (the
+     AABB overload's own lambda, `linear_bvh.h`), and `details/atomic_counting_lbvh.inl` calls the
+     user predicate only there (`if(id > i && p(i, id))`); `StacklessBVH`'s contract is literally
+     `template <std::invocable<IndexT, IndexT> Pred>` (two *object* indices, no node).  So the
+     predicate cannot change which nodes/leaves are visited: it is a **selection** of the
+     already-found (AABB-overlapping) pairs, and a host re-implementation of the predicate body
+     over the reported pairs reproduces the surviving set exactly.  What it *does* change is the
+     reported pair *count* — and therefore the pair buffer's growth/retry — which is host-visible
+     but not semantic (§7.33 rule 6, and rule 12 pins the pruning exception).  The T7.1b decision
+     (host filter over the reported candidates) therefore stands for the whole T7.2 family.
+  2. **The two exceptions, stated for T7.2b.** (a) `InfoStacklessBVH(V0)`'s `NodePred` *is* a
+     node-level cull (its `NodePredInfo{query_id, bid, cid}` reads per-node device metadata), so it
+     prunes; the cull is sound because every cull condition is implied by the leaf predicate
+     (the "common bid/cid, or -1" propagation means the cull fires only when *every* leaf below
+     shares the value the leaf check rejects) — that is the T7.1b §7.32 rule 12 argument, pinned
+     there on the host-walk oracle, and it is what makes the host-filter route sound for those two
+     filters as well.  (b) the four BVH filters' `DetectInfo` also reads per-primitive device
+     attributes (`v2b`, `codim_vertices`, `contact_element_ids`, the masks) — those arrive as
+     *kernel arguments* in the ported shape (rule 10 below), never as predicate captures.
+  3. **A record-time predicate that captures a device view is a hazard, not a hook.** Because the
+     port bakes the predicate into the cached shader *and* the cache key is the lambda *type*
+     (§7.32 rule 3), a captured `LBufferView` becomes a shader-bound buffer of the first call: two
+     predicates of the same type with different captures silently share the first allocation.  That
+     is *why* the design question has to be answered by "does the reference test device data at the
+     node level?" (no, for this family) rather than by "can the port technically read a buffer in a
+     predicate?" (it cannot, safely).
+  4. **This batch needed a scoped `GlobalContactManager` — the batch's one piece of new
+     infrastructure, and it is documented as such.** The six filter files `require<>` the contact
+     manager and read exactly five things from it: `d_hat()`, `contact_mask_tabular()`,
+     `subscene_mask_tabular()`, `cfl_enabled()` and `Impl::vert_is_active_contact`.  The port had
+     no contact layer at all (T8.1 owns `contact_system/`), so T7.2a ports **that surface only** —
+     the system creator (`contact/enable`), `do_build`, `Impl::init`'s scene-relative `d_hat`
+     override, the two mask tabulars (built from the frontend's `contact_tabular()` /
+     `subscene_tabular()` attributes) and the vertex activation buffer — and leaves the
+     coefficient/reporter/CFL/feasible-step halves under explicit `SCOPE NOTE (T8.1)` markers (the
+     T5.4a "port the half, mark the rest" precedent).  T8.1 completes the file in place; nothing in
+     the filters deviates because of it.
+  5. **The 2D → flat mask mapping, and the extent that has to travel with it.** The reference's
+     `CBuffer2DView<IndexT>` masks are self-describing; the port's device layer has no 2D buffer, so
+     the masks become flat `LBufferView<IndexT>` (`index = row * extent + col`, the same layout the
+     T7.1b checkers use) **plus an explicit extent**: `GlobalContactManager::contact_mask_size()`
+     / `subscene_mask_size()`, re-exported on both filter bases as
+     `BaseInfo::contact_mask_size()` / `subscene_mask_size()`, and passed to the kernels as extra
+     scalar arguments.  A T7.2b filter must do the same (`allow_XX_contact` reads
+     `mask[cids[0] * extent + cids[1]]`).
+  6. **The pair buffer's growth/retry contract, with exact numbers.** The kernel takes its ticket
+     *before* the `last < max_count` guard, so `h_num_collisions` counts every surviving pair and
+     the host always knows the true count; when it exceeds `PHs.size()` the host grows the buffer to
+     `static_cast<size_t>(h_num_collisions * reserve_ratio)` and re-runs the **same** kernel from
+     ticket 0 (a rewrite, not an append — pinned by comparing the retry set with the keep-all set),
+     and `info.PHs(PHs.view(0, h_num_collisions))` then carries exactly the reported count.  With
+     the reference's `reserve_ratio = 1.1f` the truncating cast is harmless (`count * 1.1 >= count`)
+     but visible: **3 candidates → buffer size 3**; the test drives `reserve_ratio = 2.0` in its
+     standalone pass so every quoted size is exact (**2 candidates → 4**), and pins both the
+     "capacity already covers the count → no growth" and the "empty start → grow" paths.
+  7. **A zero-length buffer view is not an LC kernel argument — the Easy filter's pair buffer has to
+     be padded (T7.1a rule 9 again).** `Impl::filter_active` passes `PHs.view()` even when it is
+     empty (the reference's `DeviceBuffer` starts empty and its CUDA pointer is never dereferenced
+     because `max_count == 0` forbids every write); in the port that is an invalid shader argument,
+     so the filter pads to one element before the query — the T7.1a `AtomicCountingLBVH::detect`
+     fix, with the same "nothing observable changes" argument (the kernel's own guard drops the
+     surplus ticket and the host retries with the grown buffer).  The AL filter's grid is empty only
+     when the scene has no half-plane instance, so its dispatch (and its reduce) is guarded by
+     `n > 0 && n_planes > 0` — equivalent to the reference's no-op kernel *and* to CUB's
+     "zero-length reduce does not launch" (the ported `device_reduce_min` *writes* the identity for
+     `n == 0`, so the guard is the faithful spelling of the reference's no-launch).
+  8. **Ordering: the fills and reduces go on the frame stream, and the `toi` slot's pre-fill is the
+     n == 0 fallback.** `info.toi().fill(1.1f, &frame_stream())` runs before the dispatch in the
+     reference, so an empty phase leaves the slot at `1.1f`; the port keeps the fill first and the
+     reduce (`lla::device_reduce_min(frame_stream(), tois, info.toi(), n)`) only when the kernel
+     ran.  A fill on the *main* stream would invert the order (the T5.4a finding, §7.22 rule 7).
+  9. **Two different `1.1` spellings in one buffer, both pinned.** The *Easy* kernel's `min_toi`
+     starts at `Float min_toi = 1.1f` (the float literal, `1.10000002384185791015625`) and the min
+     wins over any larger toi: a vertex whose raw toi is 19.8 reports `1.1f`, not 19.8 — a
+     *sentinel*, and the test pins it with a vertex engineered for it (y=0.75 arriving slowly:
+     `want == 1.1f` while the raw formula is `> 1.1`).  The *AL* kernel writes the **double** `1.1`
+     for a pair that moves away, while the mask-skipped pairs keep the caller's `tois.fill(1.1f)`
+     float value: the same grid therefore holds both, and the test asserts `tois[2] == 1.1` **and**
+     `tois[2] != 1.1f` (they differ by 2.4e-8).  Transcribing `1.1` as `1.1f` anywhere would have
+     made both checks silently vacuous.
+ 10. **The three measurable Easy-vs-AL differences (all pinned).** (a) the AL `filter_active` is the
+     reference's explicit no-op, so `candidate_PHs()` is **empty** after the active stage and only
+     becomes the *full* `surf_vertices × plane_instances` grid after `filter_toi` (the pair is
+     written *before* the mask checks, so mask-disabled pairs appear in the grid too);
+     (b) `eta = 0.001` (AL) vs `0.1` (Easy) — pinned by the exact toi values; (c) the AL toi is a
+     per-*pair* grid min-reduced as a whole, the Easy toi is a per-*surface-vertex* minimum
+     (mask-skipped or away-moving planes leave the `1.1f` initial value).  In an `ipc` scene only
+     the Easy filter survives; in an `al-ipc` scene only the AL one (both derive from
+     `VertexHalfPlaneTrajectoryFilter` and both are created in every scene — the base's `require<>`
+     chain plus the derived `require<{I,AL}IPCPipelineFlag>()` is the reference's scene gating, and
+     the engine's `SimSystemException` handler invalidates the loser before it registers).
+ 11. **`candidate_PHs()` and `PHs()` disagree on purpose.** `PHs()` is the *view the base stored*
+     (`view(0, h_num_collisions)`, the reported count), while the derived filter's own
+     `candidate_PHs()` returns its whole buffer, whose size is the retry-grown capacity (1 after the
+     padding, `count * ratio` after a retry).  The reference has the same asymmetry (its
+     `DeviceBuffer` view carries the capacity), so it is transcribed and pinned: an empty-candidate
+     scene gives `PHs().empty()` **and** `candidate_PHs().size() == 1`.
+ 12. **The predicate-shape measurement, on the port's own structures.** `[filter]` drives
+     `AtomicCountingLBVH::detect` with a keep-all predicate and with a selective one
+     (`i % 2 == 0`): **keep-all 1139 == brute force 1139**, selective **602 == the host-filtered
+     keep-all set** with `602 < 1139` — the selection/not-pruning argument of rule 1, measured
+     rather than argued.  The *pruning* half of the family is pinned by `[bvh_info]` (node-cull vs
+     host-walk vs the brute-force node-cull oracle, §7.32 rules 5/12); the two together are the
+     evidence behind "a host filter reproduces the reference's surviving set, and only the candidate
+     count (hence the pair-buffer retry) differs".
+ 13. **Wiring: three call sites, one of which is a no-op until T8.4.** `SimSystemCreator<GlobalContactManager>`
+     and `SimSystemCreator<GlobalTrajectoryFilter>` both gate on `contact/enable`
+     (`default_config()` has `contact/enable = 1`, so both exist in every scene of the suite);
+     `SimEngine::build_engine_systems()` resolves them in the reference's order (dytopo → contact
+     manager → trajectory filter → animator); `SimEngine::init_scene()`'s 3.1 forwards call
+     `m_global_contact_manager->init()` where the reference does (after the dytopo manager, before
+     the animator); `GlobalVertexManager::do_build()` resolves the `GlobalTrajectoryFilter` slot and
+     its `require_discard_friction()` half is live again (the `if(auto& ...)` guard keeps it a no-op
+     in a contact-less scene).  The Newton-loop calls (`detect`/`filter_active`/`filter_toi`) stay
+     T8.4's: adding them to the ported frame shell would run the filters in *every* test's frames
+     (and the reference's own `RUNTIME_CHECK(toi > 0)` is only sound after the CCD clamp).
+ 14. **The `run_stage()` test seam — the batch's only addition to the reference's API surface.**
+     The six stage entry points are private with an explicit friend list (SimEngine /
+     ContactExporterManager / GlobalContactManager) and none of those three callers exists before
+     T8.4/T8.1, so without a way in the manager's own loops (`filter_active`'s CFL reset,
+     `filter_toi`'s min-reduce and `toi > 0` assert, `record_friction_candidates`'s issue-#303
+     discard) could not be driven at all.  `GlobalTrajectoryFilter::run_stage(Stage, alpha)` is a
+     single public forwarder whose branches are the reference's own one-liners; it adds no behaviour
+     and is removed when T8.4 wires the loop.  Everything else in the batch is driven through
+     *public* API only (the two `Impl` structs are public nested classes, so the test constructs
+     `VertexHalfPlaneTrajectoryFilter::Impl` / `Easy…::Impl` / `SimplexTrajectoryFilter::Impl` and
+     calls their public `filter_active`/`filter_toi`/`record_friction_candidates` directly).
+ 15. **The test's scene is the ordinary frontend one, and its oracles are host re-implementations
+     over the read-back device arrays.** A `HalfPlane` implicit geometry + a `SimplicialComplex`
+     carrying the shared `test_*` vertex attributes (the T4.x convention: `test_dimension`,
+     `test_contact_element_id`, `test_subscene_element_id`, `test_d_hat`, `test_thickness`,
+     `test_displacement`) is enough — the sibling `luisa_global_geometry_test.cpp` reporters report
+     every complex and every surface vertex, so the global arrays are populated without a
+     test-local reporter.  Every oracle (`easy_candidate_oracle`, `easy_toi_oracle`,
+     `al_toi_oracle`) is written out in the test from the same *device* inputs (`gather()` reads
+     `surf_vertices`, positions, thicknesses, ids, `d_hats`, displacements, the plane arrays and the
+     two flat masks back through the ported managers) — independent of the filter's outputs, and
+     bit-exact because both sides evaluate the same double expressions in the same order (the
+     test's `dot3` spells out `s = a0*b0; s += a1*b1; s += a2*b2` so no Eigen expression template
+     can re-associate it).  The scene's numbers are dyadic where the test asserts exactness
+     (`thickness = 1/16`, `d_hat = 1/8`, `alpha = 0.5`, displacements multiples of 1/64).
+ 16. **The global displacement array is the test's to fill (the Phase-8 fan-out is private).**
+     `GlobalVertexManager::collect_vertex_displacements()` is private (friends: SimEngine,
+     MaxTranslationChecker, GlobalTrajectoryFilter) and the ported engine shell does not call it, so
+     `DetectInfo::displacements()` is all zeros at `world.init()`.  The test uploads the array
+     through the public `displacements()` view (its `copy_from` is const'able) — the same thing the
+     reporter fan-out does, and the only way to exercise the TOI stage before T8.4.
+ 17. **The CFL activation buffer is written by the label stage and cleared only when CFL is on.**
+     `cfl/enable` defaults to **0**, so `filter_active` does *not* clear
+     `vert_is_active_contact`; `label_active_vertices` then ORs in the vertices of the reported
+     `PHs` (one thread per pair, one atomic exchange per member).  With `cfl/enable = 1` the clear
+     happens first.  The buffer is reachable from a test through the public
+     `LabelActiveVerticesInfo{&gtf_impl}` (its `Impl` pointer is a public member of a public nested
+     class) — no friendship needed.  `[filter]` pins the accumulate semantics and the exact labelled
+     set.
+ 18. **The export-list step: two bootstrap rounds this time (410 → 463).** Adding the test made the
+     link fail with **38** unresolved externals (the bases' `BaseInfo` accessors, the two
+     `GlobalContactManager` accessor groups, `run_stage`/`require_discard_friction`,
+     `LabelActiveVerticesInfo::vert_is_active`, `SimplexTrajectoryFilter::Impl::record_friction_candidates`
+     and `ISimSystem::is_building`), then **16** more after the first append (the `toi_PHs()` /
+     `candidate_PHs()` virtuals and the `find<>` instantiation) — the linker stops after a batch, so
+     the loop "append the reported mangled names, rebuild" has to run twice; only then did
+     `python scripts/luisa_module_def.py` rewrite the file from the real import tables (463 symbols,
+     `--check` rc 0) and `scripts/luisa_check_module_abi.py` stay rc 0.  A failed link deletes the exe,
+     so the generator must not be run before the link succeeds (the T7.1b trap).
+ 19. **Two perturbations, two axes, both rc 42, both byte-identically reverted.**
+     P1 (**host/plumbing**): `EasyVertexHalfPlaneTrajectoryFilter::Impl::reserve_ratio` `1.1f → 4.0f`
+     — the capacity pins fail (`luisa_trajectory_filter_test.cpp(797)`: `12 == 3`;
+     `(1197)`: `8 == 2`), i.e. the retry/growth contract is pinned, not just the surviving set.
+     P2 (**device/kernel**): the AL kernel's `t0 = -dot(N, diff) - thickness` doubled
+     (`- 2.0 * thickness`) — the AL toi grid pins fail (`(1147)`: `0.4995 == 0.74924999999999997`
+     and `2.99699999999999989 == 3.49650000000000016`), with the values staying positive so the
+     manager's `toi > 0` assert does not fire (a *value* pin, not a crash).  Both files were
+     restored to their exact sha256 (`easy…h` `11c4ff4d…`, `al…cpp` `8964fa1f…`), rebuilt (rc 0) and
+     re-run green (423/7).
+ 20. **Reproduction.** `python scripts/luisa_build.py build backend_luisa` (rc 0, 0 warnings) →
+     `python scripts/luisa_build.py run "[filter]"` (7 cases / 423 assertions, rc 0; every quoted
+     number is printed by the test: candidates 3 over 6 surf vertices, the two-plane band 2,
+     `easy toi` 0.675 / 0.7875 / 0.9 / 1.1(away) / 1.1(sentinel) with the manager step 0.675,
+     `al toi grid` 3 pairs, the predicate shape 1139 / 602 / 1139, the device-vs-host
+     `D_range`/`is_active_D` 68 cases / 0 mismatches).  The battery is
+     `[filter]` → `~[filter]` 763636/232 → the whole suite 764059/239 → the fifteen sibling filters →
+     `[luisa][t43]` → ctest 1/1 → `python scripts/luisa_standalone.py cuda` 69/0 →
+     `python scripts/luisa_module_def.py --check` rc 0 (463 symbols) →
+     `python scripts/luisa_check_module_abi.py` rc 0.  **What T7.2b owes:** the four BVH simplex
+     filters (`filters/{lbvh,stackless_bvh,info_stackless_bvh,info_stackless_bvh_v0}_simplex_trajectory_filter.*`,
+     ~7200 reference lines) built on this batch's `SimplexTrajectoryFilter` contract, their
+     `candidate_PTs/EEs` + `toi_PTs/EEs` exports (the `GlobalActiveSetManager`/`GlobalContactManager`
+     consumers' shape), and — per rules 1/2 — either a host-filter equivalence proof per predicate or
+     the port's first device-data hook if a *node-level* test turns out to need device data the leaf
+     predicate does not imply.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

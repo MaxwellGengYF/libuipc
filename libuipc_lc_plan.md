@@ -466,25 +466,65 @@ This plan is too large for one session. State MUST be persisted so a fresh sessi
       evaluate the reference's `NodePred`/`LeafPred` bodies as host filters over the reported candidate pairs —
       the *surviving* set is provably identical (the reference's node-level cid cull is implied by its leaf-level
       per-vertex mask checks), and only the candidate count differs.
-  - **T7.2 owes** (the next batch): the trajectory filters — `trajectory_filter`, `simplex_trajectory_filter`
-    (+`details`), `vertex_half_plane_trajectory_filter`, `global_trajectory_filter` and the 7 concrete filters
-    (`lbvh_*`, `stackless_bvh_*`, `info_stackless_bvh_*`, `info_stackless_bvh_v0_*`,
-    `{easy,al}_vertex_half_plane_*`) — which query exactly the structures T7.1a/b ported, plus their own
-    `[filter]`-style test and an export-list refresh. It also inherits the *predicate-with-device-data*
-    limitation above: the reference's filters pass device functors (with captured views and per-pair mask reads)
-    into `detect`/`query`, so T7.2 must either (a) introduce the port's first "device data reaches the
-    predicate" hook (e.g. the predicate's arrays as explicit kernel arguments with a factory built inside the
-    kernel), or (b) use the same host-filter/extra-pass shape as the checkers — the decision is T7.2's, and the
-    T7.1b report documents the measurements behind it.
+  - **T7.2 is executed as two batches** (decided in T7.2a): **a** = the filter bases and the
+    vertex-half-plane family (`trajectory_filter`, `simplex_trajectory_filter`,
+    `vertex_half_plane_trajectory_filter`, `global_trajectory_filter` and
+    `filters/{easy,al}_vertex_half_plane_trajectory_filter`), plus the *scoped*
+    `contact_system/global_contact_manager` slice those six files `require<>` (masks + `d_hat` +
+    CFL state + the vertex activation buffer; the coefficients/reporters/feasible step stay
+    T8.1's under `SCOPE NOTE` markers); **b** = the four BVH simplex filters
+    (`filters/{lbvh,stackless_bvh,info_stackless_bvh,info_stackless_bvh_v0}_simplex_trajectory_filter`,
+    ~7200 reference lines — the largest single batch of M7; b may itself split into
+    (lbvh + stackless) and (the two info variants), and the split must be recorded if it does).
+  - **T7.2a ✅ (measured, 2026-09):** the first filter batch, `apps/tests/backends/luisa/luisa_trajectory_filter_test.cpp`
+    (tag `[filter]`, 7 cases / **423 assertions**), the wiring (`SimSystemCreator`s,
+    `SimEngine::build_engine_systems()`/`init_scene()`, the re-enabled `GlobalVertexManager`
+    slot) and the export-list refresh (410 → **463** symbols, `--check` rc 0). `[filter]` 423/7;
+    `~[filter]` **763636/232** = the T7.1b baseline exactly; the whole suite **764059/239**; the
+    fifteen siblings unchanged; ctest 1/1; standalone 69/0; ABI probe rc 0. Cookbook §7.33.
+    **The one design question is settled:** the reference's trajectory predicates are applied
+    inside the traversal **callback**, i.e. only for objects whose AABB already passed the *fixed*
+    `node.intersects(Q)` test (`LinearBVHViewer::query`'s AABB overload hard-wires that `Intersect`;
+    `StacklessBVH`'s predicate contract is `std::invocable<IndexT, IndexT>`), so they are
+    **selections** among the already-reported pairs and a host filter over the reported candidates
+    reproduces the surviving set exactly — only the reported pair *count* (hence the pair-buffer
+    retry) differs. The `InfoStacklessBVH(V0)` `NodePred` *is* a node cull, but every cull condition
+    is implied by the leaf predicate (the "common bid/cid, or -1" propagation; the T7.1b §7.32
+    rule 12 proof), so it is sound as well. **T7.2 needed no "device data reaches the predicate"
+    hook**; measured on the port's own structures: keep-all 1139 == brute force 1139, selective
+    (`i % 2 == 0`) 602 == the host-filtered keep-all set. **T7.2b therefore owes:** the same
+    equivalence argument *per predicate* (or, if a node-level test turns out to need device data the
+    leaf predicate does not imply, the port's first device-data hook); the four filters' built on
+    T7.2a's `SimplexTrajectoryFilter` contract (`candidate_PTs()/candidate_EEs()/toi_PTs()/toi_EEs()`,
+    the `FilterActiveInfo` setters, `BaseInfo`'s attribute surface and the flat-mask extents); their
+    own `[filter]`-style coverage and the export-list refresh (the new test will import the four
+    filters' members). T7.2a itself claims no uid; the Newton-loop calls of the six manager stages
+    stay T8.4's (`GlobalTrajectoryFilter::run_stage()` is the documented test seam until then), and
+    the contact manager's coefficient/reporter/CFL halves stay T8.1's.
 
 - **Milestone**: M7 — commit `[luisa-backend] T7.1 bvh-structures` (T7.1a and T7.1b may be committed
   separately; the parent groups them under T7.1).
 
-**T7.2 — Trajectory filters** (depends T7.1)
-- Port: `trajectory_filter`, `simplex_trajectory_filter` (+`details`), `vertex_half_plane_trajectory_filter`, `global_trajectory_filter`, and 7 filters: `lbvh_simplex_trajectory_filter`, `stackless_bvh_simplex_trajectory_filter`, `info_stackless_bvh_simplex_trajectory_filter`, `info_stackless_bvh_v0_simplex_trajectory_filter`, `easy_vertex_half_plane_trajectory_filter`, `al_vertex_half_plane_trajectory_filter`.
-- **Done**: filter produces candidate pair sets equivalent to CUDA version on benchmark scenes (compare via exported pairs).
-- **Validate**: `test_filters` — run CUDA filter & Luisa filter on 3 benchmark point clouds; exported candidate pairs identical (order-insensitive).
-- **Milestone**: M7 — commit `[luisa-backend] T7.2 trajectory-filters`; `git tag luisa-m7`.
+**T7.2 — Trajectory filters** (depends T7.1) — **executed as two batches**
+- **T7.2a ✅ — the filter bases + the vertex-half-plane family:** `collision_detection/trajectory_filter.{h,cpp}`,
+  `global_trajectory_filter.{h,cpp}`, `simplex_trajectory_filter.{h,cpp}`, `vertex_half_plane_trajectory_filter.{h,cpp}`,
+  `filters/easy_vertex_half_plane_trajectory_filter.{h,cpp}`, `filters/al_vertex_half_plane_trajectory_filter.{h,cpp}`,
+  the scoped `contact_system/global_contact_manager.{h,cpp}` (the M7 slice the six files `require<>`: the two flat
+  mask tabulars + their extents, `d_hat`/`eps_velocity`, `cfl_enabled`, `vert_is_active_contact`; the
+  coefficient/reporter/CFL/feasible-step halves are `SCOPE NOTE (T8.1)` markers) and the wiring
+  (`SimSystemCreator`s gated on `contact/enable`, the reference's resolution order in
+  `SimEngine::build_engine_systems()`, the contact manager's `init()` in `init_scene()`'s 3.1 forwards, the
+  re-enabled `GlobalVertexManager` `GlobalTrajectoryFilter` slot). Test: `apps/tests/backends/luisa/luisa_trajectory_filter_test.cpp`
+  (tag `[filter]`, **7 cases / 423 assertions**: 82 + 34 + 45 + 51 + 51 + 159 + 1) with host oracles written from the scene data and the read-back
+  device arrays; the predicate/device-data question answered (see the T7.2-owes paragraph above and cookbook §7.33
+  rules 1–3); the export list refreshed 410 → **463**. Done: `[filter]` 423/7; `~[filter]` 763636/232 (the T7.1b
+  baseline exactly); the whole suite 764059/239; the siblings unchanged; ctest 1/1; standalone 69/0; `--check` rc 0;
+  ABI probe rc 0. Two perturbations on two axes (host `reserve_ratio`; device `t0` thickness term) rc 42,
+  byte-identically reverted, green again. Cookbook §7.33.
+- **T7.2b ⬜ — the four BVH simplex filters:** `filters/{lbvh,stackless_bvh,info_stackless_bvh,info_stackless_bvh_v0}_simplex_trajectory_filter.{h,cpp}` (~7200 reference lines), each deriving from T7.2a's `SimplexTrajectoryFilter` and querying T7.1a/b's structures. Owes: the four filters, their per-predicate equivalence argument (host filter over the reported candidates, or the port's first device-data hook if a node-level test needs device data the leaf predicate does not imply), a `[filter]`-style test batch and the export-list refresh. May be split into (lbvh + stackless) and (the two info variants) — the largest single batch of M7.
+- Done: filter produces candidate pair sets equivalent to CUDA version on benchmark scenes (compare via exported pairs).
+- Validate: test_filters — run CUDA filter & Luisa filter on 3 benchmark point clouds; exported candidate pairs identical (order-insensitive).
+- Milestone: M7 — commit [luisa-backend] T7.2 trajectory-filters; git tag luisa-m7.
 
 ### PHASE 8 — Contact, Coupling, Solvers, Engine (depends Phase 5/6/7; mostly sequential at the end)
 

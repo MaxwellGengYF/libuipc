@@ -35,6 +35,11 @@
 // searcher, the linear system, the tolerance manager and the time integrator are
 // the last four `init()`s of init_scene()).
 #include <newton_tolerance/newton_tolerance_manager.h>
+// T7.2a: the contact manager (the M7 slice) and the trajectory-filter manager. The
+// reference resolves both in SimEngine::build() (`find<>`) and the contact manager's
+// init() runs in its step-3.1 forwards.
+#include <contact_system/global_contact_manager.h>
+#include <collision_detection/global_trajectory_filter.h>
 
 
 namespace uipc::backend::luisa
@@ -135,7 +140,12 @@ void SimEngine::build_engine_systems()
 
     m_global_simplicial_surface_manager = find<GlobalSimplicialSurfaceManager>();
     m_global_dytopo_effect_manager = find<GlobalDyTopoEffectManager>();
-    m_global_animator                   = find<GlobalAnimator>();
+    // T7.2a: the reference's order here is dytopo -> contact manager ->
+    // trajectory filter -> animator (sim_engine_do_init.cu step 2). Both are created
+    // only when the scene enables contact.
+    m_global_contact_manager = find<GlobalContactManager>();
+    m_global_trajectory_filter = find<GlobalTrajectoryFilter>();
+    m_global_animator = find<GlobalAnimator>();
     m_global_external_force_manager     = find<GlobalExternalForceManager>();
     // T5.1: the reference `find<>`s the FEM method alongside AffineBodyDynamics
     // (optional: only a scene with a FiniteElement constitution has one).
@@ -218,16 +228,16 @@ void SimEngine::init_scene()
         m_global_simplicial_surface_manager->init();
     }
     // 3.1 Forwards (reference order): dytopo effect manager -> contact manager
-    //     (Phase 8) -> animator -> external force -> active set (Phase 8) ->
-    //     line searcher -> linear system (Phase 8) -> time integrator -> ...
+    // -> animator -> external force -> active set (Phase 8) ->
+    // line searcher -> linear system (Phase 8) -> time integrator -> ...
     if(m_global_dytopo_effect_manager)
-    {
         m_global_dytopo_effect_manager->init();
-    }
+    // T7.2a: the contact manager's init() builds the contact/subscene mask tabulars
+    // and the vertex contact buffers (the trajectory filters' `BaseInfo` reads them).
+    if(m_global_contact_manager)
+        m_global_contact_manager->init();
     if(m_global_animator)
-    {
         m_global_animator->init();
-    }
     if(m_global_external_force_manager)
     {
         m_global_external_force_manager->init();
