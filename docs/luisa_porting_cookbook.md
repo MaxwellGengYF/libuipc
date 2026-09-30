@@ -5710,18 +5710,21 @@ fixes; seven are xmake-specific traps, the eighth is a version pin.
    CMake's 471, `[abd_solve]` 238 vs 245. Pinning `catch2 3.8.1` restored declaration order
    and both tags now match CMake exactly. With an explicit `--order rand --rng-seed N` both
    builds produce the *same* order, so the whole difference was the default.
-8. **Open issue (unexplained): the xmake-built binary stalls inside LC's JIT for one FEM
-   case.** `fem_constitution_b_scene` (its `StrainPlasticDSB` config) drives
-   `luisa_nvrtc.exe` into a multi-minute compile: three consecutive full-suite runs did not
-   finish within 240 s, and a single-case run had nvrtc at 100 % of a core for >15 min and
-   still climbing — while the CMake-built binary runs that same case, and all 257 cases
-   (764967 assertions), in **64 s** against the same LC DLLs (md5-verified identical in both
-   build directories). nvrtc is *busy*, not deadlocked, so the likely mechanism is a much
-   larger/slower-to-compile kernel produced by this build's module. Consequence: the xmake
-   build is verified for the module/targets and for the filtered batteries
-   (`[contact_core]` 314/9, `[abd_constraint]` 471/9, `[abd_solve]`, `[mas_preconditioner]`
-   — all identical to CMake) but **not yet for a full-suite run**; use the CMake build for
-   that.
+8. **A fresh build directory pays a full re-JIT — LC's PTX cache is per-executable
+   (`<exe>/.cache`), keyed by kernel IR.** The first symptom looked like a hang: the
+   xmake-built binary stalled in `fem_constitution_b_scene` (its `StrainPlasticDSB`
+   config) with `luisa_nvrtc.exe` at 100 % of a core for >15 min, and three full-suite runs
+   did not finish within 240 s — while the CMake binary ran that case, and all 257 cases
+   (764967 assertions), in **64 s** from md5-identical LC DLLs. It is not a deadlock and not
+   a build defect: nvrtc is *busy* compiling, and the two build directories have separate
+   caches (`build/Release/bin/.cache` 1436 entries / 124 MB, built up over many sessions,
+   versus `build/windows/x64/release/.cache` 702 entries / 43 MB on its first day). Measured
+   consequence, single case, same binary: **cold 1376 s vs warm 3 s**, 2566 assertions both
+   times; and for the whole suite **764967 assertions in 257 cases in 150 s cold, then 64 s
+   warm — the CMake build's exact numbers**. Practical rule: after creating a new build
+   directory (or purging the cache, §1.5), expect a one-off multi-minute re-JIT before the
+   first full-suite run; budget for it instead of killing the process, and never compare
+   timings across build directories without stating the cache state.
    Two operational notes from the same session: kill the test exe with `taskkill /T` (an
    orphaned `luisa_nvrtc.exe`/`cmd.exe` keeps inherited pipes open and wedges any wrapper
    that captured stdout through a pipe), and `luisa.runtime` cannot copy the LC DLLs while a
