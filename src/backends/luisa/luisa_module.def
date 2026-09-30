@@ -7,7 +7,7 @@
 ; auto-generated list exceeded MSVC's 65535-export ceiling -> LNK1189).
 ;
 ; Contents: the module's C API + every symbol the in-tree consumers import from it.
-; 404 entries, generated from 1 consumer(s).
+; 410 entries, generated from 1 consumer(s).
 ; ---------------------------------------------------------------------------
 EXPORTS
     ??0?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
@@ -52,7 +52,13 @@ EXPORTS
     ?body_ids@VertexAttributeInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@345@XZ
     ?buffer_view@ComputeGradientInfo@GlobalLinearSystem@luisa@backend@uipc@@QEAAXV?$DenseVectorViewT@$0A@NUbuffers@storage@linalg@luisa_device@luisa@backend@uipc@@$0A@@linalg@luisa_device@345@@Z
     ?build@AtomicCountingLBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@234@@Z
+    ?build@Impl@InfoStacklessBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@345@V?$LBufferView@H@7345@1AEAVLStream@7345@@Z
+    ?build@Impl@InfoStacklessBVHV0@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@345@V?$LBufferView@H@7345@1AEAVLStream@7345@@Z
+    ?build@InfoStacklessBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@234@V?$LBufferView@H@6234@1PEAVLStream@6234@@Z
+    ?build@InfoStacklessBVHV0@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@234@V?$LBufferView@H@6234@1PEAVLStream@6234@@Z
     ?build@LinearBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@234@PEAVLStream@6234@@Z
+    ?build@QueryBuffer@InfoStacklessBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@345@AEAVLStream@7345@@Z
+    ?build@QueryBuffer@InfoStacklessBVHV0@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@345@AEAVLStream@7345@@Z
     ?build@QueryBuffer@StacklessBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@345@AEAVLStream@7345@@Z
     ?build@StacklessBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@234@PEAVLStream@6234@@Z
     ?build_linear_system@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ

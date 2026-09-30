@@ -445,13 +445,38 @@ This plan is too large for one session. State MUST be persisted so a fresh sessi
     pairs; the two independent structures agree on 795729 self pairs at 100k). `~[bvh]` = 763191/215 = the
     T6.4c baseline exactly; the whole suite 763410/223; ctest 1/1; standalone 69/0; the module export list
     394 → **403** (`--check` rc 0, the ABI probe rc 0). Cookbook §7.31.
-  - **T7.1b ⬜ — the BVH batch 2:** the two "info" variants `info_stackless_bvh.{h,cpp}` +
-    `details/info_stackless_bvh.inl` (238 + 1154 reference lines) and `info_stackless_bvh_v0.{h,cpp}` +
-    `details/info_stackless_bvh_v0.inl` (178 + 1134), which are exactly what the two deferred sanity checkers
-    (`sanity_check/simplicial_surface_{distance,intersection}_check.cpp`, ⬜ since T4.3) need. They reuse
-    T7.1a's `LAABB`, `LVector2i` pairs, `culbvh` helpers and box-union reduction, so b owes: the port of both
-    structures, a `[bvh]`-style test for them (their queries return the *distance-information* candidate
-    pairs, not only the overlaps), the export-list refresh and the re-enabling of the two sanity checkers.
+    - **T7.1b ✅ — the BVH batch 2:** the two "info" variants `info_stackless_bvh.{h,cpp}` +
+      `details/info_stackless_bvh.inl` (238 + 1154 reference lines) and `info_stackless_bvh_v0.{h,cpp}` +
+      `details/info_stackless_bvh_v0.inl` (178 + 1134), which are exactly what the two deferred sanity checkers
+      (`sanity_check/simplicial_surface_{distance,intersection}_check.cpp`, ⬜ since T4.3) need. They reuse
+      T7.1a's `LAABB`, `LVector2i` pairs, `culbvh` helpers and box-union reduction. Done: both structures build
+      and traverse on random/degenerate clouds; **v1 and v0 produce element-identical node arrays (799/799 on a
+      400-primitive duplicate-heavy cloud) and identical candidate sets** (2048 + 100k, cross-checked against
+      `StacklessBVH` and `AtomicCountingLBVH`), the per-leaf/per-internal-node bid/cid metadata follows the
+      reference's "common id, or -1" rule and the traversal's node-cull contract is pinned by a host-walk oracle;
+      `apps/tests/backends/luisa/luisa_info_bvh_test.cpp` (tag `[bvh_info]`, **9 cases / 226 assertions**);
+      **both sanity checkers ported and wired** (uid 3 `SimplicialSurfaceDistanceCheck`, uid 1
+      `SimplicialSurfaceIntersectionCheck`, verified on passing/violating scenes with the reference's diagnostics);
+      `~[bvh_info]` = 763410/223 = the T7.1a baseline exactly; `[bvh]` stays 219/8; the whole suite 763410 + 226
+      / 223 + 9; ctest 1/1; standalone 69/0; the module export list 403 → **409** (`--check` rc 0, ABI probe rc 0).
+      Cookbook §7.32. **The one structural deviation** (recorded in the cookbook and the checkers' headers): a
+      ported predicate is a *record-time host callable over LC expressions*, so the reference's device functors
+      that capture `cuda_tool::CBufferView`s cannot be ported as predicates (a captured view becomes a *bound*
+      buffer of the compiled shader); the two checkers therefore drive the traversal with keep-all predicates and
+      evaluate the reference's `NodePred`/`LeafPred` bodies as host filters over the reported candidate pairs —
+      the *surviving* set is provably identical (the reference's node-level cid cull is implied by its leaf-level
+      per-vertex mask checks), and only the candidate count differs.
+  - **T7.2 owes** (the next batch): the trajectory filters — `trajectory_filter`, `simplex_trajectory_filter`
+    (+`details`), `vertex_half_plane_trajectory_filter`, `global_trajectory_filter` and the 7 concrete filters
+    (`lbvh_*`, `stackless_bvh_*`, `info_stackless_bvh_*`, `info_stackless_bvh_v0_*`,
+    `{easy,al}_vertex_half_plane_*`) — which query exactly the structures T7.1a/b ported, plus their own
+    `[filter]`-style test and an export-list refresh. It also inherits the *predicate-with-device-data*
+    limitation above: the reference's filters pass device functors (with captured views and per-pair mask reads)
+    into `detect`/`query`, so T7.2 must either (a) introduce the port's first "device data reaches the
+    predicate" hook (e.g. the predicate's arrays as explicit kernel arguments with a factory built inside the
+    kernel), or (b) use the same host-filter/extra-pass shape as the checkers — the decision is T7.2's, and the
+    T7.1b report documents the measurements behind it.
+
 - **Milestone**: M7 — commit `[luisa-backend] T7.1 bvh-structures` (T7.1a and T7.1b may be committed
   separately; the parent groups them under T7.1).
 

@@ -4771,15 +4771,193 @@ leaf permutation, brute-force candidate sets including a 100k-primitive tree).
      self-pairs at 100k primitives. **Reproduction:**
      `python scripts/luisa_build.py build backend_luisa` (rc 0, 0 warnings) then
      `python scripts/luisa_build.py run "[bvh]"`; every case prints the numbers quoted above.
- 20. **What the next batch (T7.1b) still owes.** `info_stackless_bvh.{h,cu}` +
-     `details/info_stackless_bvh.inl` (1154 lines) and `info_stackless_bvh_v0.{h,cu}` +
-     `details/info_stackless_bvh_v0.inl` (1134 lines) are *not* ported — they are the two "info" variants the
-     deferred sanity checkers (`sanity_check/simplicial_surface_{distance,intersection}_check.cpp`) need, and
-     they reuse the same `culbvh` helpers, `LAABB` and pair type that this batch established. `LinearBVH::update`
-     is ported and pinned (a rebuild-equivalence check), but the reference's `update()` warning ("if the
-     AABBs are significantly changed, you may get a Tree with bad query performance") is only a comment; the
-     port keeps its `UIPC_ASSERT` on the size contract (which aborts the process on misuse — not covered by a
-     test for that reason).
+   20. **What the next batch (T7.1b) still owed — and now delivers (§7.32).** `info_stackless_bvh.{h,cu}` +
+       `details/info_stackless_bvh.inl` (1154 lines) and `info_stackless_bvh_v0.{h,cu}` +
+       `details/info_stackless_bvh_v0.inl` (1134 lines) were the two "info" variants the deferred sanity checkers
+       (`sanity_check/simplicial_surface_{distance,intersection}_check.cpp`) needed; T7.1b ported both, reusing
+       the `culbvh` helpers, `LAABB` and pair type this batch established, ported and wired the two checkers and
+       re-enabled them — see §7.32 for the info contract, the v1/v0 differences as measured, the predicate
+       limitation and the checkers' host-filter shape. `LinearBVH::update`
+       is ported and pinned (a rebuild-equivalence check), but the reference's `update()` warning ("if the
+       AABBs are significantly changed, you may get a Tree with bad query performance") is only a comment; the
+       port keeps its `UIPC_ASSERT` on the size contract (which aborts the process on misuse — not covered by a
+       test for that reason).
+
+### 7.32 Patterns established in T7.1b (the "info" BVH variants + the two deferred sanity checkers)
+
+**Scope.** The second M7 batch: `collision_detection/info_stackless_bvh.{h,cpp}` + `details/info_stackless_bvh.inl`
+(the port of the reference's 238 + 1154 lines), `collision_detection/info_stackless_bvh_v0.{h,cpp}` +
+`details/info_stackless_bvh_v0.inl` (178 + 1134), **both deferred sanity checkers**
+(`sanity_check/simplicial_surface_distance_check.cpp` → uid 3, `sanity_check/simplicial_surface_intersection_check.cpp`
+→ uid 1, whose deferral note in `sanity_check/backend_sanity_checker.h` is gone), the refreshed module export list
+(403 → **409** symbols) and `apps/tests/backends/luisa/luisa_info_bvh_test.cpp` (tag `[bvh_info]`, **9 cases / 226
+assertions**). Baseline shape: `[bvh]` **219/8** unchanged, `~[bvh_info]` = **763410/223** = the T7.1a baseline
+exactly, `[bvh_info]` 226/9, the whole suite 763410+226 / 223+9, the 13 sibling filters unchanged, ctest 1/1,
+standalone 69/0, `scripts/luisa_module_def.py --check` rc 0, `scripts/luisa_check_module_abi.py` rc 0.
+
+  1. **The info variants are T7.1a's `StacklessBVH` + metadata + a two-predicate contract, and the port reuses the
+     first half verbatim.** The reference's `info_stackless_bvh.inl` is a near-duplicate of `stackless_bvh.inl`
+     that vendors its *own* copy of the culbvh helpers under `uipc::info_stackless_detail`; the port keeps one
+     shared copy and includes `collision_detection/stackless_bvh.h` (its `culbvh` namespace: `K_THREADS`,
+     `MAX_RES_PER_BLOCK`, `morton3D`, `make_pair_var`, `make_ordered_pair`, `safe_copy_to`) plus T7.1a's
+     `LAABB`/`LBox`/`aabb_reduce`. The build pipeline is `stackless_bvh.cpp` with exactly three additions —
+     `buildPrimitivesFromBox` scatters `ext_bid`/`ext_cid`, `buildIntNodes` propagates the *common* bid/cid (or
+     -1), `reorderNode` writes both into the node array — and `Node` grows from 32 B (`{lc, escape, bound}`) to
+     **40 B** (`{lc, escape, bound, bid, cid}`). The reference's `propagateInformativeMetadata(int)` is declared
+     and defined **empty** in both files; it is transcribed (a reader can diff the two file sets line by line).
+  2. **A record-time predicate cannot read a device array — the batch's one structural deviation.** The
+     reference's `NodePred`/`LeafPred` are CUDA device functors that *capture* `cuda_tool::CBufferView`s (and a
+     `CDense2D` mask table). An LC kernel signature cannot carry a callable, and a captured `Buffer`/`BufferView`
+     becomes a **bound** argument of the compiled shader (rule 2 in §7.9; `FunctionBuilder::buffer_binding`),
+     so a cached shader would keep reading the *first* call's allocation. The port therefore keeps T7.1a's
+     shape — the predicate is a host callable invoked at *record time* with LC expressions — and adds the one
+     thing that shape lacked: the info structs are **templates over the scalar type**
+     (`NodePredInfoT<I>` / `LeafPredInfoT<I>`, `I = IndexT` on the host, `lcrt::Var<IndexT>` in a kernel),
+     because a device value is a DSL object and cannot live in an `IndexT` field. A ported predicate reads the
+     struct's *fields* (scalars) only; `nlohmann`-style "read `bids[query_id]`" predicates (the reference's
+     `BidOnlyNodeCull`) are not expressible. The two checkers therefore drive the four phases with keep-all
+     predicates and evaluate the reference's predicate *bodies* as **host filters over the reported candidate
+     pairs** — see rules 15/16.
+  3. **The cache key is the predicate's *type* — a capture that varies between calls silently uses the first
+     call's shader.** `cached_kernel` instantiates a `static Shader&` per (lambda type) == per predicate *type*,
+     so two predicates of the same type with different captured values share the first one's shader. This bit the
+     [bvh_info] test itself: a `NodeCidCull{IndexT cid}` member used in a `for(cid = 0..2)` loop culled with
+     `cid == 0` in all three iterations (13 assertions failed until the constant moved into the type,
+     `NodeCidCullT<Cid>`). Rule: **carry a predicate's constants in its type** (or make it truly stateless) —
+     T7.1a's rule 13, now with a measured failure mode.
+  4. **A predicate's return value is the *keep* condition — inverting the `-1` sentinel test is a silent
+     everything-culled.** The port's `$if(node_cull(info))` descends/reports on `true` (the reference's
+     `if(!node_cull(...)) { st = escape; continue; }`). The [bvh_info] test's first `NodeInvalidBidCull` wrote
+     `info.node_bid == -1` (the *cull* condition) instead of `!= -1`: on a cloud where the exported array had
+     **zero** nodes with `bid == -1`, every candidate vanished (`pairs=0` against `brute=430`) — the test's host
+     walk agreed with the device, so only the *oracle* caught it. Polarity now lives in the names
+     (`NodeValidBidOnlyCull`).
+  5. **The node-cull oracle is *asymmetric*: only the reported pair's larger-sorted primitive has its node
+     culled.** In the reference's self traversal the *query* primitive's own box is loaded before the walk;
+     the reporter is whichever of the two has the smaller **sorted position**, and the walk descends to the
+     other one — whose own node (and ancestors) are the only ones the predicate tests. So a cull on `cid == C`
+     does **not** keep "the pairs whose two primitives both have `cid != C`" (the naive oracle): it keeps a pair
+     iff the primitive with the larger sorted position has `cid != C`. Measured on a 512-cloud (1168 overlapping
+     pairs, cids `i % 3`): the surviving counts are **777 / 771 / 788** for `C = 0 / 1 / 2`, not
+     `1168·(2/3)² ≈ 519`; `brute_force_self_node_cull` in the test implements the exact rule and the device
+     matches it. The `query` flavour is the symmetric case (the visited node is always the object's), which is
+     why the checker's `CodimP vs AllP` oracle is simply `cid[object] != C`.
+  6. **v1 vs v0: what actually differs (all pinned).** | | v1 | v0 | |---|---|---| | `NodePredInfo` | **5 fields**,
+     `query_bid`/`query_cid` pre-loaded into shared memory | **3 fields** (`query_id`, `node_bid`, `node_cid`) |
+     | `LeafPredInfo` | **6 fields**, the pair's bid/cid resolved | **absent** — `LeafPred(i, j)` | | traversal
+     SMem | `s_qbid`/`s_qcid` pre-load once per thread | none | | self pair | `LeafPredInfo` with the query side
+     first (ordered by `q_first`) | `LeafPred(ordered_pair)` + the reference's `j <= i` adapter guard | |
+     `detect`/`query` | split into public `launch_*` + `prepare_query_result` | one inline body each | |
+     `Impl::build` | no `ext_mark` | `ext_mark` allocated + initialised to 7 | | init kernel | `ext_lca(idx) =
+     -1` for `idx <= num_objs`; **no** `int_bid`/`int_cid` init | `ext_lca = 0`/`ext_par = 0`/`ext_mark = 7` per
+     leaf, `int_bid`/`int_cid = **-1**` per internal node | | `buildIntNodes` | no leaf prologue | `lvs_lca(idx)
+     = -1; depths(idx) = 0;` prologue | | `stacklessOther` | takes the query BID/CID spans | takes neither |.
+     **Measured**: the two builds produce **element-identical node arrays** (799/799 on a 400-primitive
+     duplicate-heavy cloud, `bid`/`cid`/bounds/links all equal) and identical candidate sets (2048: 19161 =
+     `StacklessBVH` = `AtomicCountingLBVH` = brute force; 100k: 794217 for all three) — so v1's missing
+     `int_bid`/`int_cid` initialisation is *unobservable*: every read of an internal child's metadata happens
+     after that child completed its own merge (the flag protocol + the fence order it).
+  7. **The reference's `build(aabbs)` overload is a trap and it is transcribed as one.** With no BID/CID spans
+     `m_BIDs`/`m_CIDs` stay empty, but `launch_detect`/`launch_query` then assert `m_aabbs.size() ==
+     m_BIDs.size()` — i.e. the two-argument build is only usable with an empty input set. The port keeps the
+     asserts verbatim (transcribe, don't fix) and avoids the trap internally by passing a **one-element
+     `info_dummy`** span for the missing ids (LC rejects a zero-length buffer view as a kernel argument — T7.1a
+     rule 9), with `has_info == 0` telling the kernels never to read it.
+  8. **The v0 retry must re-clear the pair counter — the port's one *real* bug in this batch.** The reference's
+     v0 `detect`/`query` clear `m_cpNum` **inside their `do_query` lambda**, so both the first pass and the
+     retry start from 0; the port's first version cleared it only once and the retry appended to the first
+     pass's total (measured: the 100k self-pair set came out at **51201** — exactly the initial `50 * 1024`
+     capacity — instead of 794217, while v1, which clears inside `launch_detect`, was right). The v1 split
+     (`launch_detect` = "clear + record", `prepare_query_result` = "read + grow") is the shape that makes this
+     impossible to get wrong.
+  9. **`prepare_query_result` and the capacity contract.** The pair count is read with `read_host_sync`
+     (T7.1a's rule 12), and on `count > m_pairs.size()` the buffer is grown to `count * reserve_ratio` and the
+     launch repeated — `retry == (count > 1)` for a queue reserved to 1 element, and `capacity = 5524` for
+     `count = 4604` at the default `reserve_ratio = 1.2` (measured), `2.0 × count` with a caller-supplied
+     `Config`. `QueryBuffer`'s initial capacity is the reference's `50 * 1024`.
+ 10. **The sanity checkers are wired exactly where the reference wires them, and the frontend replaces the CPU
+     checker of the same uid.** `REGISTER_BACKEND_SANITY_CHECKER(SimplicialSurfaceDistanceCheck)` (uid **3**) and
+     `...(SimplicialSurfaceIntersectionCheck)` (uid **1**) — both derive from the ported
+     `BackendSanityChecker`, both gated by `contact/enable` in `build()` (throwing
+     `BackendSanityCheckerException` skips the checker), both reading the CPU sanity module's
+     `sanity_check/*` attributes (`dim`, `d_hat`, `instance_id`, `geometry_id`, `object_id`,
+     `contact_element_id`, `subscene_contact_element_id`, `self_collision`) and the contact/subscene tabulars.
+     Measured on a two-cube scene: with a 0.5-offset interpenetration both cubes are in ONE object → the
+     message is `Geometry(0) in Object[t71b_overlap(0)] intersects with Geometry(1) in
+     Object[t71b_overlap(0)]` + `Intersected mesh has 14 vertices, 12 edges, and 12 triangles.` +
+     `Create mesh [intersected_mesh<SimplicialComplex>] for post-processing.`; `msg->name()` is
+     `class uipc::backend::luisa::SimplicialSurfaceIntersectionCheck(1)` (the backend's, not the CPU's).
+ 11. **`d_hat` is the CPU context's, and it is 0.01 by default — the AABB expansions are *not* just the
+     thickness.** `sanity_check/d_hat` comes from the scene/contact config (measured 0.01 with a default
+     scene), so the distance checker's point boxes are expanded by `thickness + d_hat` and its triangle boxes
+     by `3·thickness + (Σd_hat)/3`; the *violation* test is the reference's `D ≤ (t_i + t_j)²` on squared
+     distances. Both are transcribed unchanged (the expansions only decide which pairs are *candidates*).
+ 12. **The reference's `NodePred` cull is *sound*: removing it cannot change the surviving set.** The node's
+     `cid` is the common cid of its subtree, so `!mask(query_cid, node_cid)` fires only when every leaf below
+     shares that cid — and the `LeafPred`'s per-vertex mask checks then reject each of those pairs anyway. That
+     is why the port can drive the checkers with keep-all predicates and filter on the host without any
+     behavioural loss (only the candidate count changes). The `self_collision` rule is *not* implied by the
+     node cull and is applied at the leaf/host level.
+ 13. **"Distance" is vertex-triangle + edge-edge proximity, not interpenetration — pinned by a scene where it
+     legitimately stays silent.** Two axis-aligned unit cubes offset by `(0.5, 0.5, 0.5)` interpenetrate, and
+     the intersection checker reports 14/12/12 — but the *distance* checker reports **nothing**: the crossing
+     happens as edges passing *through triangle interiors*, and with the offset's two fixed coordinates
+     (`0/1` vs `0.5/1.5`) no edge-edge pair ever meets and no vertex-triangle pair comes closer than 0.25
+     (≫ the 0.004 thickness sum). The [bvh_info] test pins both verdicts (`errors.find(1) != end`,
+     `errors.find(3) == end`).
+ 14. **The reported "close mesh" flags *whole* triangles and *both* endpoints of an edge.** Two cubes separated
+     by `1.5·thickness` (a genuine near-miss: uid 3 fires with `distance=0.0029999999999998916`,
+     `thickness=0.004`) report `Close mesh has 16 vertices, 26 edges, and 20 triangles` — i.e. **all** 16 scene
+     vertices, because every flagged triangle spans from the 0.003-away rim to the far side and every flagged
+     edge is collinear with a near edge (the vertical edges of the two cubes are `0.003` apart *along their whole
+     length*). The test asserts `nv == 16` with that explanation; the "only the facing faces" intuition is wrong.
+ 15. **The checkers' host filter is a transcription, not an approximation.** Each of the four distance phases
+     (and the intersection check) transcribes its reference device predicate *body* to a host function over the
+     same data: `distance::point_*_distance_flag` + `*_distance2` (the ported T2.3 layer, host `T = double`),
+     `tri_edge_intersect` (the reference's `UIPC_GENERIC` Eigen function, host instantiation),
+     `simplex_contact_mask_utils.h`'s four `allow_*_contact` helpers over the port's **flat** mask layout
+     (`row * N + col`, §7.13). `close_geo_ids` (last-write-wins on a sorted-key `map`) and `close_geo_distances`
+     (min) are order-insensitive, so re-deriving the violation list from the same surviving pairs reproduces the
+     reference's message byte for byte — the test compares the geometry/object ids, both floats, the mesh-size
+     lines and the `Create mesh [...]` tail.
+ 16. **A `quad` predicate is a *typed* host callable: write `operator()` as a template.** Because the info
+     structs are templates over the scalar type, a ported predicate is
+     `template <typename I> auto operator()(const InfoStacklessBVH::NodePredInfoT<I>&) const` — and in the
+     `v0` leaf flavour a two-argument `template <typename A, typename B> auto operator()(const A&, const B&)`
+     (the port folds the reference's `SelfPairPredAdapter` `j <= i` guard into the kernel, so a predicate that
+     reads its indices still sees the ordered pair). Also: a *local* class cannot have template members (MSVC
+     C2892), so the test's predicates live at namespace scope; and a predicate that needs a device *comparison*
+     must return the `Expr<bool>` directly, never assign it to a host `bool` (rule 13 of §7.31).
+ 17. **The export-list step is part of this batch, and the `.def` must be bootstrapped before it can be
+     regenerated.** Adding the test made the **link** fail with 6 unresolved externals
+     (the three non-inline members of each structure: `QueryBuffer::build`, the public `InfoStacklessBVH::build` /
+     `InfoStacklessBVHV0::build` and the two `Impl::build`s) — a *failed link deletes the test exe*, and
+     `scripts/luisa_module_def.py` derives the export list from the built PE files, so regenerating first would
+     have written a 5-line file. Recipe: append the LNK2019/LNK2001 mangled names to the committed `.def`,
+     rebuild until the link succeeds, *then* run `python scripts/luisa_module_def.py` (403 → **409** symbols,
+     `--check` rc 0) and finish with `scripts/luisa_check_module_abi.py` rc 0. (T7.1a's rule 18; no vtable-slot
+     rebootstrap was needed here — the two new classes are leaf checkers with new mangled names, not new slots
+     in an existing vtable.)
+ 18. **`--syntax` does not instantiate the test-local kernels; the [bvh_info] filter is the real syntax
+     check.** `python scripts/luisa_check_compile.py <file> --syntax` compiles one TU: it catches the traversal
+     templates only where a TU instantiates them (the test file does, via its predicates), and it takes ~6-10 s
+     per file. It is the right inner loop — the whole-batch build is ~20 s warm, ~25 s with a JIT-cold test run.
+ 19. **Reproduction.** `python scripts/luisa_build.py build backend_luisa` (rc 0, 0 warnings) →
+     `python scripts/luisa_build.py run "[bvh_info]"` (9 cases / 226 assertions, rc 0; every quoted number is
+     printed by the test). The battery is
+     `[bvh]` 219/8 → `[bvh_info]` 226/9 → `~[bvh_info]` 763410/223 → the whole suite → the 13 sibling filters →
+     `[luisa][t43]` → ctest 1/1 → `python scripts/luisa_standalone.py cuda` 69/0 →
+     `python scripts/luisa_module_def.py --check` rc 0 → `python scripts/luisa_check_module_abi.py` rc 0.
+ 20. **Two perturbations on two axes (one host, one device), both rc 42 and both byte-identically reverted.**
+     P1 (**host/plumbing**): `info_stackless_bvh.h`'s `QueryBuffer` initial capacity `50 * 1024` → `64` — the two
+     capacity-contract assertions in `info_determinism` fail (lines 1555/1564) while the pair *sets* stay correct
+     (the retry grows the buffer), i.e. the perturbation is caught by the *contract* pin, not by a crash.
+     P2 (**device/kernel**): the v1 self flavour's resolved `LeafPredInfo` `bid_i`/`bid_j` `select` operands
+     swapped — the order-sensitive `leaf bid-pair` pins fail (line 703, both the `(3,5)`/`(5,3)` and the
+     `(2,6)`/`(6,2)` comparisons, which are non-empty and *different* by construction). Both patches were
+     reverted with a byte-identical `sha256`, rebuilt (rc 0) and the `[bvh_info]` filter re-run green — so the
+     test really does pin the capacity contract *and* the resolved-pair assignment, and neither pin survives a
+     guess.
 
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 

@@ -7,8 +7,9 @@
  * collision-detection BVH: it uses the scene surface the CPU sanity-check module
  * flattens (ISanityCheckContext::scene_simplicial_surface()), the contact /
  * subscene tabulars and the half-plane instances. The other two
- * (simplicial_surface_distance_check / simplicial_surface_intersection_check) are
- * deferred to T7.1 — see sanity_check/backend_sanity_checker.h.
+ * (simplicial_surface_distance_check / simplicial_surface_intersection_check) were
+ * deferred to T7.1 and are ported since T7.1b (same directory; they query
+ * `collision_detection::InfoStacklessBVH`).
  *
  * Port notes (cookbook §7.13 / §7.14)
  * ----------------------------------

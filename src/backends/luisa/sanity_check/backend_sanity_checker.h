@@ -13,24 +13,15 @@
  * `msg->name()` is the demangled `uipc::backend::luisa::…` name.
  *
  * ---------------------------------------------------------------------------
- * NOT PORTED (deliberate, see the T4.3 report)
+ * THE THREE CHECKERS
  * ---------------------------------------------------------------------------
- * Two of the reference's three checkers are absent from this directory:
- *
- *   simplicial_surface_distance_check.cu
- *   simplicial_surface_intersection_check.cu
- *
- * Both build and query the collision-detection BVH
- * (src/backends/cuda/collision_detection/info_stackless_bvh.h + its .cu:
- * InfoStacklessBVH::build()/query()), which is T7.1 of the plan and has no
- * LuisaCompute counterpart yet (src/backends/luisa/collision_detection/ holds
- * only aabb.h from T4.1). They must not be stubbed: a checker that silently
- * reports "no violation" is worse than no checker at all. Their port belongs to
- * T7.1 (BVH structures), which the plan already schedules before T9's
- * verification harness.
- *
- * The one checker that does not need the BVH is ported here:
- * half_plane_vertex_distance_check.cpp.
+ * half_plane_vertex_distance_check.cpp (uid 2, since T4.3), and — since T7.1b, which
+ * ported the collision-detection BVH they query — simplicial_surface_distance_check.cpp
+ * (uid 3) and simplicial_surface_intersection_check.cpp (uid 1).  The latter two build
+ * and query `collision_detection::InfoStacklessBVH` (`build()` with the per-primitive
+ * bid/cid spans, then `query()` / `detect()`); see their file headers for the one port
+ * deviation the DSL forces (the reference's device predicates become host filters over
+ * the reported candidate pairs).
  *********************************************************************/
 #include <uipc/core/i_sanity_checker.h>
 #include <uipc/common/demangle.h>
