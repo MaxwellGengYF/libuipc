@@ -429,12 +429,31 @@ This plan is too large for one session. State MUST be persisted so a fresh sessi
 
 ### PHASE 7 — Collision Detection (depends T2.3, T4.1; parallelizable after T7.1)
 
-**T7.1 — BVH structures** (depends T3.2 algorithms, T4.1)
-- Port: `collision_detection/atomic_counting_lbvh.{h,cu}` (+`details`), `linear_bvh.h` (+`details/linear_bvh.inl`), `stackless_bvh.h` (+`details`), `info_stackless_bvh.h` (+`details`), `info_stackless_bvh_v0.h` (+`details`), `aabb.h`.
+**T7.1 — BVH structures** (depends T3.2 algorithms, T4.1) — **executed as two batches**
+- Port: `collision_detection/atomic_counting_lbvh.{h,cpp}` (+`details`), `linear_bvh.{h,cpp}` (+`details/linear_bvh.inl`), `stackless_bvh.{h,cpp}` (+`details`), `info_stackless_bvh.{h,cpp}` (+`details`), `info_stackless_bvh_v0.{h,cpp}` (+`details`), `aabb.h`.
 - Heavy use of atomics, Morton codes (`cuda_device/bit_operation.h` → `luisa_device/builtins.h`), warp ops, and CUB-style compaction → validates T3.2 primitives at scale.
-- **Done**: BVH build on random point/cloud matches CUDA-built BVH (same node order or equivalent traversal results); unit tests ported from `apps/tests/backends/cuda/lbvh.cu`, `stackless_bvh.cu`, `info_stackless_bvh.cu`.
-- **Validate**: `test_bvh_*` — 100k random primitives: CUDA-exported BVH vs Luisa BVH produce identical traversal candidate sets; ported unit tests pass.
-- **Milestone**: M7 — commit `[luisa-backend] T7.1 bvh-structures`.
+- **The split (recorded here as the briefs require):**
+  - **T7.1a ✅ — the BVH batch 1:** `aabb.h` (the host AABB + the new device element type `LAABB`),
+    `linear_bvh.*` + `details/linear_bvh.inl`, `atomic_counting_lbvh.*` + `details/atomic_counting_lbvh.inl`,
+    `stackless_bvh.*` + `details/stackless_bvh.inl`, the shared AABB-union reduction
+    (`details/aabb_reduce.h` + `aabb_reduce.cpp`), the layer addition
+    `luisa_device::read_host_sync` (the reference's implicitly-synchronous device read) and
+    `apps/tests/backends/luisa/luisa_bvh_test.cpp` (tag `[bvh]`, **8 cases / 219 assertions**). Done: the three
+    structures build on random/degenerate clouds, the internal boxes equal the exact union of their children,
+    the leaf permutation is the stable Morton order, and the candidate sets equal a brute-force oracle on
+    7 clouds (**including the plan's 100k-primitive case**: 1563 queries → exactly the 26075 brute-force
+    pairs; the two independent structures agree on 795729 self pairs at 100k). `~[bvh]` = 763191/215 = the
+    T6.4c baseline exactly; the whole suite 763410/223; ctest 1/1; standalone 69/0; the module export list
+    394 → **403** (`--check` rc 0, the ABI probe rc 0). Cookbook §7.31.
+  - **T7.1b ⬜ — the BVH batch 2:** the two "info" variants `info_stackless_bvh.{h,cpp}` +
+    `details/info_stackless_bvh.inl` (238 + 1154 reference lines) and `info_stackless_bvh_v0.{h,cpp}` +
+    `details/info_stackless_bvh_v0.inl` (178 + 1134), which are exactly what the two deferred sanity checkers
+    (`sanity_check/simplicial_surface_{distance,intersection}_check.cpp`, ⬜ since T4.3) need. They reuse
+    T7.1a's `LAABB`, `LVector2i` pairs, `culbvh` helpers and box-union reduction, so b owes: the port of both
+    structures, a `[bvh]`-style test for them (their queries return the *distance-information* candidate
+    pairs, not only the overlaps), the export-list refresh and the re-enabling of the two sanity checkers.
+- **Milestone**: M7 — commit `[luisa-backend] T7.1 bvh-structures` (T7.1a and T7.1b may be committed
+  separately; the parent groups them under T7.1).
 
 **T7.2 — Trajectory filters** (depends T7.1)
 - Port: `trajectory_filter`, `simplex_trajectory_filter` (+`details`), `vertex_half_plane_trajectory_filter`, `global_trajectory_filter`, and 7 filters: `lbvh_simplex_trajectory_filter`, `stackless_bvh_simplex_trajectory_filter`, `info_stackless_bvh_simplex_trajectory_filter`, `info_stackless_bvh_v0_simplex_trajectory_filter`, `easy_vertex_half_plane_trajectory_filter`, `al_vertex_half_plane_trajectory_filter`.

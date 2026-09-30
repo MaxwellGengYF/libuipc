@@ -7,17 +7,19 @@
 ; auto-generated list exceeded MSVC's 65535-export ceiling -> LNK1189).
 ;
 ; Contents: the module's C API + every symbol the in-tree consumers import from it.
-; 395 entries, generated from 1 consumer(s).
+; 404 entries, generated from 1 consumer(s).
 ; ---------------------------------------------------------------------------
 EXPORTS
     ??0?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
     ??0?$LMatrixConverter@N$02@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
     ??0?$LSpmv@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
     ??0?$LSpmv@N$02@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
+    ??0AtomicCountingLBVH@luisa@backend@uipc@@QEAA@PEAVLStream@luisa_device@123@@Z
     ??0ComputeEnergyInfo@LineSearcher@luisa@backend@uipc@@QEAA@PEAV1234@V?$LBufferView@N@luisa_device@234@@Z
     ??0KernelCoutCapture@luisa@backend@uipc@@QEAA@AEAVLStream@luisa_device@123@@Z
     ??0LLinearSystemContext@linalg@luisa_device@luisa@backend@uipc@@QEAA@PEAVLStream@2345@@Z
     ??0LStream@luisa_device@luisa@backend@uipc@@QEAA@AEAVStream@compute@2@@Z
+    ??0LinearBVH@luisa@backend@uipc@@QEAA@AEBVLinearBVHConfig@123@@Z
     ??0SimSystem@backend@uipc@@QEAA@AEAVSimEngine@12@@Z
     ??0SimSystemAutoRegister@backend@uipc@@QEAA@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@$$QEAV?$function@$$A6A?AV?$unique_ptr@VISimSystem@backend@uipc@@U?$PmrDeleter@VISimSystem@backend@uipc@@@3@@std@@AEAVSimEngine@backend@uipc@@@Z@4@@Z
     ??1?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
@@ -49,6 +51,10 @@ EXPORTS
     ?body_ids@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@234@XZ
     ?body_ids@VertexAttributeInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@345@XZ
     ?buffer_view@ComputeGradientInfo@GlobalLinearSystem@luisa@backend@uipc@@QEAAXV?$DenseVectorViewT@$0A@NUbuffers@storage@linalg@luisa_device@luisa@backend@uipc@@$0A@@linalg@luisa_device@345@@Z
+    ?build@AtomicCountingLBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@234@@Z
+    ?build@LinearBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@234@PEAVLStream@6234@@Z
+    ?build@QueryBuffer@StacklessBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@345@AEAVLStream@7345@@Z
+    ?build@StacklessBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@234@PEAVLStream@6234@@Z
     ?build_linear_system@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?cached_object@LStream@luisa_device@luisa@backend@uipc@@QEAAPEAXPEBXP6APEAXXZP6AXPEAX@Z@Z
     ?check@NewtonToleranceManager@luisa@backend@uipc@@QEAAXAEAVResultInfo@1234@@Z
@@ -209,6 +215,7 @@ EXPORTS
     ?external_forces@ExternalForceInfo@FEMExternalForceManager@luisa@backend@uipc@@QEAA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
     ?find_system@SimSystem@backend@uipc@@AEAAPEAV123@PEAV123@@Z
     ?flags@ComputeGradientInfo@GlobalLinearSystem@luisa@backend@uipc@@QEAAXW4EnergyComponentFlags@345@@Z
+    ?flush@LStream@luisa_device@luisa@backend@uipc@@QEAAXXZ
     ?forces@AffineBodyExternalBodyForceConstraint@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@N$0M@@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?forces@FiniteElementExternalVertexForceConstraint@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?frame@VertexAttributeInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA_KXZ
@@ -346,6 +353,7 @@ EXPORTS
     ?sort_index_pairs_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXAEAVLStream@3456@AEBV?$LBufferView@H@3456@11_KIAEAUSortScratch@23456@@Z
     ?sort_index_pairs_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXAEAVLStream@3456@AEBV?$LBufferView@_K@3456@1AEBV?$LBufferView@H@3456@_KIAEAUSortScratch@23456@@Z
     ?step_forward@Impl@GlobalVertexManager@luisa@backend@uipc@@QEAAXN@Z
+    ?stream@AtomicCountingLBVH@luisa@backend@uipc@@AEAAAEAVLStream@luisa_device@234@XZ
     ?stream@LLinearSystemContext@linalg@luisa_device@luisa@backend@uipc@@QEAAAEAVLStream@3456@XZ
     ?stream@LStream@luisa_device@luisa@backend@uipc@@QEAAAEAVStream@compute@3@XZ
     ?subscene_element_ids@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@234@XZ
@@ -384,6 +392,7 @@ EXPORTS
     ?uid@FiniteElementExtraConstitution@luisa@backend@uipc@@QEBA_KXZ
     ?uid@InterAffineBodyConstitution@luisa@backend@uipc@@QEBA_KXZ
     ?uid@InterAffineBodyConstraint@luisa@backend@uipc@@QEBA_KXZ
+    ?update@LinearBVH@luisa@backend@uipc@@QEAAXV?$LBufferView@ULAABB@luisa@backend@uipc@@@luisa_device@234@PEAVLStream@6234@@Z
     ?update_dof_attributes@GlobalJointDofManager@luisa@backend@uipc@@QEAAXXZ
     ?update_p_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXAEAVLStream@3456@AEBV?$LBufferView@N@3456@1N@Z
     ?update_xr_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXAEAVLStream@3456@NAEBV?$LBufferView@N@3456@111@Z

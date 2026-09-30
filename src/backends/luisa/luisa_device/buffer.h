@@ -177,6 +177,33 @@ class LDeviceBuffer
     uint64_t                                   m_generation = 0u;
 };
 
+// ---------------------------------------------------------------------------
+//  The reference's implicitly-synchronous device scalar read, made explicit
+// ---------------------------------------------------------------------------
+/**
+ * @brief Read one device element back to the host, in stream order.
+ *
+ * The reference backend reads device scalars *implicitly synchronously* --
+ * `int h = device_var;`, `view.copy_to(&h);` -- which is ordered because
+ * cuda_tool submits every launch on the CUDA default stream.  The port's LStream
+ * batches its commands into the frame CommandList, so such a read has to commit the
+ * list first (`LStream::flush`), otherwise it would observe the value from before the
+ * recorded dispatches -- the ported BVHs' "read the reported pair count back and
+ * resize if it did not fit" retry loop depends on this (T7.1a).
+ *
+ * @param stream the LStream the caller has been recording into
+ * @param view   a one-element view (the reference's `Dense<T>`/`DeviceVar<T>`)
+ */
+template <typename T>
+[[nodiscard]] inline T read_host_sync(LStream& stream, const LBufferView<T>& view)
+{
+    stream.flush();
+    T v{};
+    stream.stream() << view.native().copy_to(lcrt::span{&v, 1u});
+    stream.synchronize();
+    return v;
+}
+
 // A single element in device memory (replacement for cuda_tool::DeviceVar).
 template <typename T>
 class LDeviceVar

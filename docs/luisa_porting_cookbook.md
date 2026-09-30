@@ -4578,6 +4578,209 @@ a hierarchy of "banks of banks", a 48x48 Galerkin cluster matrix per bank per le
     `python scripts/luisa_build.py build backend_luisa` (rc 0, 0 warnings) then
     `python scripts/luisa_build.py run "[mas_preconditioner]"`; each case prints the numbers quoted above.
 
+### 7.31 Patterns established in T7.1a (the collision-detection BVH batch: AtomicCountingLBVH, LinearBVH, StacklessBVH)
+
+**Scope.** The first M7 batch: `collision_detection/aabb.h` (the host AABB **plus** the new device element
+type), `collision_detection/linear_bvh.{h,cpp}` + `details/linear_bvh.inl` (the port of the reference's
+268 + 716 lines), `collision_detection/atomic_counting_lbvh.{h,cpp}` + `details/atomic_counting_lbvh.inl`
+(48 + 16 + 154), `collision_detection/stackless_bvh.{h,cpp}` + `details/stackless_bvh.inl` (195 + 1217),
+the shared AABB-union reduction (`collision_detection/details/aabb_reduce.h` + `aabb_reduce.cpp`), the
+refreshed module export list and `apps/tests/backends/luisa/luisa_bvh_test.cpp` (tag `[bvh]`, **8 cases /
+219 assertions**). The three structures are what T7.2's trajectory filters and M8's contact detection query;
+their *node ordering*, their Morton codes, their internal-AABB aggregation and their traversal order are the
+contract, so every deviation below is either a transcription of the reference's own quirk or a strictly
+stronger ordering, and the [bvh] test pins the values (Morton codes, the exact child-union property, the
+leaf permutation, brute-force candidate sets including a 100k-primitive tree).
+
+  1. **The kernel map is the reference's, one for one; the file split is not.** The reference is
+     header-only *because CUDA requires it* ("Otherwise, if using dllexport/dllimport, cuda will throw
+     `InvalidDeviceFunction`", its own NOTE). The port has no nvcc, so `linear_bvh.cpp` /
+     `atomic_counting_lbvh.cpp` / `stackless_bvh.cpp` hold the `__global__` bodies as `lla::detail::cached_kernel`
+     shaders (compile once, dispatch per frame) and the `details/*.inl` files keep only what a *kernel body*
+     must see: the Morton arithmetic, the node predicates, the device-side traversal (`LinearBVHDeviceViewer`)
+     and the predicate-templated traversal kernels. The reference's `namespace detail` helpers, its
+     `uipc::culbvh` vendored helpers and its public API names are all preserved (a reader can diff the two
+     file sets line by line).
+  2. **The device AABB is a *new* element type and it is deliberately not LC's `float3`.** `AABB` stays the
+     reference's host `Eigen::AlignedBox<float,3>`; device buffers hold `LAABB
+     {LVec<float,3> min, max}` (24 B, align 4 == Eigen's bytes, `static_assert`ed). LC's `float3` is
+     `Vector<float,3>`, which is `alignas(16)` and therefore **16 bytes**, so a `{float3,float3}` element
+     would be 32 B and every `LinearBVHNode` would grow by 8 B of padding. `lps::LVec<float,3>` is a plain
+     `std::array<float,3>`, which is exactly why the numerics layer exists; it needs its own
+     `LUISA_STRUCT(uipc::backend::luisa::LVector3f, data)` registration, and `LAABB`'s registration must come
+     **before** the first `Expr<LAABB>` use (an unregistered struct's `Expr` has no members — measured C2039
+     in `scratch/t71a_spike.cpp`). Kernel-side access is the established `load_aabb`/`store_aabb` idiom, two
+     levels deep (`e.min.data[k]`).
+  3. **An LC store is a *whole element* store, so a per-member update becomes a read-modify-write — split
+     the kernel instead of racing.** The reference's `linear_bvh_build_internal_nodes_kernel` writes the
+     internal node's `object_idx`/`left_idx`/`right_idx` *and* its two children's `parent_idx`
+     (`nodes(nodes(idx).left_idx).parent_idx = idx;` — a 4-byte store to a different *word* of the child,
+     which the child's own thread may be writing concurrently: different words, so neither store is lost).
+     LC cannot address a member of a buffer element, and a whole-struct read-modify-write in the same
+     dispatch would lose the child's own fields. The port therefore keeps the reference's two *phases* as two
+     dispatches — `internal_nodes_kernel` (the node's own fields) then `internal_parents_kernel` (the
+     children's parent links) — which are stream-ordered and produce a bit-identical node array.
+  4. **`Var<Struct>` default-initialises *every* member — the reference relies on the buffer's stale value.
+     This was the batch's one real bug (a GPU hang, not a wrong number).** The reference's kernel writes only
+     `nodes(idx).object_idx = 0xFFFFFFFF` and leaves `parent_idx` at whatever the buffer held: the build's
+     `m_nodes.resize(num_nodes, default_node)` fill (`0xFFFFFFFF` everywhere). A `lcrt::Var<LinearBVHNode>`
+     is `apply_default_initializer`-ed to **zero**, so the port's first K1 wrote `parent_idx = 0` for the
+     internal nodes — including the root. The root then became "someone's child"; the internal-AABB walk's
+     `while(parent != 0xFFFFFFFF)` never reached a top and the whole build spun on the GPU (measured: 100 %
+     GPU utilisation, one busy host core, no console output, >30 min). The fix is one line
+     (`node.parent_idx = 0xFFFFFFFFu;`) and the *lesson* is general: whenever the reference writes a subset
+     of a struct element's members, the port must spell out every member it depends on. The isolated
+     `bvh_tree` case reproduces both symptoms (without the fix: `roots == 0` and
+     `nodes[0].parent_idx == 0`; with it: `roots == 1`).
+  5. **Two Morton spellings, two different functions (transcribe both, do not unify).** `linear_bvh`'s
+     `detail::morton_code` clamps the *normalized* centre into `[0,1]` (`fminf`/`fmaxf`) and multiplies by
+     the **double** literal `1024.0` (`static_cast<uint32_t>(float * double)`); `culbvh::morton3D` multiplies
+     by `1024.0f` (**float**) and clamps into `[0,1023]`. They disagree whenever `x * 1024.0f` is not exact
+     (measured on 2 of 8 probe inputs, e.g. `x == 1.0` → 1024 vs 1023). The [bvh] test's oracle is an
+     independent **bit-interleave loop** (cross-checked against the reference's magic constants on all 1024
+     inputs) and pins each spelling separately, bit-for-bit on the device.
+  6. **The degenerate point cloud is a *division by zero* and the reference's clamp makes it well defined.**
+     With all centres identical the union box has zero size, so `(centre - min) / sizes` is `0/0 = NaN` for
+     every component; Eigen's `mini<float>`/`maxi<float>` are `fminf`/`fmaxf`, i.e. `fminf(NaN, 1) == 1` and
+     `fmaxf(1, 0) == 1`, so the code becomes `1024` (not NaN) and all Morton codes collapse to one value
+     (measured: 64 identical points → 1 distinct code). LC's `lc_min`/`lc_max` on `float` are `fminf`/`fmaxf`
+     too (`cuda_device_math.h`), so the device and a host oracle written with `std::fmin`/`std::fmax` agree
+     exactly — this is why the clamp is written as `max(min(x, 1.0f), 0.0f)` and never as a ternary.
+  7. **The 64-bit Morton word's low half is the *sorted position*, not the object index.** The reference's
+     `linear_bvh_build_expand_morton64_kernel` takes `indices` and never reads it (`uint32_t idx = i;`), so
+     `m_morton_idx[i] = (sorted_morton[i] << 32) | i`; `common_upper_bits` therefore also counts the
+     *position* bits, and `find_split`'s `if(first_code == last_code)` branch is dead for any range longer
+     than one leaf. Both are transcribed as they are (the port stores the word as a plain `uint64_t`, keeping
+     `detail::morton_index(morton, idx)` as the constructor) and pinned by the leaf-permutation check: the
+     leaves are exactly the **stable** Morton order of the inputs (the port's `sort_pairs_by_key` is stable by
+     construction, matching CUB's `DeviceRadixSort::SortPairs`).
+  8. **`__threadfence()` has no LC spelling, but `volatile_read`/`volatile_write` *are* it.** LC's CUDA
+     codegen is `lc_buffer_volatile_read(buffer, i) = { __threadfence(); return buffer.ptr[i]; }` and
+     `lc_buffer_volatile_write(buffer, i, v) = { buffer.ptr[i] = v; __threadfence(); }`
+     (`cuda_builtin/cuda_device_resource.h`). The port's rule: wherever the reference has an explicit
+     `__threadfence()` (`linear_bvh`'s acquire fence, `stackless_bvh`'s two fences in the internal-node
+     protocol) or wherever a cross-thread protocol needs the store to be visible before the next atomic
+     claim, use `volatile_write` for the store and `volatile_read` for the load that must observe it. The
+     values are unchanged (a fence changes only visibility), the ordering is at least as strong as the
+     reference's, and the reader's acquire is covered by the volatile *spin*
+     (`$while(box_is_empty(load_aabb(lbox))) { lbox = aabbs->volatile_read(lidx); };`, the reference's
+     `atomic_fetch`).
+  9. **A zero-length buffer view is not a kernel argument — pad, and replace the size tests that used to
+     mean "empty".** Both this rule and §7.30 rule 16 are about the same LC behaviour, but here it has a
+     second consequence: the reference uses *buffer sizes* as predicates
+     (`if(_flag.total_size() == 0) return;`, `if(flags.size() == 0) return;` for "there is only one
+     primitive"). The port pads the internal-node arrays and `flags` to one element so they stay valid kernel
+     arguments, and the predicates become explicit `size > 1` / `size <= 1` tests on the element counts. The
+     same padding applies to `AtomicCountingLBVH::QueryBuffer::m_pairs`, which starts empty in the reference
+     (ticket 0 overflows it — that is the whole point of its retry) but must be a valid handle for LC: the
+     port grows it to one element before the first pass and the kernel's own
+     `last < pairs_capacity` guard drops the surplus tickets.
+ 10. **The AABB *union* reduction is not a `linalg` primitive — and it cannot be done with atomics either.**
+     The reference calls CUB `DeviceReduce(stream).Reduce(aabbs, out, n, merge, default_aabb)` for the tree's
+     normalization box and `atomicMinf`/`atomicMaxf` (on the box's components) for the stackless scene box.
+     `linalg::device_reduce` supports only sum/min/max over *scalars* (no custom merge functor), and an
+     `LAABB` element is a registered struct, so its components are not addressable as `AtomicRef<float>` (the
+     struct `AtomicRef` reaches members through `LUISA_STRUCT`'s per-member `AtomicRef<member_type>`, and
+     `LVec<float,3>`'s member would need an `AtomicRef<std::array<float,3>>` that does not exist). The port
+     therefore implements the union as `detail::reduce_aabb_union` (details/aabb_reduce.h + aabb_reduce.cpp):
+     the same two-pass shape as `device_reduce` (a per-block tree reduction, then one block that folds the
+     partials with a strided loop), atomic-free and deterministic. Component-wise min/max over floats is
+     associative, commutative and exact, and the **empty box is its identity** (`min = +FLT_MAX`,
+     `max = -FLT_MAX`, Eigen's `setEmpty()`), so the value equals the reference's whatever the association
+     order — pinned by `top_aabb() == host_union(inputs)` on six clouds and by the brute-force traversal
+     equality (which depends on the normalization).
+ 11. **The reference's shuffle tree survives with a *clamped source lane*.** The scene-box kernel's
+     `__shfl_down_sync(0xffffffff, v, d)` leaves the value undefined for lanes with `lane + d >= width`
+     (CUDA's `shfl_down` does not wrap); the port reads
+     `lcrt::warp_read_lane(v, lcrt::min(lane + d, width - 1))`. Lane 0's final value is still the fold of the
+     whole width-lane group (each step folds `j .. j+d-1` inside the group and the clamped reads only ever
+     bring in lanes of the *same* group), which is what the reduction uses; the extra lanes hold the identity
+     box (`fminf(+FLT_MAX, x) == x`).
+ 12. **A synchronous device read must commit the frame list first — and that is what makes the retry's
+     resize safe.** The reference reads its counters implicitly (`int h_cp_num = m_cpNum;`) and every launch
+     it ordered through the CUDA default stream is then complete. An `LStream` batches into the frame
+     `CommandList`, so `copy_to` on the main stream would observe the value from *before* the recorded
+     dispatches. The port adds one layer helper, `luisa_device::read_host_sync(stream, view)` (buffer.h:
+     `stream.flush(); copy_to; synchronize()`), used by both `QueryBuffer` retry loops. It also removes the
+     dangling-handle trap: by the time the pair buffer is grown (which frees the old LC buffer while the
+     recorded dispatch still holds its raw handle), the pass that referenced it has completed.
+ 13. **A record-time predicate is baked into the cached shader — say so, and keep the predicates
+     stateless.** The reference passes its `Pred` as a CUDA kernel argument (a device functor with embedded
+     state). An LC kernel signature cannot carry a host callable, so `detect(pred, ...)`/`query(pred, ...)`
+     are templated on the predicate's *type*, the shader is cached per type, and the predicate instance is
+     captured by the factory (`stackless_cd_shared_self_kernel(pred)`). A predicate must therefore be
+     stateless or have identical captures on every call; the port documents this at each kernel and in the
+     class notes, and `DefaultQueryCallback::operator()` is made generic over its arguments so that the
+     `$if(pred(i, j))` shape works with DSL components (a host `true` is a valid `$if` condition).
+ 14. **The traversal stack is an LC `Local<uint32_t>`, the push is bounds-checked, and `stack_overflow()`
+     is not portable.** The reference's `uint32_t stack[64]` + `uint32_t* stack_ptr/stack_end` becomes
+     `Local<uint32_t>` + an integer stack pointer (a do-while becomes `$while(sp > 0u)` with the pop at the
+     top; the root is pushed before the loop). The reference pushes *unconditionally* and only then tests
+     `stack_ptr >= stack_end`, which writes one element past the array when both children are pushed into a
+     full stack (that is UB in CUDA too); the port guards the push with the same test, so an overflowing
+     query truncates instead of corrupting — the reference's own comment already promises only "may be
+     smaller than the ground truth". `LinearBVHViewer::stack_overflow()` is a `mutable int` member of a
+     viewer *copied into* the kernel, so a kernel's write is invisible on the host: it is not ported, and the
+     [bvh] test pins the consequence instead (a 512-box line + a 5-entry stack finds 0 of 512; the same
+     5-entry stack on a 37-box cloud finds all 37).
+ 15. **The stackless structure's contract, and the one ordering that is *not* deterministic.** `Node` is
+     `{int32 lc; int32 escape; LAABB bound;}` (32 B; `lc == -1` marks a leaf, `escape == -1` ends the walk);
+     `nodes[0 .. n-1)` are the internal nodes in the reference's reordered (tkMap) order and
+     `nodes[n-1 .. 2n-1)` the *sorted* leaves; `MAX_RES_PER_BLOCK = 1024` batches a block's results in shared
+     memory, and a block that fills the batch flushes it with an `atomicAdd` ticket on the pair counter and
+     *re-traverses* from the same node (so duplicates can occur, which is why the reference's own test
+     compares pair *sets*). The port keeps the two `__syncthreads()` positions of each kernel exactly (the
+     "Other" flavour has one more than the "Self" flavour) and uses `$shared<LVector2i>` +
+     `Shared<int32>::atomic(i)` for the cache and the ticket. The reference's `unsorted_ids`-style
+     `DeviceVector` fields, the `depths`/`count` aliasing (`count` is both the init kernel's `depths` and the
+     `ExclusiveSum` input) and the `primMap`-becomes-the-inverse-mapping reuse are all transcribed.
+ 16. **The suite is order-fragile, and a kernel that writes out of range corrupts whatever was allocated
+     after it — including another test's buffers.** A test-local kernel in this batch wrote
+     `counts[n + i]` into a buffer sized `n + 1` (the block needs `2n + 1`: `counts[0]` is the ticket total
+     and `counts[n + i]` the per-query count). Isolated `[bvh]` runs passed; the whole suite failed with 10
+     *missing* candidate pairs on one cloud (`bvh_cross_structure`'s/`bvh_traversal`'s viewer oracle found
+     2637 of 2647) because the stray stores landed in the next allocation's memory. The fix is the test's
+     buffer size; the lesson is to run the *whole suite in one process* before believing an isolated filter,
+     and to size every scratch buffer from the kernel's own index expressions.
+ 17. **Two more harness facts confirmed here.** (a) LC's dispatch aborts on a block size that is not a
+     multiple of 32 (both structures use exactly 256, the reference's `K_THREADS`, and the reduce kernels
+     use 256 as well); (b) one run died during setup with LC's own
+     `Assertion 'begin != end' failed: Failed to parse NVRTC version` (rc 3221226505) immediately after the
+     device was created — a transient, environment-level NVRTC probe failure, not a port bug: the very same
+     binary ran green on the next invocation (do not chase it, re-run).
+ 18. **The export list: 394 → 403 symbols, bootstrapped then regenerated.** `python
+     scripts/luisa_module_def.py` derives the list from the *import tables of the built PE files*, so a
+     *failed* test link (which deletes the exe) leaves it with zero consumers — it then writes a 5-line file
+     and every consumer's link breaks. Recovery: restore the committed `.def` (`git show HEAD:…` — a read),
+     append the decorated names the linker reports (the 8 new member functions), rebuild to get a linkable
+     exe, and only then re-run the generator, which rewrites the file from the real imports (403 = 394 + the
+     8 + `LStream::flush`, which the new inline `read_host_sync` imports). The final file must be 100 %
+     generator output (`--check` rc 0) — never ship the hand-seeded version.
+ 19. **The regression shape and the reproduction recipe.** `[bvh]` → **219 assertions in 8 test cases**
+     (per case: morton_codes 11, tree 112, traversal 60, cross_structure 8, determinism 13,
+     device_vs_host 9, stack_overflow 5, summary 1); `~[bvh]` → **763191/215 == the T6.4c baseline exactly**
+     (the batch adds no system to any scene, so it is purely additive); the whole suite → **763410/223**
+     (measured twice, identical); `ctest` 1/1; the standalone suite 69 cases / 0 checks failed; the ten
+     sibling filters unchanged; `python scripts/luisa_module_def.py --check` rc 0 (403 symbols);
+     `python scripts/luisa_check_module_abi.py` rc 0. Measured device-vs-host: 257 Morton codes and 67
+     common-prefix counts bit-identical to the independent host oracles (0 mismatches); the tree's internal
+     boxes *exactly* equal the union of their children on 6 clouds (1/2/3/1024/identical-37/line-129 leaves;
+     node counts 2n-1, depths 0/1/2/14/6/8, exactly one root each); the candidate sets equal brute force on
+     7 clouds (n = 1, 2, 37, 64 identical, 211 duplicates, 4096, **100k**) — the 100k tree answers 1563
+     queries with exactly the 26075 brute-force pairs — and the two independent structures agree on 795729
+     self-pairs at 100k primitives. **Reproduction:**
+     `python scripts/luisa_build.py build backend_luisa` (rc 0, 0 warnings) then
+     `python scripts/luisa_build.py run "[bvh]"`; every case prints the numbers quoted above.
+ 20. **What the next batch (T7.1b) still owes.** `info_stackless_bvh.{h,cu}` +
+     `details/info_stackless_bvh.inl` (1154 lines) and `info_stackless_bvh_v0.{h,cu}` +
+     `details/info_stackless_bvh_v0.inl` (1134 lines) are *not* ported — they are the two "info" variants the
+     deferred sanity checkers (`sanity_check/simplicial_surface_{distance,intersection}_check.cpp`) need, and
+     they reuse the same `culbvh` helpers, `LAABB` and pair type that this batch established. `LinearBVH::update`
+     is ported and pinned (a rebuild-equivalence check), but the reference's `update()` warning ("if the
+     AABBs are significantly changed, you may get a Tree with bad query performance") is only a comment; the
+     port keeps its `UIPC_ASSERT` on the size contract (which aborts the process on misuse — not covered by a
+     test for that reason).
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
