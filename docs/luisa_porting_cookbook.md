@@ -5374,6 +5374,222 @@ rc 0).
     `candidate_PTs/EEs` + `toi_PTs/EEs` are T8.1/T8.5's.  M7 has no uid of its own: the port
     claims **none** in this batch.
 
+### 7.35 Patterns established in T8.1a (the contact system core: the completed GlobalContactManager, the reporter/exporter layer, the adaptive-parameter layer)
+
+**Scope.** The first M8 batch: the contact *core* — `contact_system/contact_coeff.h`,
+`contact_reporter.{h,cpp}`, `contact_exporter.{h,cpp}`, `contact_exporter_manager.{h,cpp}`,
+`contact_system_feature.{h,cpp}`, `adaptive_contact_parameter_reporter.{h,cpp}`,
+`adaptive_strategies/gipc_adaptive_parameter_strategy.{h,cpp}` and the **completion in place** of
+`global_contact_manager.{h,cpp}` (all eight `SCOPE NOTE (T8.1)` markers resolved), plus
+`apps/tests/backends/luisa/luisa_contact_core_test.cpp` (tag `[contact_core]`, **8 cases / 296
+assertions**).  Baselines: `[contact_core]` **296/8** rc 0; `~[contact_core]` **764653/248** rc 0 =
+the T7.2b baseline exactly; the whole suite **764949/256**; `ctest` 1/1;
+`python scripts/luisa_standalone.py cuda` 69/0; the export list 504 → **523** symbols
+(`python scripts/luisa_module_def.py --check` rc 0, `scripts/luisa_check_module_abi.py` rc 0).
+M8 is re-partitioned four ways (T8.1a this batch; T8.1b the IPC models + function headers +
+exporter wiring; T8.1c `contact_models/analytical_barrier_pFpx/*`; T8.1d the AL subsystem);
+T8.5 keeps only `diff_sim/*`, `line_search/*`, `newton_tolerance/*` and the engine leftovers.
+
+  1. **Both `DeviceBuffer2D`s are flat buffers + an extent, and the `ContactCoeff` table is the
+     same object the adaptive strategy swaps.**  `DeviceBuffer2D<IndexT>` /
+     `<ContactCoeff>` → `lud::LDeviceBuffer<T>` with `index = row * N + col`, and the extent
+     travels as `contact_mask_size()` / `subscene_mask_size()` / `contact_tabular_size()` (the
+     reference's `CBuffer2DView::extent().width`).  The coefficient table keeps the reference's
+     *shared-pointer shape* (`S<lud::LDeviceBuffer<ContactCoeff>>`) because
+     `AdaptiveParameterInfo::exchange_contact_tabular` swaps that pointer with `std::exchange`.
+     `ContactCoeff` is registered with `LUISA_STRUCT(..., kappa, mu)` in `contact_coeff.h`.
+  2. **The default-kappa policy, verbatim — including a clamp the reference's own comment does
+     not hint at.**  `min_kappa`/`max_kappa` start at the config
+     `contact/adaptive/{min,max}_kappa` and are *replaced* by the corridor when it is computable;
+     `default_kappa = resistance_view[0]`; if `!default_model_is_user_set()` it becomes
+     `min_kappa`; else if `default_kappa >= 0 && (default_kappa < min_kappa || > max_kappa)` it
+     is `std::clamp`ed (a *negative* kappa is never clamped — the adaptive opt-in).  The per-model
+     loop repeats the same clamp with `kk = (i == 0) ? default_kappa : resistance[i]`, and writes
+     the coefficient **and** the mask to `(x,y)` and `(y,x)` (the symmetric half).  Pinned by the
+     test's hand-derived table: an enabled model with `resistance == 0` ends up at
+     `min_kappa`, not at 0.
+  3. **The scene-adaptive kappa corridor: formula, convention and the only way to make it not
+     computable.**  `d = kappa_eval_scale * diag^2`, `dHat = d_hat^2`, `t = d - dHat`,
+     `H_b = -2 ln(d/dHat) - 4 t/d + t^2/d^2`, `base = 1e11 / (4 d H_b)`,
+     `base *= mean_mass` only when `mean_mass > 0`, `lower = base / dt^2`, `upper = 100 * lower`
+     (the `dt^2` factor converts Stiff-GIPC's raw barrier to our convention).  `mean_mass` is
+     `(Σ FEM vertex masses + Σ ABD body masses) / vertex_count` — **0 in a mesh-only scene**, so
+     the mass term is skipped there.  **`contact/d_hat = 0` is not a legal config**
+     (`exclusiveMinimum: 0`), so the "not computable" branch (`d <= 0 || dHat <= 0 || dt <= 0`,
+     `!isfinite(H_b) || H_b <= 0`) is reached with a *large* `kappa_eval_scale` (measured:
+     `1e6` → `d >> dHat` → `H_b < 0` → both bounds stay `-1.0`).  The sentinel is `-1.0`, not 0.
+  4. **The six device kernels: two CFL norm kernels + the four feasible-step CCD kernels, and
+     they are *all* the reference's.**  `compute_cfl_condition_kernel` writes
+     `‖disps(surf_vertices(i))‖` (the *surface* set), `..._all_kernel` writes `‖disps(i)‖` for
+     the no-surface-manager fallback; the four feasible-step kernels read one pair array each
+     (`LVector4i/LVector4i/LVector3i/LVector2i`), sum the codim thicknesses
+     (`PT/EE/PE/PP_thickness` from `utils/codim_thickness.h`), call the ported additive CCD
+     (`luisa_device::math::distance::point_triangle_ccd` / `edge_edge_ccd` / `point_edge_ccd` /
+     `point_point_ccd`) with `eta = 0.2` and write `select(1.0, toi, hit)`.  `cb::DeviceReduce::
+     Min/Max` → `lla::device_reduce_min/max`, and the reference's *implicit* `DeviceVar` reads
+     become `lud::read_host_sync(frame_stream(), var.view())`.
+  5. **The batch's one difficult mapping: the reference's `max_iter = 1000` cannot be
+     transcribed.**  `luisa_device/math/distance/details/ccd.inl`'s `ccd_loop` takes the
+     iteration budget as a **host** constant (`ccd_iterations(max_iter)`) and *unrolls* it into
+     the AST — the reference's `max_iter` is a device value, the port's is not.  Passing `1000`
+     made the four kernels' first JIT die (SIGSEGV inside `compute_feasible_step`, measured), so
+     the port passes `kFeasibleToiMaxIter = 16`, the same budget the ported trajectory filters
+     pass to the *identical* CCD call for the *identical* loop
+     (`details/simplex_trajectory_filter_kernels.h: kToiMaxIter`).  With `eta = 0.2` the loop's
+     gap test fires within **two** iterations for every approaching pair and the non-approaching
+     pairs exit on `toc_cur > toc_prev`, so the returned `toc` is unchanged; the test pins the
+     closed form for all four kernels.
+  6. **The feasible-step `toc` has a closed form worth pinning.**  For a simplex pair whose
+     relative motion is *collinear* with the separation, `ccd_loop` steps
+     `toc_lower = (1 - eta) (d^2 - th^2) / ((d + th) * maxDispMag)`, so the distance falls to
+     `th + eta (d0 - th)` after one step and the gap test fires on the second — the returned
+     `toc` is `(1 - eta) (d0 - th) / (d0 - d1)` (`d0`/`d1` the distances at t = 0 and t = 1,
+     `maxDispMag = |d0 - d1|` for collinear motion).  The test lays out all four pairs with
+     `d0 = 1`, `d1 = 0.1`, `thickness = 0.05` → `t* = 0.844444…`; the *device* value differs from
+     the host formula in the last ulp (`0.84444444444444433` vs `…44`), so compare with a
+     tolerance, never with `==`.  A `toc > 1.0` result is *rejected* by the loop (`toc_cur >
+     toc_prev`) and the kernel writes the `1.0` sentinel; `compute_feasible_step` also clamps
+     the reduced min to `<= 1.0`.
+  7. **`distance::point_triangle_ccd` etc. are the T2.3 layer, and the *host* flavour is the
+     oracle.**  `luisa_device::math::distance::*_ccd` has a host (`T = double`) and a device
+     (`T = Var<double>`, `bool_of_t` result) overload over one shared `_impl`; the device
+     overloads take `T max_iter` as an `int` argument.  `*_thickness` live in
+     `utils/codim_thickness.h` and their `RUNTIME_CHECK` asserts become `lcrt::device_assert`
+     on the device path (`codim_thickness_detail::assert_same_thickness`).
+  8. **A `ContactReporter` registers with *two* managers, and that is the reporting pipeline's
+     whole shape.**  It derives from `DyTopoEffectReporter` (so `GlobalDyTopoEffectManager`
+     drives it through extent → assemble / energy) and overrides
+     `do_build(DyTopoEffectReporter::BuildInfo&) final` to also call
+     `GlobalContactManager::add_reporter(this)`; `component_flags()` is forced to
+     `EnergyComponentFlags::Contact`, which is what partitions it out of the complement set.
+     `GlobalContactManager::Impl::init` fans `init()` out and then writes `R->m_index = i` (the
+     index contract lives in `m_index`, private with `friend GlobalContactManager`).
+  9. **The exporter/feature seam is `ContactExporter` (a `SimSystem`) → `ContactExporterManager`
+     → `core::ContactSystemFeature`.**  `ContactExporterManager::do_build` builds a
+     `ContactSystemFeatureOverrider` + a `core::ContactSystemFeature` and `features().insert(...)`
+     (`features()` is the `SimSystem` base's hook); `init()` builds the `prim_type -> exporter`
+     map and the ordered `m_contact_prim_types`; `find_exporter` warns and returns `nullptr` for
+     an unknown type, and `_create_prim_type_on_geo` writes the `prim_type` `std::string` meta
+     onto the geometry the caller passes.  The frontend reads it back through
+     `engine.features().find<core::ContactSystemFeature>()` — `contact_energy/gradient/hessian
+     (prim_type, Geometry&)` and `contact_primitive_types()`.  The reference header's four
+     `contact_system/*_contact.h` includes are dead in its own class body *and* are T8.1b's
+     types, so the port drops them (the T5.3 rule).
+ 10. **`AdaptiveParameterInfo` is a true `std::exchange`, and the tabular pointer identity is
+     the contract.**  `exchange_contact_tabular(new)` returns the *previous* `S<...>` and installs
+     `new` (`std::exchange(m_impl->contact_tabular, new_buffer)`); `contact_tabular()` hands out
+     the flat `LBufferView<ContactCoeff>`.  The test probe exchanges `nullptr` first (proving the
+     returned handle is the manager's original), installs a replacement, reads it back through
+     `GlobalContactManager::contact_tabular()`, then restores and asserts the swap returned the
+     replacement — three pointer-identity pins.
+ 11. **The adaptive reporter slot is single, and the *scene* decides who owns it.**
+     `AdaptiveContactParameterReporter::do_build` throws unless some resistance is `<= 0`;
+     `GIPCAdaptiveParameterStrategy::do_build` throws unless some resistance is `< 0`; and
+     `GlobalContactManager::add_reporter(AdaptiveContactParameterReporter*)` **asserts** the slot
+     is empty.  So a scene with a model at `resistance == 0` makes the *probe* reporter valid and
+     GIPC invalid, and a scene with `resistance < 0` does the opposite — exactly the two scenes
+     the test builds (a second reporter in either scene would abort the process).
+ 12. **The reference's dead code was transcribed as dead code.**  `Impl::compute_d_hat()` /
+     `Impl::compute_adaptive_kappa()` are empty `// TODO: Now do nothing` bodies with no caller in
+     the whole reference backend (kept); the GIPC strategy's two `copy_to` host copies
+     (`h_contact_gradient` / `h_non_contact_gradient`) are never read (kept, with the port's
+     explicit `read_back_vector` because `LDenseVector` has no `copy_to(std::vector&)`); the
+     reference's `ContactReporter::Impl` duplicates the base's three views (kept, unread).
+     Nothing was "fixed".
+ 13. **Test seams.**  `GlobalContactManager` keeps the reference's private surface and adds, in
+     the header's documented `T8.1a test seam` block, `Impl& impl()` and
+     `run_compute_adaptive_parameters()` (the T7.2a `GlobalTrajectoryFilter::run_stage`
+     precedent; the reference's `compute_cfl_condition` / `compute_feasible_step` /
+     `compute_adaptive_parameters` are private with only the Phase-8 Newton loop as their caller).
+     Everything else the test reads is public in the reference too (`contact_tabular()`,
+     `kappa_lower_bound()/upper_bound()`, `d_hat()`, the `Impl` members).
+ 14. **Scene-gating a probe system in the shared test binary.**  `REGISTER_SIM_SYSTEM` is
+     process-wide, so every test-local probe exists in *every* scene the shared
+     `uipc_test_backend_luisa.exe` builds (including `[filter]` / `[bvh_filter]`) — a probe
+     `ContactReporter` would otherwise pollute those scenes' dytopo-effect assembly, and a probe
+     `SimplexTrajectoryFilter` would be found by `find<SimplexTrajectoryFilter>()` there.  The
+     port's technique is the reference filters' own `throw SimSystemException` gate plus a
+     **geometry-meta marker** (`t81a_probe` on the mesh / half-plane geometry) that only the
+     `[contact_core]` scenes carry; `Scene::config()` rejects unknown keys and the
+     `collision_detection/method` enum rejects unknown values, so a marker attribute on a
+     *geometry* is the only place a test may put its own flag.
+ 15. **A scene that drives the trajectory pipeline needs a half plane -- FIXED at the filter.**
+ `EasyVertexHalfPlaneTrajectoryFilter` is valid in *any* IPC scene (`do_build` only requires
+ `IPCPipelineFlag`) and its `filter_active` / `filter_toi` dispatch their kernels with
+ `plane_positions` / `plane_normals`; with **no** half-plane geometry those are zero-length buffer
+ views, which LC rejects as kernel arguments (the recorded harness hazard: a SIGSEGV *inside* the
+ filter, before its own log line).  T7.2a/T7.2b worked around it by parking a far-away half plane in
+ every `run_stage()` scene (`t81a_feasible_step` still does; the `[bvh_filter]` scenes park one 100
+ units below).  **The port now skips the dispatch when `n_planes == 0`**, which is exact: both
+ kernels' whole bodies sit inside their `$for(j, 0u, n_planes)` loop, so they write nothing at all/r/n (not even `num_collisions`), and `filter_toi` skips its reduce with the dispatch -- otherwise the/r/n reduce would consume the *unwritten* `tois` and clobber the caller's `info.toi()` 1.1 fill, which/r/n *is* the reference's answer for a scene with no plane in range.  The idiom is/r/n `ALVertexHalfPlaneTrajectoryFilter`'s (it had it since T7.2a; the easy twin did not).  Proof: the/r/n new `t81a_plane_less_scene` fails with **SIGSEGV rc 3221225477** when the guard is reverted and is/r/n green when restored, and `~[contact_core]` stays at the previous baseline exactly, so the fix is/r/n behaviour-neutral for every existing scene./r/n 16. **The measured corridor numbers (mesh-only scenes, `scale = 1e-16`, `dt = 0.25`).**  a
+     3-vertex unit mesh (`diag = sqrt(2)`) → `[8000, 800000]`, default kappa `8000`; a 4-vertex
+     mesh (`diag = sqrt(3)`) → `[12000, 1.2e6]`; the earlier T7.2a scene (`diag = 1.4142135`,
+     `dt = 0.25`) → `[8.0e3, 8.0e5]`.  The corridor **overrides** the config
+     `[100 MPa, 100 GPa]` fallback in every computable scene, so a default trimesh scene's
+     `ContactCoeff::kappa` is the corridor's lower bound, not `1e8`.
+ 17. **The export-list step, again.**  Adding the test made the link fail with **19**
+     unresolved externals (the new `GlobalContactManager` accessors, the `AdaptiveParameterInfo`
+     pair, `Impl::compute_cfl_condition/compute_feasible_step`, `ContactReporter::do_build/
+     do_init`, `ContactExporter::do_build`, `AdaptiveContactParameterReporter::do_build`,
+     `SimplexTrajectoryFilter::FilterActiveInfo::PTs/EEs/PEs/PPs`, and
+     `DyTopoEffectLineSearchReporter::Impl::compute_energy` — the test drives the line-search
+     reporter's `Impl::compute_energy` directly, which is a `friend` of the dytopo manager).
+     Recipe as usual: harvest the **first** `(?…)` on each LNK2019/LNK2001 line, append them to
+     the committed `.def`, relink (the exe must exist before the generator can read its import
+     table), then `python scripts/luisa_module_def.py` (504 → **523**) and `--check` rc 0.
+ 18. **Uid hygiene.**  The batch claims **no uid**: every new system is a plain `SimSystem` /
+     reporter (no `get_uid`, no `(dim, uid)` geometry group), and the five test-local probes
+     claim none either, so no reserved mock uid (8/16/25/26/27/28/666/671) is touched.  The
+     proof that adding the systems did not shift the system-build order is the exclusion run:
+     `~[contact_core]` came out at **764653/248 exactly**, i.e. every previously green case
+     still sees its own systems first.
+ 19. **Reproduction.**  `python scripts/luisa_build.py build backend_luisa` (rc 0, 0 warnings) →
+     `python scripts/luisa_build.py run "[contact_core]"` (8 cases / 296 assertions, rc 0; the
+     four printed lines carry every quoted number).  Battery: `[contact_core]` 296/8 →
+     `~[contact_core]` 764653/248 → the whole suite 764949/256 → the 18 sibling tags
+     (`[bvh_filter]` 594/9, `[filter]` 423/7, `[bvh]` 219/8, `[bvh_info]` 226/9, `[half_plane]`
+     426/7, the nine `[abd_*]`, `[mas_preconditioner]` 234/7, `[fem_precond]` 104/4,
+     `[fem_linear]` 323/4, `[fem_dynamics]` 135/8, `[luisa][t43]` 238/4) → `ctest` 1/1 →
+     `python scripts/luisa_standalone.py cuda` 69/0 → `python scripts/luisa_module_def.py --check`
+     rc 0 (523 symbols) → `python scripts/luisa_check_module_abi.py` rc 0.
+ 20. **What T8.1a does *not* cover, and T8.1b owes.**  The contact tabular is built and read, the
+     corridor/CFL/feasible-step caps are driven over real scenes, and a probe reporter + probe
+     exporter exercise the reporting pipeline end-to-end — but the *real* models are missing, so
+     (i) `ContactExporterManager` has no concrete exporter until T8.1b, (ii) the `ContactReporter`
+     gradient/Hessian *content* is pinned only as the slice sizes the manager hands out (the
+     writers' numbers are the energies and the exporter path), and (iii) the GIPC strategy's
+     `do_compute_parameters` is **not** driven here (it needs `GlobalLinearSystem` +
+     `GlobalDyTopoEffectManager::compute_dytopo_effect`, i.e. the Phase-8 loop); the test pins its
+     resolved state (`h_adaptive_kappa_index`, `test_contact_tabular`, the corridor/config bounds)
+     and re-derives its clamp law on the host.  `contact_receivers` keeps the reference's
+     **dangling forward declaration** (`class ContactReceiver;` is never defined nor registered in
+     the reference either) and is asserted empty.
+ 21. **The per-vertex attribute plumbing in the *test target* is a `test_*` convention -- a
+ plain `verts.create<Float>("thickness", ...)` is dead.**  The manager's per-vertex arrays are
+ written by whichever `VertexReporter` wins the uid group; in this test executable that is the
+ sibling `GlobalGeometryTestVertexReporter` (`luisa_global_geometry_test.cpp`), which reads the
+ attributes named `test_dimension` / `test_contact_element_id` / `test_subscene_element_id` /
+ `test_d_hat` / `test_thickness` / `test_displacement` and pushes them into the manager's buffers
+ (`luisa_trajectory_filter_test.cpp` relies on the same convention; T8.1a measured it: a scratch
+ mesh with no `test_d_hat` gets `d_hats == 0`, while the *half-plane* geometry's vertex -- an
+ implicit geometry, so not in `scene_complexes()` -- keeps the manager's `resize_init` default
+ `contact/d_hat == 0.01`).  A test that needs a value in the manager's arrays must therefore either
+ create the `test_*` attribute or write the device buffer directly (`set_thicknesses` / the new
+ `set_d_hats` in `[contact_core]`).  Consequence for a half-plane DCD test: with `d_hat == 0` the
+ activation band `(thickness, thickness + d_hat)^2` is empty and `filter_active` reports **zero**
+ pairs while `filter_toi` (which does not use `d_hat`) happily returns a TOI -- an easy way to write
+ a positive control that passes for the wrong reason.
+ 22. **`num_pairs()` is a documented *test seam*, not a reference API.**  `candidate_PHs()` cannot
+ express "zero pairs", because the port pads that pair buffer to one element so that it stays a
+ valid LC kernel argument (rule 7), so a zero-pair and a one-pair run both report
+ `candidate_PHs().size() == 1`.  `EasyVertexHalfPlaneTrajectoryFilter::num_pairs()` returns the
+ `h_num_collisions` the last `filter_active` recorded; `t81a_plane_less_scene` is its only user (0
+ for a plane-less scene, 2 for the same mesh with a plane 0.005 below it -- the triangle's third
+ vertex sits 1.0 *above* the plane, i.e. outside the band, so the control pins an in-band *and* an
+ out-of-band vertex; the port's `PHs` capacity/retry kept the count honest at 2, which the first
+ spelling of the oracle got wrong).
+
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

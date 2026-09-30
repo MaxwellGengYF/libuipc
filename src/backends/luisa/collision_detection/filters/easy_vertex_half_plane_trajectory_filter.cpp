@@ -315,27 +315,36 @@ void EasyVertexHalfPlaneTrajectoryFilter::Impl::filter_active(FilterActiveInfo& 
         if(n > 0)
         {
             auto n_planes = static_cast<std::uint32_t>(info.plane_positions().size());
-            stream.record(
-                easy_vertex_half_plane_trajectory_filter_filter_active_kernel()(
-                    num_collisions.view(),
-                    info.surf_vertices(),
-                    info.positions(),
-                    info.thicknesses(),
-                    info.contact_element_ids(),
-                    info.subscene_element_ids(),
-                    info.contact_mask_tabular(),
-                    info.subscene_mask_tabular(),
-                    info.plane_positions(),
-                    info.plane_normals(),
-                    PHs.view(),
-                    info.d_hats(),
-                    info.half_plane_vertex_offset(),
-                    info.contact_mask_size(),
-                    info.subscene_mask_size(),
-                    n_planes,
-                    static_cast<std::uint32_t>(PHs.size()),
-                    static_cast<std::uint32_t>(n))
-                    .dispatch(static_cast<std::uint32_t>(n)));
+            // A **plane-less** scene is a perfectly valid IPC scene -- the reference's
+            // half-plane filters register in every one of them -- but its plane arrays are
+            // empty, and LC rejects a zero-length buffer view as a kernel argument (T7.1a
+            // rule 9; measured here as a SIGSEGV inside this function).  The kernel's whole
+            // body sits inside its `$for(j, 0u, n_planes)` loop, so with `n_planes == 0` it
+            // writes nothing at all (not even `num_collisions`): skipping the dispatch is
+            // exact, and it is the idiom ALVertexHalfPlaneTrajectoryFilter already uses
+            // (cookbook §7.32 rule 7 / §7.35).
+            if(n_planes > 0)
+                stream.record(
+                    easy_vertex_half_plane_trajectory_filter_filter_active_kernel()(
+                        num_collisions.view(),
+                        info.surf_vertices(),
+                        info.positions(),
+                        info.thicknesses(),
+                        info.contact_element_ids(),
+                        info.subscene_element_ids(),
+                        info.contact_mask_tabular(),
+                        info.subscene_mask_tabular(),
+                        info.plane_positions(),
+                        info.plane_normals(),
+                        PHs.view(),
+                        info.d_hats(),
+                        info.half_plane_vertex_offset(),
+                        info.contact_mask_size(),
+                        info.subscene_mask_size(),
+                        n_planes,
+                        static_cast<std::uint32_t>(PHs.size()),
+                        static_cast<std::uint32_t>(n))
+                        .dispatch(static_cast<std::uint32_t>(n)));
         }
     };
 
@@ -375,29 +384,37 @@ void EasyVertexHalfPlaneTrajectoryFilter::Impl::filter_toi(FilterTOIInfo& info)
     if(n > 0)
     {
         auto n_planes = static_cast<std::uint32_t>(info.plane_positions().size());
-        stream.record(easy_vertex_half_plane_trajectory_filter_filter_toi_kernel()(
-                          info.surf_vertices(),
-                          info.positions(),
-                          info.thicknesses(),
-                          info.contact_element_ids(),
-                          info.subscene_element_ids(),
-                          info.subscene_mask_tabular(),
-                          info.contact_mask_tabular(),
-                          info.displacements(),
-                          info.plane_positions(),
-                          info.plane_normals(),
-                          tois.view(),
-                          info.half_plane_vertex_offset(),
-                          info.contact_mask_size(),
-                          info.subscene_mask_size(),
-                          n_planes,
-                          info.alpha(),
-                          static_cast<std::uint32_t>(n))
-                          .dispatch(static_cast<std::uint32_t>(n)));
+        // see filter_active: a plane-less scene passes empty plane arrays, which LC rejects
+        // as kernel arguments.  With `n_planes == 0` the kernel would only rewrite every
+        // `tois(i)` with its `min_toi = 1.1f` initial value, i.e. the caller's `info.toi()`
+        // 1.1 fill above is already the answer -- so the dispatch *and* its reduce are both
+        // skipped (the reduce must not run on the unwritten `tois`).
+        if(n_planes > 0)
+        {
+            stream.record(easy_vertex_half_plane_trajectory_filter_filter_toi_kernel()(
+                              info.surf_vertices(),
+                              info.positions(),
+                              info.thicknesses(),
+                              info.contact_element_ids(),
+                              info.subscene_element_ids(),
+                              info.subscene_mask_tabular(),
+                              info.contact_mask_tabular(),
+                              info.displacements(),
+                              info.plane_positions(),
+                              info.plane_normals(),
+                              tois.view(),
+                              info.half_plane_vertex_offset(),
+                              info.contact_mask_size(),
+                              info.subscene_mask_size(),
+                              n_planes,
+                              info.alpha(),
+                              static_cast<std::uint32_t>(n))
+                              .dispatch(static_cast<std::uint32_t>(n)));
 
-        // the reference's CUB reduce does not launch for n == 0, so the slot keeps the
-        // 1.1 fill above (the port's device_reduce_min would write the +inf identity)
-        lla::device_reduce_min(stream, tois.cview(), info.toi(), tois.size());
+            // the reference's CUB reduce does not launch for n == 0, so the slot keeps the
+            // 1.1 fill above (the port's device_reduce_min would write the +inf identity)
+            lla::device_reduce_min(stream, tois.cview(), info.toi(), tois.size());
+        }
     }
 }
 }// namespace uipc::backend::luisa

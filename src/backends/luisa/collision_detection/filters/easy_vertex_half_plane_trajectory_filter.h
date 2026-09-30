@@ -49,6 +49,14 @@ class EasyVertexHalfPlaneTrajectoryFilter final : public VertexHalfPlaneTrajecto
     virtual lud::LCBufferView<LVector2i> candidate_PHs() const noexcept override;
     virtual lud::LCBufferView<Float>     toi_PHs() const noexcept override;
 
+    /// The number of `[Vertex-HalfPlane]` pairs `filter_active` last recorded.
+    ///
+    /// A **port-only test seam** (the reference has no accessor): `candidate_PHs()` cannot
+    /// express it, because the port pads the pair buffer to one element so that it stays a
+    /// valid LC kernel argument -- so a zero-pair and a one-pair run both report
+    /// `candidate_PHs().size() == 1`.  §7.35's plane-less-scene rule is the only user.
+    [[nodiscard]] IndexT num_pairs() const noexcept { return m_impl.h_num_collisions; }
+
   private:
     Impl m_impl;
 

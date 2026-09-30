@@ -7,7 +7,7 @@
 ; auto-generated list exceeded MSVC's 65535-export ceiling -> LNK1189).
 ;
 ; Contents: the module's C API + every symbol the in-tree consumers import from it.
-; 505 entries, generated from 1 consumer(s).
+; 524 entries, generated from 1 consumer(s).
 ; ---------------------------------------------------------------------------
 EXPORTS
     ??0?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
@@ -31,10 +31,14 @@ EXPORTS
     ??1LStream@luisa_device@luisa@backend@uipc@@QEAA@XZ
     ??A?$OffsetCountCollection@H@luisa@backend@uipc@@QEBA?AV?$tuple@HH@std@@_K@Z
     ?Dm_invs@BaseInfo@FEM3DConstitution@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LMat@N$02$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
+    ?EEs@FilterActiveInfo@SimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXV?$LBufferView@U?$LVec@H$03@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@@Z
     ?EEs@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$03@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?PEs@FilterActiveInfo@SimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXV?$LBufferView@U?$LVec@H$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@@Z
     ?PEs@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?PHs@VertexHalfPlaneTrajectoryFilter@luisa@backend@uipc@@QEAA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?PPs@FilterActiveInfo@SimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@@Z
     ?PPs@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?PTs@FilterActiveInfo@SimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXV?$LBufferView@U?$LVec@H$03@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@@Z
     ?PTs@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$03@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
     ?_assemble_linear_system@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?_update_subsystem_extent@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAA_NXZ
@@ -95,9 +99,13 @@ EXPORTS
     ?coindices@VertexAttributeInfo@GlobalVertexManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@345@XZ
     ?collection@SimSystem@backend@uipc@@AEAAAEAVSimSystemCollection@23@XZ
     ?commit@LStream@luisa_device@luisa@backend@uipc@@QEAAXXZ
+    ?compute_adaptive_parameters@GlobalContactManager@luisa@backend@uipc@@AEAAXXZ
     ?compute_axis_max_displacement@Impl@GlobalVertexManager@luisa@backend@uipc@@QEAANXZ
+    ?compute_cfl_condition@Impl@GlobalContactManager@luisa@backend@uipc@@QEAANXZ
     ?compute_current_angles@AffineBodyRevoluteJoint@luisa@backend@uipc@@QEAAXXZ
     ?compute_dytopo_effect@GlobalDyTopoEffectManager@luisa@backend@uipc@@QEAAXAEAVComputeDyTopoEffectInfo@1234@@Z
+    ?compute_energy@Impl@DyTopoEffectLineSearchReporter@luisa@backend@uipc@@QEAAX_N@Z
+    ?compute_feasible_step@Impl@GlobalContactManager@luisa@backend@uipc@@QEAANXZ
     ?compute_gradient@GlobalLinearSystem@luisa@backend@uipc@@QEAAXAEAVComputeGradientInfo@1234@@Z
     ?compute_vertex_bounding_box@Impl@GlobalVertexManager@luisa@backend@uipc@@QEAA?AV?$AlignedBox@M$02@Eigen@@XZ
     ?constitution_info@BaseInfo@FEM3DConstitution@luisa@backend@uipc@@QEBAAEBVConstitutionInfo@FiniteElementMethod@345@XZ
@@ -111,6 +119,9 @@ EXPORTS
     ?contact_mask_tabular@BaseInfo@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@345@XZ
     ?contact_mask_tabular@BaseInfo@VertexHalfPlaneTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@345@XZ
     ?contact_mask_tabular@GlobalContactManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@234@XZ
+    ?contact_tabular@AdaptiveParameterInfo@GlobalContactManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@VContactCoeff@luisa@backend@uipc@@@luisa_device@345@XZ
+    ?contact_tabular@GlobalContactManager@luisa@backend@uipc@@QEBA?AV?$LBufferView@VContactCoeff@luisa@backend@uipc@@@luisa_device@234@XZ
+    ?contact_tabular_size@GlobalContactManager@luisa@backend@uipc@@QEBAHXZ
     ?convert@?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAAXAEBV?$LBCOOMatrix@N$00$00@23456@AEAV?$LBSRMatrix@N$00@23456@AEAVLStream@3456@@Z
     ?convert@?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAAXAEBV?$LDoubletVector@N$00@23456@AEAV?$LBCOOVector@N$00@23456@@Z
     ?convert@?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAAXAEBV?$LDoubletVector@N$00@23456@AEAV?$LBCOOVector@N$00@23456@AEAVLStream@3456@@Z
@@ -156,6 +167,7 @@ EXPORTS
     ?do_apply_recover@SimplexTrajectoryFilter@luisa@backend@uipc@@MEAAXAEAVRecoverInfo@ISimSystem@34@@Z
     ?do_build@ABDLineSearchSubreporter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@ABDLinearSubsystemReporter@luisa@backend@uipc@@EEAAXXZ
+    ?do_build@AdaptiveContactParameterReporter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@AffineBodyConstitution@luisa@backend@uipc@@EEAAXXZ
     ?do_build@AffineBodyConstraint@luisa@backend@uipc@@EEAAXXZ
     ?do_build@AffineBodyKinetic@luisa@backend@uipc@@EEAAXXZ
@@ -164,6 +176,8 @@ EXPORTS
     ?do_build@Codim0DConstitution@luisa@backend@uipc@@EEAAXAEAVBuildInfo@FiniteElementConstitution@234@@Z
     ?do_build@Codim1DConstitution@luisa@backend@uipc@@EEAAXAEAVBuildInfo@FiniteElementConstitution@234@@Z
     ?do_build@Codim2DConstitution@luisa@backend@uipc@@EEAAXAEAVBuildInfo@FiniteElementConstitution@234@@Z
+    ?do_build@ContactExporter@luisa@backend@uipc@@EEAAXXZ
+    ?do_build@ContactReporter@luisa@backend@uipc@@EEAAXAEAVBuildInfo@DyTopoEffectReporter@234@@Z
     ?do_build@DyTopoEffectReceiver@luisa@backend@uipc@@EEAAXXZ
     ?do_build@DyTopoEffectReporter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@ExternalForceReporter@luisa@backend@uipc@@EEAAXXZ
@@ -233,6 +247,7 @@ EXPORTS
     ?do_dump@SimplexTrajectoryFilter@luisa@backend@uipc@@MEAA_NAEAVDumpInfo@ISimSystem@34@@Z
     ?do_filter_active@SimplexTrajectoryFilter@luisa@backend@uipc@@EEAAXAEAVFilterActiveInfo@GlobalTrajectoryFilter@234@@Z
     ?do_filter_toi@SimplexTrajectoryFilter@luisa@backend@uipc@@EEAAXAEAVFilterTOIInfo@GlobalTrajectoryFilter@234@@Z
+    ?do_init@ContactReporter@luisa@backend@uipc@@MEAAXAEAVInitInfo@1234@@Z
     ?do_init@DyTopoEffectReceiver@luisa@backend@uipc@@MEAAXAEAVInitInfo@1234@@Z
     ?do_init@DyTopoEffectReporter@luisa@backend@uipc@@MEAAXAEAVInitInfo@1234@@Z
     ?do_label_active_vertices@SimplexTrajectoryFilter@luisa@backend@uipc@@EEAAXAEAVLabelActiveVerticesInfo@GlobalTrajectoryFilter@234@@Z
@@ -266,6 +281,8 @@ EXPORTS
     ?energy_count@ReportExtentInfo@AffineBodyAnimator@luisa@backend@uipc@@QEAAX_K@Z
     ?energy_count@ReportExtentInfo@InterAffineBodyAnimator@luisa@backend@uipc@@QEAAX_K@Z
     ?engine@SimSystem@luisa@backend@uipc@@IEAAAEAVSimEngine@234@XZ
+    ?eps_velocity@GlobalContactManager@luisa@backend@uipc@@QEBANXZ
+    ?exchange_contact_tabular@AdaptiveParameterInfo@GlobalContactManager@luisa@backend@uipc@@QEBA?AV?$shared_ptr@V?$LDeviceBuffer@VContactCoeff@luisa@backend@uipc@@@luisa_device@luisa@backend@uipc@@@std@@V67@@Z
     ?exclusive_scan_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXAEAVLStream@3456@AEBV?$LBufferView@H@3456@1_KAEAUScanScratch@23456@@Z
     ?exclusive_scan_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXAEAVLStream@3456@AEBV?$LBufferView@N@3456@1_KAEAUScanScratch@23456@@Z
     ?external_forces@ExternalForceInfo@FEMExternalForceManager@luisa@backend@uipc@@QEAA?AV?$LBufferView@U?$LVec@N$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
@@ -356,6 +373,8 @@ EXPORTS
     ?is_diag@DyTopoClassifyInfo@luisa@backend@uipc@@QEBA_NXZ
     ?is_empty@DyTopoClassifyInfo@luisa@backend@uipc@@QEBA_NXZ
     ?is_valid@ISimSystem@backend@uipc@@QEBA_NXZ
+    ?kappa_lower_bound@GlobalContactManager@luisa@backend@uipc@@QEBANXZ
+    ?kappa_upper_bound@GlobalContactManager@luisa@backend@uipc@@QEBANXZ
     ?last_solve_iterations@GlobalLinearSystem@luisa@backend@uipc@@QEBA_KXZ
     ?level_size@MASPreconditionerEngine@luisa@backend@uipc@@QEBA?AUInt2@1234@H@Z
     ?main_stream@Runtime@luisa_device@luisa@backend@uipc@@QEAAAEAVStream@compute@3@XZ

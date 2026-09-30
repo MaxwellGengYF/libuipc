@@ -36,7 +36,10 @@
  *   SimEngine::build()                -> `find<GlobalTrajectoryFilter>()`
  *   SimEngine::advance_ipc/al         -> detect / filter_active / filter_toi /
  *                                        record_friction_candidates (T8.4)
- *   ContactExporterManager            -> detect / filter_active (T8.1)
+ * ContactExporterManager -> detect / filter_active.  T8.1a ported the manager and
+ * found that **its own body never calls them** (the reference's friend declaration is
+ * for the *concrete* exporters T8.1b ports, which run detect/filter_active to build
+ * their per-primitive-type energy/gradient/Hessian readbacks).
  *   GlobalContactManager              -> label_active_vertices /
  *                                        clear_friction_candidates (T8.1)
  *   the filters' `do_build`           -> add_filter(this)
