@@ -1454,6 +1454,54 @@ void ee_layout(const Flag4& f, int dim, int* out)
 }
 }// namespace
 
+TEST_CASE("distance_flagged_degenerate_edge_edge_layout", "[luisa][distance][flagged]")
+{
+    // Regression guard: at `dim == 3`, `degenerate_edge_edge` must return
+    // `pe_from_ee`'s **direct** indices into {ea0, ea1, eb0, eb1} — the layout
+    // `ee_layout` restates above — and not the ascending active ranks that
+    // `active_offsets` produces.  Only the all-ascending flag ({1,1,1,0}, inactive 3)
+    // agreed; the other three used to come back permuted, e.g. active {0,1,3}
+    // (inactive 2, table row {3,0,1}) was reported as {2,0,1}, so the point of the
+    // point-edge pair became eb0 instead of the free endpoint eb1.  The
+    // `edge_edge_distance2` dispatch does not go through this helper (it indexes
+    // `kPeFromEe` directly), but the trajectory-filter kernels do
+    // (`simplex_trajectory_filter_kernels.h:1379`), which is why the distance tests
+    // alone stayed green.
+    for(int inactive = 0; inactive < 4; ++inactive)
+    {
+        int bits[4] = {1, 1, 1, 1};
+        bits[inactive] = 0;
+        const Flag4 flag = dist::detail::flag4<int>(bits[0], bits[1], bits[2], bits[3]);
+
+        LVec<int, 4> offsets{0, 0, 0, 0};
+        const int    dim = dist::degenerate_edge_edge(flag, offsets);
+        CHECK(dim == 3);
+
+        int want[4] = {0, 0, 0, 0};
+        ee_layout(flag, 3, want);
+        for(int s = 0; s < 3; ++s)
+        {
+            if(offsets(s) != want[s])
+                std::printf(" [ee degenerate] inactive %d: offsets(%d) = %d, want %d\n",
+                            inactive,
+                            s,
+                            offsets(s),
+                            want[s]);
+            CHECK(offsets(s) == want[s]);
+        }
+    }
+
+    // `dim == 2` keeps `pp_from_ee`'s ascending active pair.
+    {
+        const Flag4  flag = dist::detail::flag4<int>(1, 0, 1, 0);
+        LVec<int, 4> offsets{0, 0, 0, 0};
+        const int    dim = dist::degenerate_edge_edge(flag, offsets);
+        CHECK(dim == 2);
+        CHECK(offsets(0) == 0);
+        CHECK(offsets(1) == 2);
+    }
+}
+
 TEST_CASE("distance_flagged_host_flags", "[luisa][distance][flagged]")
 {
     // --- point-point: a pair is always fully active --------------------------

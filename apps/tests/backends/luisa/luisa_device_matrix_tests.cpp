@@ -224,6 +224,37 @@ TEST_CASE("svd_host", "[luisa][matrix]")
         for(int i = 0; i < 3; ++i) CHECK(close(s2(i), sigma(i), 1e-14));
     }
 
+    // Equal squared column norms with a non-zero inner product: `zeta == 0` is the
+    // 45 degree rotation (t = 1), not the identity.  With `lmath::sign(0) == 0` the
+    // one-sided Jacobi sweep left this pair un-rotated, so U came back non-orthogonal
+    // (here its first two columns stay parallel and U loses rank) even though the
+    // random matrices above never hit the case.
+    {
+        constexpr double   c45 = 0.7071067811865476;  // sqrt(2) / 2
+        LMat<double, 3, 3> A   = LMat<double, 3, 3>::Zero();
+        A(0, 0)                = 1.0;
+        A(0, 1)                = c45;
+        A(1, 1)                = c45;
+        A(2, 2)                = 1.0;
+        LMat<double, 3, 3> U, V;
+        LVec<double, 3>    sigma;
+        lmath::svd(A, U, sigma, V);
+
+        CHECK(sigma(0) >= sigma(1) - 1e-14);
+        CHECK(sigma(1) >= sigma(2) - 1e-14);
+        auto UtU = U.transpose() * U;
+        auto VtV = V.transpose() * V;
+        for(int r = 0; r < 3; ++r)
+            for(int c = 0; c < 3; ++c)
+            {
+                CHECK(close(UtU(r, c), r == c ? 1.0 : 0.0, 1e-10));
+                CHECK(close(VtV(r, c), r == c ? 1.0 : 0.0, 1e-10));
+            }
+        auto R = U * sigma.asDiagonal() * V.transpose();
+        for(int r = 0; r < 3; ++r)
+            for(int c = 0; c < 3; ++c) CHECK(close(R(r, c), A(r, c), 1e-10));
+    }
+
     // A reflection (det < 0) keeps U, V proper and pushes the sign into sigma(2)
     LMat<double, 3, 3> F = LMat<double, 3, 3>::Identity();
     F(2, 2)               = -2.0;

@@ -177,13 +177,22 @@ template <typename F>
     detail::active_offsets(flag, offsets);
 
     auto dim = detail::active_count(flag);
-    auto asc = offsets;  // the ascending layout, before the `pe_from_ee` permutation
+    // `pe_from_ee` is **not** the ascending triple (unlike `pe_from_pt`): its entries
+    // are already direct indices into the four vertices `{ea0, ea1, eb0, eb1}`, which
+    // is how the reference consumes them (`Vector3i offsets = pe_from_ee(flag); P =
+    // {ea0,ea1,eb0,eb1}; P[offsets[0..2]]`).  Re-gathering them through the ascending
+    // layout is therefore wrong: active `{0,1,3}` (inactive 2, table row `{3,0,1}`)
+    // became `{2,0,1}`, i.e. the point of the point-edge pair was `eb0` instead of the
+    // free endpoint `eb1`.  Rows: inactive 0 -> {1,2,3}, 1 -> {0,2,3}, 2 -> {3,0,1},
+    // 3 -> {2,0,1}.
     for(int k = 0; k < 4; ++k)
     {
         // `pe_from_ee(flag)` applies exactly when `dim == 3` and `k` is inactive
         auto pred = (dim == 3) & (flag(k) == 0);
         for(int s = 0; s < 3; ++s)
-            offsets(s) = detail::select_scalar(offsets(s), asc(detail::kPeFromEe[k][s]), pred);
+            offsets(s) = detail::select_scalar(offsets(s),
+                                               make_scalar<F>(detail::kPeFromEe[k][s]),
+                                               pred);
     }
     return dim;
 }

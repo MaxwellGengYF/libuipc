@@ -1193,9 +1193,6 @@ struct ActiveOracle
     IndexMultiset PEs;
     IndexMultiset PTs;
     IndexMultiset EEs;
-    /// the number of edge-edge candidates whose classification the reference leaves
-    /// undefined (`pe_from_ee`'s out-of-range slot -- see `host_degenerate`)
-    size_t quirk_ee_dim3 = 0;
 
     [[nodiscard]] size_t total() const
     {
@@ -1235,11 +1232,8 @@ bool host_is_active_D(const std::array<Float, 2>& r, Float D)
 int host_degenerate(int                       n,
                     const std::array<int, 4>& flag,
                     std::array<int, 4>&       offsets,
-                    bool                      ee_permute = false,
-                    bool*                     oob = nullptr)
+                    bool                      ee_permute = false)
 {
-    if(oob)
-        *oob = false;
     int dim = 0;
     for(int i = 0; i < n; ++i)
         dim += (flag[static_cast<size_t>(i)] != 0) ? 1 : 0;
@@ -1255,27 +1249,22 @@ int host_degenerate(int                       n,
 
     if(ee_permute && dim == 3)
     {
-        // the reference's `pe_from_ee`, indexed by the *inactive* index.  NOTE (a
-        // transcribed reference inconsistency): for the inactive index 2 the table reads
-        // the ascending layout's slot 3, which `dim == 3` leaves at the "none" sentinel,
-        // so the reference (and the port) reads one past its own four vertices.  The
-        // caller is told (`oob`) and skips the pair -- see the [bvh_filter] note.
+        // the reference's `pe_from_ee`, indexed by the *inactive* index.  Its entries are
+        // **direct** indices into the four vertices `{ea0, ea1, eb0, eb1}` -- the
+        // reference does `Eigen::Vector<T,3> P[] = {ea0,ea1,eb0,eb1};
+        // Vector3i offsets = pe_from_ee(flag); P[offsets[j]]` -- and *not* ranks into the
+        // ascending layout.  Re-gathering them through `asc` (which this oracle used to
+        // do, mirroring the same bug in the ported `degenerate_edge_edge`) permuted three
+        // of the four `dim == 3` flags: active {0,1,3} (inactive 2, row {3,0,1}) came out
+        // as {2,0,1}, i.e. the point became eb0 instead of the free endpoint eb1.  Every
+        // entry is in 0..3, so no out-of-range read is involved.
         static constexpr int pe_from_ee[4][3] = {{1, 2, 3}, {0, 2, 3}, {3, 0, 1}, {2, 0, 1}};
         for(int kk = 0; kk < 4; ++kk)
         {
             if(flag[static_cast<size_t>(kk)] != 0)
                 continue;
             for(int j = 0; j < 3; ++j)
-            {
-                const int slot = pe_from_ee[kk][j];
-                if(slot >= dim)
-                {
-                    if(oob)
-                        *oob = true;
-                    continue;  // the reference's out-of-range read (undefined)
-                }
-                offsets[static_cast<size_t>(j)] = asc[slot];
-            }
+                offsets[static_cast<size_t>(j)] = pe_from_ee[kk][j];
         }
     }
     else if(ee_permute)
@@ -1441,23 +1430,12 @@ ActiveOracle host_active(const SceneData& d, const OracleSets& cand)
             continue;
         }
 
-        std::array<int, 4> h_flag{};
-        std::array<int, 4> h_offsets{};
-        for(int k = 0; k < 4; ++k)
-            h_flag[static_cast<size_t>(k)] = static_cast<int>(flag(k));
-        bool       oob = false;
-        const auto dim = host_degenerate(4, h_flag, h_offsets, /*ee_permute*/ true, &oob);
-        if(oob)
-        {
-            // the reference's own `pe_from_ee` reads past its vertex list here (see
-            // `host_degenerate`): the resulting PE is undefined, so the oracle records
-            // the pair and skips it (the device's gather maps the sentinel index to -1,
-            // which the device's own `select` then keeps -- measured: the device reports
-            // no entry for these pairs at all in this scene)
-            out.quirk_ee_dim3 += 1;
-            continue;
-        }
-        if(dim == 2)
+          std::array<int, 4> h_flag{};
+          std::array<int, 4> h_offsets{};
+          for(int k = 0; k < 4; ++k)
+              h_flag[static_cast<size_t>(k)] = static_cast<int>(flag(k));
+          const auto dim = host_degenerate(4, h_flag, h_offsets, /*ee_permute*/ true);
+          if(dim == 2)
             out.insert(out.PPs, tuple2(vIs[h_offsets[0]], vIs[h_offsets[1]]));
         else if(dim == 3)
             out.insert(out.PEs,
@@ -1813,13 +1791,6 @@ void check_variant_battery(SceneData& d, Float alpha, bool dcd, std::string_view
 
         // ---- the active sets (the reference's filter_active output) ---------
         const auto active = host_active(d, oracle);
-
-        if(active.quirk_ee_dim3 > 0)
-            note("[%s] reference quirk: %zu edge-edge candidate(s) classified through "
-                 "`pe_from_ee`'s out-of-range slot (undefined in the reference) -- the "
-                 "oracle skips them, and the device reports no entry for them",
-                 std::string{variant}.c_str(),
-                 active.quirk_ee_dim3);
         note("[%s] active: PP=%zu PE=%zu PT=%zu EE=%zu (oracle %zu/%zu/%zu/%zu)",
              std::string{variant}.c_str(),
              p.PPs.size(),

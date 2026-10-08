@@ -168,12 +168,21 @@ inline void one_sided_jacobi_svd(const LMat<T, 3, 3>& A,
 
                 auto two_gamma = detail::mul(make_scalar<T>(2), gamma);
                 auto zeta      = detail::div(detail::sub(beta, alpha), two_gamma);
-                auto t_raw     = detail::div(sign(zeta),
+                // Classical rotation t = sign(zeta) / (|zeta| + sqrt(1 + zeta^2)) with
+                // **sign(0) := +1**, *not* `lmath::sign` (whose sign(0) is 0).  The
+                // convention matters for the same reason it does in
+                // `evd.h::jacobi_rotate`: `zeta == 0` (equal squared column norms) with
+                // `gamma != 0` is the 45 degree rotation (t = 1), not the identity.
+                // `sign(0) == 0` leaves the off-diagonal un-annihilated, so the sweep
+                // returns non-orthogonal columns (and a wrong sigma/U/V) for any matrix
+                // whose columns have equal norm but are not orthogonal.
+                auto sgn       = select(one_of<T>(), make_scalar<T>(-1), zeta < zero_of<T>());
+                auto t_raw     = detail::div(sgn,
                                              detail::add(abs(zeta),
                                                          sqrt(detail::add(one_of<T>(),
                                                                           detail::mul(zeta, zeta)))));
                 // gamma == 0 => the columns are already orthogonal => t = 0.
-                // (Also discards the NaN/Inf of zeta_really == 0/0.)
+                // (Also discards the NaN/Inf of zeta == 0/0.)
                 auto t = select(zero_of<T>(), t_raw, gamma != zero_of<T>());
                 auto c = detail::div(one_of<T>(),
                                      sqrt(detail::add(one_of<T>(), detail::mul(t, t))));
@@ -184,7 +193,7 @@ inline void one_sided_jacobi_svd(const LMat<T, 3, 3>& A,
                 // (J^T M J)_pq vanishes for the classical
                 // t = sign(zeta) / (|zeta| + sqrt(1 + zeta^2))
                 // with zeta = (|b_q|^2 - |b_p|^2) / (2 b_p . b_q)
-                // (Golub & Van Loan, Alg. 8.6.2).
+                // (Golub & Van Loan, Alg. 8.6.2), sign(0) := +1.
                 for(int r = 0; r < 3; ++r)
                 {
                     auto bp = B(r, p);

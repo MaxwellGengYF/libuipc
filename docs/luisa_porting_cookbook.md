@@ -5254,15 +5254,27 @@ rc 0).
     rejected that the broadphase keeps).  Every sub-scene battery repeats the split
     (identical-geometry `1/3/13/10` vs `1/2/8/6`), so a careless transcription of the branch
     fails loudly instead of silently.
- 8. **The reference's `pe_from_ee` out-of-range read is transcribed and pinned as *undefined
-    behaviour*, not "fixed".**  In the reference's k4 (edge-edge) `dim == 3` degeneracy
-    classification, `pe_from_ee` is indexed by the *inactive* index and reads the ascending
-    layout's slot 3, which `dim == 3` leaves at the "none" sentinel — an out-of-range read of
-    the 4-element vertex list.  The device reports **no entry** for such pairs (measured: 3 EE
-    candidates per variant), the test's oracle skips them and the run prints the quirk
-    ("3 edge-edge candidate(s) classified through `pe_from_ee`'s out-of-range slot (undefined in
-    the reference) -- the oracle skips them, and the device reports no entry for them").  Do not
-    "repair" it: the port's job is to reproduce the reference's observable behaviour.
+   8. **`pe_from_ee` is a *direct* index table — CORRECTED (the earlier "out-of-range read"
+      reading was wrong).**  In the reference's k4 (edge-edge) `dim == 3` degeneracy
+      classification, `pe_from_ee(flag)` is indexed by the *inactive* index and returns direct
+      indices into the four edge endpoints —
+      `Eigen::Vector<T,3> P[] = {ea0, ea1, eb0, eb1}; Vector3i offsets = detail::pe_from_ee(flag);
+      P[offsets[j]]` (distance_flagged.h:634-650).  Every table entry is in `0..3`, so nothing is
+      read out of range: the rows are inactive 0 → {1,2,3}, 1 → {0,2,3}, 2 → {3,0,1}, 3 → {2,0,1}.
+      The port's `ldist::degenerate_edge_edge` instead re-gathered the table through the
+      *ascending active layout* (`asc(kPeFromEe[k][s])`), which is a rank, not an index: three of
+      the four `dim == 3` flags came back permuted (active {0,1,3}, inactive 2, row {3,0,1} →
+      {2,0,1}, so the point of the point-edge pair became `eb0` instead of the free endpoint
+      `eb1`), and the `3` in those rows landed on the "none" sentinel — which is what made the
+      reference look like it read past its vertex list.  Fixed in
+      `luisa_device/math/distance/flagged.h` (`degenerate_edge_edge`), together with the
+      `[bvh_filter]` host oracle, which had transcribed the same mistake: with only the port
+      fixed, eight `to_multiset3(p.PEs) == active.PEs` CHECKS failed — the oracle was a copy of
+      the bug, i.e. exactly the "green for the wrong reason" signal the review protocol asks for.
+      `edge_edge_distance2` itself was always right (it indexes `kPeFromEe` directly), which is
+      why the `[distance]` tests never noticed; the trajectory-filter kernels go through the
+      helper (`details/simplex_trajectory_filter_kernels.h:1379`).
+
  9. **The sentinel is `1.1f` and it is written by three different paths.**
     `kLargeEnoughToi = 1.1` is (a) the kernels' initial value, (b) re-written after a CCD
     miss (`$if(!hit) toi = kLargeEnoughToi;`), and (c) the *host* fill
