@@ -35,7 +35,7 @@ void copy_to_buffer_view(lud::LCBufferView<LVector3> src_view,
         reinterpret_cast<Vector3*>(buffer_view.handle()) + buffer_view.offset();
     src_subview.copy_to(
         span<LVector3>{reinterpret_cast<LVector3*>(dst_ptr), vertex_count});
-    lud::main_stream().synchronize();
+    lud::LStream::current().synchronize();
 }
 
 /// Eigen (frontend attribute view) -> device buffer, element-wise.
@@ -109,7 +109,7 @@ void FiniteElementStateAccessorFeatureOverrider::do_copy_to(geometry::Simplicial
         auto x_subview = m_fem.m_impl.xs.view(v_offset, v_count);
         std::vector<LVector3> tmp(v_count);
         x_subview.copy_to(span<LVector3>{tmp});
-        lud::main_stream().synchronize();
+        lud::LStream::current().synchronize();
         for(size_t i = 0; i < tmp.size(); ++i)
         {
             pos_view[i] = to_eigen(tmp[i]);
@@ -124,7 +124,7 @@ void FiniteElementStateAccessorFeatureOverrider::do_copy_to(geometry::Simplicial
         auto v_subview = m_fem.m_impl.vs.view(v_offset, v_count);
         std::vector<LVector3> tmp(v_count);
         v_subview.copy_to(span<LVector3>{tmp});
-        lud::main_stream().synchronize();
+        lud::LStream::current().synchronize();
         for(size_t i = 0; i < tmp.size(); ++i)
         {
             vel_view[i] = to_eigen(tmp[i]);

@@ -156,7 +156,7 @@ void download_copy(span<T> dst, lud::LCBufferView<T> src)
         return;
     }
     src.copy_to(dst);
-    lud::main_stream().synchronize();
+    lud::LStream::current().synchronize();
 }
 
 void download_vec12(span<Vector12> dst, lud::LCBufferView<LVector12> src)
@@ -167,7 +167,7 @@ void download_vec12(span<Vector12> dst, lud::LCBufferView<LVector12> src)
     }
     std::vector<LVector12> tmp(src.size());
     src.copy_to(span<LVector12>{tmp});
-    lud::main_stream().synchronize();
+    lud::LStream::current().synchronize();
     for(size_t i = 0; i < dst.size(); ++i)
     {
         dst[i] = to_eigen(tmp[i]);

@@ -1337,7 +1337,7 @@ void ExternalArticulationConstraint::write_scene()
         joint_id_to_delta_theta.cview().copy_to(
             span<Float>{h_joint_id_to_delta_theta});
     }
-    lud::main_stream().synchronize();
+    lud::LStream::current().synchronize();
 
     this->for_each(
         geo_slots,

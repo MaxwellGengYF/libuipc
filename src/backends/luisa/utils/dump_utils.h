@@ -77,7 +77,7 @@ class BufferDump
                                    buffer.size()});
             // cuda_tool parity: copy_to() waits; LBufferView::copy_to() only
             // records the transfer, so wait before touching the host bytes.
-            lud::main_stream().synchronize();
+            lud::LStream::current().synchronize();
         }
         return dump_(path);
     }

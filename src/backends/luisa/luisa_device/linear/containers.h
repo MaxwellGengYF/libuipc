@@ -239,7 +239,7 @@ class LTripletMatrix
         m_row_indices.copy_to(std::span<std::int32_t>{rows});
         m_col_indices.copy_to(std::span<std::int32_t>{cols});
         m_values.copy_to(std::span<ScalarT>{flat});
-        main_stream().synchronize();
+        LStream::current().synchronize();
 
         for(std::size_t i = 0; i < n; ++i)
         {
@@ -264,7 +264,7 @@ class LTripletMatrix
     void copy_to_values(std::span<ScalarT> host) const
     {
         m_values.copy_to(host);
-        main_stream().synchronize();
+        LStream::current().synchronize();
     }
     void copy_from_values(std::span<const ScalarT> host)
     {
@@ -274,12 +274,12 @@ class LTripletMatrix
     void copy_to_row_indices(std::span<std::int32_t> host) const
     {
         m_row_indices.copy_to(host);
-        main_stream().synchronize();
+        LStream::current().synchronize();
     }
     void copy_to_col_indices(std::span<std::int32_t> host) const
     {
         m_col_indices.copy_to(host);
-        main_stream().synchronize();
+        LStream::current().synchronize();
     }
 
     void fill(const ScalarT& v)
@@ -466,7 +466,7 @@ class LDoubletVector
         std::vector<ScalarT>      flat(n * static_cast<std::size_t>(N));
         m_indices.copy_to(std::span<std::int32_t>{indices});
         m_values.copy_to(std::span<ScalarT>{flat});
-        main_stream().synchronize();
+        LStream::current().synchronize();
 
         for(std::size_t i = 0; i < n; ++i)
         {
@@ -487,7 +487,7 @@ class LDoubletVector
     void copy_to_values(std::span<ScalarT> host) const
     {
         m_values.copy_to(host);
-        main_stream().synchronize();
+        LStream::current().synchronize();
     }
     void copy_from_values(std::span<const ScalarT> host)
     {
@@ -497,7 +497,7 @@ class LDoubletVector
     void copy_to_indices(std::span<std::int32_t> host) const
     {
         m_indices.copy_to(host);
-        main_stream().synchronize();
+        LStream::current().synchronize();
     }
 
     void fill(const ScalarT& v)
@@ -654,7 +654,7 @@ class LBSRMatrix
         m_row_offsets.copy_to(row_offsets);
         m_col_indices.copy_to(col_indices);
         m_values.copy_to(flat_values);
-        main_stream().synchronize();
+        LStream::current().synchronize();
     }
 
     [[nodiscard]] std::uint64_t generation() const noexcept { return m_cell->value; }
@@ -765,7 +765,7 @@ class LDenseVector
     void copy_to(std::span<T> host) const
     {
         m_values.copy_to(host);
-        main_stream().synchronize();
+        LStream::current().synchronize();
     }
     template <typename Alloc>
     void copy_to(std::vector<T, Alloc>& host) const
@@ -860,7 +860,7 @@ class LDenseMatrix
     void copy_to(std::span<T> host) const
     {
         m_data.copy_to(host);
-        main_stream().synchronize();
+        LStream::current().synchronize();
     }
     void copy_from(std::span<const T> host)
     {

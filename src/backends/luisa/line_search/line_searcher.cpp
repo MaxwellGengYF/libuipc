@@ -18,8 +18,8 @@ namespace lla = luisa_device::linalg;
 namespace
 {
     /// `cuda_tool::VarView<Float>{p}.fill(0.0)` needs a command that is *ordered*
-    /// inside the caller's frame: `LBufferView::fill` submits on the main stream
-    /// (cookbook §7.11 rule 7), so this is a one-thread local kernel.
+    /// inside the caller's frame: this one-thread kernel is recorded on the frame
+    /// command list (cookbook §7.11 rule 7).
     auto& fill_one_float_kernel()
     {
         static auto& k = lla::detail::cached_kernel<lcrt::Buffer<double>, double>(
@@ -38,8 +38,8 @@ namespace
         stream.synchronize();
         if(!dst.empty())
         {
-            stream.stream() << src.native().copy_to(dst);
-            stream.stream().synchronize();
+            stream.record(src.native().copy_to(dst));
+            stream.synchronize();
         }
         if(was_open)
         {

@@ -12,6 +12,10 @@ _deps
 site/
 build/
 output/
+# LuisaCompute is a build input that lives outside the repository; it is linked in as a
+# directory junction (mklink /J external\LuisaCompute <path>) so the build has one
+# project-relative path. A junction must never be committed.
+external/
 vcpkg_installed/
 .vscode/.cache 
 .vscode/compile_commands.json
@@ -48,3 +52,6 @@ vsxmake*/
 
 # local dev notes
 docs/development/backend_cuda/
+.kimix_cache/
+/agent*.py
+/*agent.py

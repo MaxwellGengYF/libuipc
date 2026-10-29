@@ -1832,7 +1832,7 @@ void check_variant_battery(SceneData& d, Float alpha, bool dcd, std::string_view
         // the device kernels pass the port's convergence-sized bound (the port's CCD
         // unrolls once per iteration), not the reference's 1000
         const auto toi =
-            host_toi(d, oracle, alpha, /*eta*/ Float{0.1}, gg::sftd::kToiMaxIter);
+            host_toi(d, oracle, alpha, /*eta*/ Float{0.1}, gg::sftd::kToiMaxIter());
         REQUIRE(p.toi_pt.size() == oracle.allp_allt.size());
         REQUIRE(p.toi_ee.size() == oracle.alle_alle.size());
         // per *pair*, not per index: see `toi_by_pair`
@@ -1883,7 +1883,7 @@ void check_variant_battery(SceneData& d, Float alpha, bool dcd, std::string_view
                 diff += (want == toi.ee.at(pair)) ? 0 : 1;
             CHECK(diff == 0);
             note("[%s] CCD max_iter 1000 vs %d: %d differing toi values",
-             std::string{variant}.c_str(), gg::sftd::kToiMaxIter, diff);
+             std::string{variant}.c_str(), gg::sftd::kToiMaxIter(), diff);
         }
 
         // at least one reported toi is the 1.1 sentinel (an active pair that does not
@@ -1953,7 +1953,7 @@ void check_variant_battery(SceneData& d, Float alpha, bool dcd, std::string_view
         CHECK(to_multiset4(p.EEs) == active.EEs);
 
         const auto toi =
-            host_toi(closing, oracle, alpha, /*eta*/ Float{0.1}, gg::sftd::kToiMaxIter);
+            host_toi(closing, oracle, alpha, /*eta*/ Float{0.1}, gg::sftd::kToiMaxIter());
         REQUIRE(p.toi_pt.size() == oracle.allp_allt.size());
         REQUIRE(p.toi_ee.size() == oracle.alle_alle.size());
         // per *pair*, not per index: see `toi_by_pair`

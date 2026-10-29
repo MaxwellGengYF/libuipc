@@ -72,18 +72,20 @@
  *    are the reference's, except that the stackless variant's extra `max_iter` /
  *    `large_enough_toi` *arguments* (its own copy passes the two file constants) are
  *    the same values as the constants here, so the shared kernel bakes them in.
- *  * the port's CCD is a **fixed-iteration predicated loop** whose body is unrolled
- *    once per iteration at trace time (§7.8): passing the reference's
- *    `max_iter = 1000` would unroll 1000 times, so the TOI kernels pass
- *    `distance::detail::kCcdUnboundedIterations` (64) -- the port's convergence-sized
- *    bound.  The test measures that the tested regime is unaffected (the host CCD
- *    agrees with `max_iter = 1000` there) and the deviation is documented in §7.34.
+ *  * the port's CCD is a **predicated runtime loop** (`$while`, OP-C3): it used to be
+ *    unrolled once per iteration at trace time (cookbook §7.8), which made the
+ *    reference's `max_iter = 1000` unaffordable (>900 s to JIT) and forced the TOI
+ *    kernels down to a convergence-sized 16.  With the loop emitted once as control
+ *    flow the bound is a plain immediate, so `kToiMaxIter()` reads the tuning knob
+ *    (`luisa_device/tuning.h`): default 64, which is where the port's suite converges
+ *    and where the CUDA parity cases are measured (optimize_plan.md OP-C3).
  *********************************************************************/
 #include <type_define.h>
 #include <collision_detection/aabb.h>
 #include <collision_detection/info_stackless_bvh.h>
 #include <frame_stream.h>
 #include <luisa_device/linear/algorithms.h>
+#include <luisa_device/tuning.h>
 #include <luisa_device/math/distance/distance.h>
 #include <utils/codim_thickness.h>
 #include <utils/primitive_d_hat.h>
@@ -109,12 +111,24 @@ constexpr SizeT kMaxIter = 1000;
 /// double 1.1 truncated to `Float`; the same bit value as the `1.1f` literal the
 /// half-plane filters spell out (§7.33 rule 9 pins the two spellings' difference).
 constexpr Float kLargeEnoughToi = 1.1;
-/// The bound the TOI kernels pass to the ported CCD (see the file note).
-constexpr int kToiMaxIter = 16;
+/// The bound the TOI kernels pass to the ported CCD.  OP-C3: this is a *runtime*
+/// budget now (`luisa_device/tuning.h`, key `luisa.ccd_max_iter`, default 64 = the
+/// reference's convergence-sized value) instead of a constant reduced to 16 because
+/// the loop used to be unrolled at trace time.  `kToiMaxIter` is kept as the name the
+/// port's comments use, as a function.
+[[nodiscard]] inline int kToiMaxIter() noexcept
+{
+    return luisa_device::ccd_max_iter();
+}
 
-/// The dispatch bound of every kernel above: each one calls `lcrt::set_block_size(256)`,
-/// so the grid is spelled as whole blocks (the ported collision code's convention; LC's
-/// own `.dispatch(n)` rounds up in the same way).
+/// The dispatch bound of every kernel above: each one calls
+/// `lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.*"))`, so the grid
+/// is spelled as whole blocks at the historical 256 (the ported collision code's
+/// convention; LC's own `.dispatch(n)` rounds up in the same way).  A retuned block size
+/// stays sound for any value here because every body bounds itself with `$if (i < n)` and
+/// `round_up_block` is only a *lower* bound on the launched thread count: a smaller block
+/// launches the same range in more blocks, a larger one launches a few inactive threads
+/// in the last block (OP-C1, luisa_device/tuning.h).
 [[nodiscard]] constexpr std::uint32_t round_up_block(std::uint64_t n,
                                                      std::uint32_t block = 256u) noexcept
 {
@@ -256,7 +270,7 @@ inline auto& detect_k1_kernel()
            lcrt::BufferVar<Float> thicknesses, lcrt::BufferVar<Float> d_hats,
            lcrt::Var<Float> alpha, lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -293,7 +307,7 @@ inline auto& detect_k2_kernel()
            lcrt::BufferVar<Float> thicknesses, lcrt::BufferVar<Float> d_hats,
            lcrt::Var<Float> alpha, lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -330,7 +344,7 @@ inline auto& detect_k3_kernel()
            lcrt::BufferVar<Float> thicknesses, lcrt::BufferVar<Float> d_hats,
            lcrt::Var<Float> alpha, lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -373,7 +387,7 @@ inline auto& detect_k4_kernel()
            lcrt::BufferVar<Float> thicknesses, lcrt::BufferVar<Float> d_hats,
            lcrt::Var<Float> alpha, lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -431,7 +445,7 @@ inline auto& detect_info_k1_kernel()
            lcrt::BufferVar<Float> thicknesses, lcrt::BufferVar<Float> d_hats,
            lcrt::Var<Float> alpha, lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -473,7 +487,7 @@ inline auto& detect_info_k2_kernel()
            lcrt::BufferVar<Float> thicknesses, lcrt::BufferVar<Float> d_hats,
            lcrt::Var<Float> alpha, lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -515,7 +529,7 @@ inline auto& detect_info_k3_kernel()
            lcrt::BufferVar<Float> thicknesses, lcrt::BufferVar<Float> d_hats,
            lcrt::Var<Float> alpha, lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -563,7 +577,7 @@ inline auto& detect_info_k4_kernel()
            lcrt::BufferVar<Float> thicknesses, lcrt::BufferVar<Float> d_hats,
            lcrt::Var<Float> alpha, lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -651,7 +665,7 @@ inline auto& detect_AllP_CodimP_pass_kernel()
            lcrt::Var<std::int32_t> subscene_mask_size, lcrt::Var<Float> alpha,
            lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -747,7 +761,7 @@ inline auto& detect_CodimP_AllE_pass_kernel()
            lcrt::Var<std::int32_t> subscene_mask_size, lcrt::Var<Float> alpha,
            lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -851,7 +865,7 @@ inline auto& detect_AllE_AllE_pass_kernel()
            lcrt::Var<std::int32_t> subscene_mask_size, lcrt::Var<Float> alpha,
            lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -976,7 +990,7 @@ inline auto& detect_AllP_AllT_pass_kernel()
            lcrt::Var<std::int32_t> subscene_mask_size, lcrt::Var<Float> alpha,
            lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.detect"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -1100,7 +1114,7 @@ inline auto& filter_active_k1_kernel()
            lcrt::BufferVar<Float> thicknesses, lcrt::BufferVar<LVector2i> temp_PPs,
            lcrt::BufferVar<Float> d_hats, lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.active"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -1153,7 +1167,7 @@ inline auto& filter_active_k2_kernel()
            lcrt::BufferVar<LVector3i> temp_PEs, lcrt::BufferVar<Float> d_hats,
            lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.active"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -1228,7 +1242,7 @@ inline auto& filter_active_k3_kernel()
            lcrt::BufferVar<LVector3i> temp_PEs, lcrt::BufferVar<LVector4i> temp_PTs,
            lcrt::BufferVar<Float> d_hats, lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.active"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -1316,7 +1330,7 @@ inline auto& filter_active_k4_kernel()
            lcrt::BufferVar<LVector3i> temp_PEs, lcrt::BufferVar<LVector4i> temp_EEs,
            lcrt::BufferVar<Float> d_hats, lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.active"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -1423,7 +1437,7 @@ inline auto& filter_toi_k1_kernel()
            lcrt::Var<Float> eta, lcrt::Var<Float> alpha,
            lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.toi"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -1447,7 +1461,7 @@ inline auto& filter_toi_k1_kernel()
                 $if(!faraway)
                 {
                     const auto hit = ldist::point_point_ccd(VP0, VP1, dVP0, dVP1, eta,
-                                                            thickness, kToiMaxIter, toi);
+                                                            thickness, kToiMaxIter(), toi);
                     $if(!hit)
                     {
                         toi = kLargeEnoughToi;
@@ -1474,7 +1488,7 @@ inline auto& filter_toi_k2_kernel()
            lcrt::Var<Float> eta, lcrt::Var<Float> alpha,
            lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.toi"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -1503,7 +1517,7 @@ inline auto& filter_toi_k2_kernel()
                 $if(!faraway)
                 {
                     const auto hit = ldist::point_edge_ccd(VP, EP0, EP1, dVP, dEP0, dEP1,
-                                                           eta, thickness, kToiMaxIter, toi);
+                                                           eta, thickness, kToiMaxIter(), toi);
                     $if(!hit)
                     {
                         toi = kLargeEnoughToi;
@@ -1530,7 +1544,7 @@ inline auto& filter_toi_k3_kernel()
            lcrt::Var<Float> eta, lcrt::Var<Float> alpha,
            lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.toi"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -1565,7 +1579,7 @@ inline auto& filter_toi_k3_kernel()
                 {
                     const auto hit = ldist::point_triangle_ccd(VP, FP0, FP1, FP2, dVP, dFP0,
                                                                dFP1, dFP2, eta, thickness,
-                                                               kToiMaxIter, toi);
+                                                               kToiMaxIter(), toi);
                     $if(!hit)
                     {
                         toi = kLargeEnoughToi;
@@ -1591,7 +1605,7 @@ inline auto& filter_toi_k4_kernel()
            lcrt::BufferVar<Float> d_hats, lcrt::Var<Float> eta, lcrt::Var<Float> alpha,
            lcrt::Var<std::uint32_t> n) noexcept
         {
-            lcrt::set_block_size(256u);
+            lcrt::set_block_size(luisa_device::block_dim_for("trajectory_filter.toi"));
             const auto i = lcrt::dispatch_x();
             $if(i < n)
             {
@@ -1625,7 +1639,7 @@ inline auto& filter_toi_k4_kernel()
                 {
                     const auto hit = ldist::edge_edge_ccd(EP0, EP1, EP2, EP3, dEP0, dEP1,
                                                           dEP2, dEP3, eta, thickness,
-                                                          kToiMaxIter, toi);
+                                                          kToiMaxIter(), toi);
                     $if(!hit)
                     {
                         toi = kLargeEnoughToi;
@@ -1761,7 +1775,7 @@ class SelectionWorkspace
     frame_stream().flush();
     std::array<std::uint32_t, 4> h{};
     counts.cview().copy_to(span<std::uint32_t>{h});
-    lud::main_stream().synchronize();
+    frame_stream().synchronize();
     return h;
 }
 }  // namespace simplex_trajectory_filter_detail

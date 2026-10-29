@@ -165,8 +165,8 @@ namespace
         const bool was_open = stream.frame_open();
         stream.synchronize();
         T host{};
-        stream.stream() << one.native().copy_to(lcrt::span{&host, 1u});
-        stream.stream().synchronize();
+        stream.record(one.native().copy_to(lcrt::span{&host, 1u}));
+        stream.synchronize();
         if(was_open)
         {
             stream.begin();
@@ -183,8 +183,8 @@ namespace
         stream.synchronize();
         if(!dst.empty())
         {
-            stream.stream() << one.native().copy_to(dst);
-            stream.stream().synchronize();
+            stream.record(one.native().copy_to(dst));
+            stream.synchronize();
         }
         if(was_open)
         {

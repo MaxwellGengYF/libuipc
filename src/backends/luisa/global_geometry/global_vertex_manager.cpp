@@ -4,6 +4,9 @@
 #include <sim_engine.h>
 #include <uipc/common/range.h>
 #include <frame_stream.h>
+
+// NVTX range for the device->host read-back (BN1 I2, bench_plan.md 13.3).
+#include <backends/common/nvtx_range.h>
 // T4.2: the reference's GlobalVertexManager::do_build() also resolves the
 // GlobalJointDofManager slot (now that the system is ported).
 #include <joint_dof_system/global_joint_dof_manager.h>
@@ -215,10 +218,15 @@ void read_back(lud::LStream& stream, const lud::LBufferView<T>& src, T* dst, siz
     {
         return;
     }
+    // I2: a read-back is a full device->host stall (two synchronizes), so it has to be
+    // its own band on the timeline instead of an unexplained gap between two `LC.sync`
+    // ranges. Scoped, so an early return cannot leave the range open.
+    uipc::nvtx::range guard{"LC.readback"};
+
     const bool was_open = stream.frame_open();
     stream.synchronize();  // commits the recorded work, then waits
-    stream.stream() << src.native().copy_to(lcrt::span{dst, count});
-    stream.stream().synchronize();
+    stream.record(src.native().copy_to(lcrt::span{dst, count}));
+    stream.synchronize();
     if(was_open)
     {
         stream.begin();

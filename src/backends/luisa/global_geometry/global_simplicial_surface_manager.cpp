@@ -57,8 +57,8 @@ T read_back(lud::LStream& stream, const lud::LBufferView<T>& one)
     const bool was_open = stream.frame_open();
     stream.synchronize();
     T host{};
-    stream.stream() << one.native().copy_to(lcrt::span{&host, 1u});
-    stream.stream().synchronize();
+    stream.record(one.native().copy_to(lcrt::span{&host, 1u}));
+    stream.synchronize();
     if(was_open)
     {
         stream.begin();

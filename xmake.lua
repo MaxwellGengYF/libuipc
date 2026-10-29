@@ -10,6 +10,7 @@ option("github_actions", {default = false})
 option("backend_cuda", {default = true, description = "Build with CUDA backend"})
 option("cuda_legacy_collision", {default = true, description = "Build legacy CUDA broad-phase trajectory filters"})
 option("backend_luisa", {default = false, description = "Build with the LuisaCompute backend (no nvcc)"})
+option("nvtx", {default = false, description = "Instrument both backends with NVTX ranges (needs the CUDA toolkit's include/nvtx3)"})
 -- LuisaCompute resolution lives here, NOT in src/backends/luisa/xmake.lua: that file is
 -- only included when backend_luisa is already enabled, so an option declared there would
 -- never be registered and the CLI would reject --luisa_prefix/--luisa_root as unknown.

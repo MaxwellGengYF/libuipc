@@ -139,11 +139,12 @@ struct MatrixConverterIntPair
     }
 };
 
-/// The stream the reference's implicit "default stream" overloads use: a
-/// process-lifetime `LStream` over the LC main stream.  Deliberately leaked —
-/// destroying an LC resource after `Runtime::shutdown()` aborts the process
-/// (cookbook §7.10 trap 1).  Consumer code inside a frame passes the frame's
-/// `LStream` to the three-argument overloads instead.
+/// The stream the reference's implicit "default stream" overloads use: the
+/// process-wide `LStream` (`LStream::current()`, i.e. the backend's `frame_stream()`).
+/// It must be the *same* stream everywhere: each `LStream` owns its own CommandList,
+/// so a second one is a hidden batching split (its commands would submit immediately
+/// and jump ahead of the frame's recorded work).  Consumer code inside a frame
+/// passes the frame's `LStream` to the three-argument overloads instead.
 [[nodiscard]] UIPC_LUISA_DEVICE_API LStream& default_matrix_stream();
 
 // ---------------------------------------------------------------------------

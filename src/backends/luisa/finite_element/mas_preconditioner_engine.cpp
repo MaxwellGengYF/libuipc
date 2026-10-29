@@ -1496,7 +1496,7 @@ MASPreconditionerEngine::Int2 MASPreconditionerEngine::level_size(int level) con
 {
     std::array<std::int32_t, 2> v{};
     level_sizes.cview(static_cast<size_t>(level) * 2u, 2u).copy_to(span<std::int32_t>{v});
-    lud::main_stream().synchronize();
+    lud::LStream::current().synchronize();
     return Int2{static_cast<int>(v[0]), static_cast<int>(v[1])};
 }
 
@@ -1947,7 +1947,7 @@ void MASPreconditionerEngine::dump_cluster_matrices_debug(std::string_view outpu
     {
         cluster_hessians.view().copy_to(span<Float>{h_hess});
         cluster_inverses.view().copy_to(span<float>{h_inv});
-        lud::main_stream().synchronize();
+        lud::LStream::current().synchronize();
     }
 
     const int     mat_size  = static_cast<int>(nb) * CLUSTER_MAT_DIM;
@@ -2031,7 +2031,7 @@ void MASPreconditionerEngine::dump_cluster_matrices_debug(std::string_view outpu
             std::vector<std::int32_t> h_part_to_real(static_cast<size_t>(m_total_map_nodes));
             part_to_real.cview(0u, static_cast<size_t>(m_total_map_nodes))
                 .copy_to(span<std::int32_t>{h_part_to_real});
-            lud::main_stream().synchronize();
+            lud::LStream::current().synchronize();
             j["part_to_real"] = h_part_to_real;
         }
 
@@ -2055,7 +2055,7 @@ void MASPreconditionerEngine::dump_cluster_matrices_debug(std::string_view outpu
             std::vector<std::int32_t> h_gn(static_cast<size_t>(m_total_num_clusters));
             going_next.cview(0u, static_cast<size_t>(m_total_num_clusters))
                 .copy_to(span<std::int32_t>{h_gn});
-            lud::main_stream().synchronize();
+            lud::LStream::current().synchronize();
             j["going_next"] = h_gn;
         }
 
@@ -2064,7 +2064,7 @@ void MASPreconditionerEngine::dump_cluster_matrices_debug(std::string_view outpu
             std::vector<std::int32_t> h_r2p(static_cast<size_t>(m_total_nodes));
             real_to_part.cview(0u, static_cast<size_t>(m_total_nodes))
                 .copy_to(span<std::int32_t>{h_r2p});
-            lud::main_stream().synchronize();
+            lud::LStream::current().synchronize();
             j["real_to_part"] = h_r2p;
         }
 

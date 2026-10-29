@@ -604,7 +604,10 @@ class SimplicialSurfaceDistanceCheck final : public BackendSanityChecker
             {
                 vector<LVector2i> tmp(qbuf.size());
                 if(!tmp.empty())
+                {
                     qbuf.view().copy_to(tmp);
+                    stream.synchronize();
+                }
                 vector<Vector2i> out(tmp.size());
                 for(size_t i = 0; i < tmp.size(); ++i)
                     out[i] = to_eigen(tmp[i]);
@@ -873,6 +876,12 @@ class SimplicialSurfaceDistanceCheck final : public BackendSanityChecker
                 result.close_geo_ids[info.geo_ids] = info.obj_ids;
                 set_geo_distance(info.geo_ids, info.distance);
             }
+
+            // Commit here: every recorded command above references a *function-local*
+            // device buffer, so it must not stay pending past this scope -- the phases
+            // above are each skipped when its element set is empty (no codim elements,
+            // no triangles, < 2 edges), and then no read-back would commit them.
+            stream.synchronize();
 
             return result;
         }

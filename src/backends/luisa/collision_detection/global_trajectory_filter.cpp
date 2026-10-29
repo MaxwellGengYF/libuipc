@@ -105,6 +105,7 @@ Float GlobalTrajectoryFilter::Impl::filter_toi(Float alpha)
         filter->filter_toi(info);
     }
     tois.cview().copy_to(span<Float>{h_tois});
+    lud::LStream::current().synchronize();
 
     if constexpr(uipc::RUNTIME_CHECK)
     {

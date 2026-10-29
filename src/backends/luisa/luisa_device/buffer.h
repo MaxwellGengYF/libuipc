@@ -53,13 +53,28 @@ class LDeviceBuffer
         {
             return;
         }
+        // Growth is a *batching barrier*, not an optimization opportunity: the open
+        // frame CommandList holds raw handles into `m_buffer`, and LC does not
+        // refcount them, so the old allocation must not be released while any
+        // recorded command may still reference it (that is a use-after-free at
+        // commit, i.e. a crash). flush() = commit + wait + re-open the frame list,
+        // which makes both the preserving copy below and the release ordered.
+        // Steady-state frames never get here: `reserve` grows geometrically and the
+        // plan's rule is to pre-size the buffers an epoch touches (optimize_plan OP-G3).
+        auto& stream = LStream::current();
+        stream.flush();
+
         // geometric growth to keep steady-state frames allocation-free
         const size_t grown = std::max(n, m_capacity * 2u);
         auto         next  = std::make_shared<lcrt::Buffer<T>>(
             device().create_buffer<T>(grown));
         if(m_buffer && m_size != 0u)
         {
-            main_stream() << next->view(0u, m_size).copy_from(m_buffer->view(0u, m_size));
+            // Raw on purpose: this copy reads the allocation that `m_buffer` is
+            // about to release, so it must be *submitted* (encoded) here, not left
+            // pending in a list. The stream is idle after the flush above, so it is
+            // also ordered.
+            stream.stream() << next->view(0u, m_size).copy_from(m_buffer->view(0u, m_size));
         }
         m_buffer   = std::move(next);
         m_capacity = grown;
@@ -76,9 +91,12 @@ class LDeviceBuffer
             // value-initialise the newly exposed tail (cuda_tool parity)
             if constexpr(std::is_trivially_copyable_v<T>)
             {
+                // `zeros` is a local, so the upload must be consumed by this
+                // statement: LBufferView::copy_from(span) routes to record_upload().
+                // (Spell the view as LBufferView, not lcrt::BufferView: the LC
+                // view's copy_from only *builds* a command, which would be discarded.)
                 std::vector<T> zeros(n - old_size);
-                main_stream() << m_buffer->view(old_size, n - old_size)
-                                     .copy_from(lcrt::span<const T>{zeros});
+                LBufferView<T>{m_buffer, old_size, n - old_size}.copy_from(lcrt::span<const T>{zeros});
             }
         }
     }
@@ -136,7 +154,9 @@ class LDeviceBuffer
             // resize(0) leaves m_buffer null.
             return;
         }
-        main_stream() << m_buffer->view(0u, m_size).copy_from(host);
+        // upload: submitted immediately through the frame stream (record_upload), so
+        // `host` only has to outlive this statement.
+        LBufferView<T>{m_buffer, 0u, m_size}.copy_from(host);
     }
 
     void copy_to(std::span<T> host) const
@@ -147,7 +167,9 @@ class LDeviceBuffer
         }
         if(m_size != 0u)
         {
-            main_stream() << m_buffer->view(0u, m_size).copy_to(host);
+            // Recorded, i.e. ordered after the frame's pending kernels. The caller
+            // must synchronize the frame stream before reading `host`.
+            LBufferView<T>{m_buffer, 0u, m_size}.copy_to(host);
         }
     }
 
@@ -197,9 +219,11 @@ class LDeviceBuffer
 template <typename T>
 [[nodiscard]] inline T read_host_sync(LStream& stream, const LBufferView<T>& view)
 {
-    stream.flush();
     T v{};
-    stream.stream() << view.native().copy_to(lcrt::span{&v, 1u});
+    // Record the download (so it is ordered after the recorded dispatches) and then
+    // commit + wait. `synchronize()` re-opens the frame list, so a read-back is a
+    // barrier, not a switch back to per-statement submission (OP-A1/R-4).
+    stream.record(view.native().copy_to(lcrt::span{&v, 1u}));
     stream.synchronize();
     return v;
 }
@@ -226,15 +250,16 @@ class LDeviceVar
 
     void copy_from(const T& value, LStream* s = nullptr)
     {
-        auto& stream = s ? s->stream() : main_stream();
-        stream << m_buffer.buffer().view().copy_from(lcrt::span{&value, 1u});
+        // `&value` is this function's parameter: an upload must be submitted now.
+        auto& stream = s ? *s : LStream::current();
+        stream.record_upload(m_buffer.buffer().view().copy_from(lcrt::span{&value, 1u}));
     }
 
     [[nodiscard]] T copy_to(LStream* s = nullptr) const
     {
         T     v{};
-        auto& stream = s ? s->stream() : main_stream();
-        stream << m_buffer.cview().native().copy_to(lcrt::span{&v, 1u});
+        auto& stream = s ? *s : LStream::current();
+        stream.record(m_buffer.cview().native().copy_to(lcrt::span{&v, 1u}));
         stream.synchronize();
         return v;
     }

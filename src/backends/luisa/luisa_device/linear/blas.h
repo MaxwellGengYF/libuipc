@@ -188,9 +188,11 @@ template <typename T>
 // ---------------------------------------------------------------------------
 //  Default stream — the reference's implicit "legacy default stream"
 // ---------------------------------------------------------------------------
-/// An `LStream` over the LC main stream.  Deliberately leaked: destroying an
-/// LC resource after `Runtime::shutdown()` aborts the process (cookbook §7.10
-/// trap 1).  Consumer code inside a frame passes the frame's `LStream` instead.
+/// The process-wide `LStream` (`LStream::current()`, the backend's `frame_stream()`).
+/// There must be exactly one: each `LStream` owns its own CommandList, so a second
+/// one is a hidden batching split (its commands would submit immediately and jump
+/// ahead of the frame's recorded work).  Consumer code inside a frame passes the
+/// frame's `LStream` instead.
 [[nodiscard]] UIPC_LUISA_DEVICE_API LStream& default_blas_stream();
 
 // ---------------------------------------------------------------------------

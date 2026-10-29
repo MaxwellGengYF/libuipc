@@ -581,7 +581,7 @@ void AffineBodyRevoluteJoint::write_scene()
     frame_stream().synchronize();
     if(!h_current_angles.empty())
         current_angles.cview().copy_to(span<Float>{h_current_angles});
-    lud::main_stream().synchronize();
+    lud::LStream::current().synchronize();
 
     IndexT geo_joint_index = 0;
 
@@ -621,7 +621,7 @@ void AffineBodyRevoluteJoint::adopt_scene_angles()
     frame_stream().synchronize();
     if(!h_adopted_angles.empty())
         current_angles.cview().copy_to(span<Float>{h_adopted_angles});
-    lud::main_stream().synchronize();
+    lud::LStream::current().synchronize();
 
     IndexT geo_joint_index = 0;
     bool   adopted         = false;
@@ -663,7 +663,7 @@ void AffineBodyRevoluteJoint::adopt_scene_angles()
         if(!h_adopted_angles.empty())
         {
             current_angles.view().copy_from(span<const Float>{h_adopted_angles});
-            lud::main_stream().synchronize();
+            lud::LStream::current().synchronize();
         }
     }
 }

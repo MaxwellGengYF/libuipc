@@ -71,8 +71,8 @@
  *                 n_rows, n_cols, n, rows, cols, vals};   // or from_handles(...)
  *             ...
  *         });
- *     stream << k(A.row_indices(), A.col_indices(), A.values(), A.triplet_count())
- *                   .dispatch(A.triplet_count());
+ *     stream.record(k(A.row_indices(), A.col_indices(), A.values(), A.triplet_count())
+ *                   .dispatch(A.triplet_count()));
  *
  * Views are frame-scoped (plan risk R5): a view must not survive a resize of the
  * container that produced it.  The host flavour records the container's

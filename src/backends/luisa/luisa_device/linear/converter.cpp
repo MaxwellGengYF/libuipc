@@ -323,8 +323,8 @@ template <typename U>
     const bool was_open = stream.frame_open();
     stream.synchronize();  // commits the recorded work, then waits
     U host{};
-    stream.stream() << one.native().copy_to(lcrt::span{&host, 1u});
-    stream.stream().synchronize();
+    stream.record(one.native().copy_to(lcrt::span{&host, 1u}));
+    stream.synchronize();
     if(was_open)
     {
         stream.begin();
@@ -338,10 +338,10 @@ template <typename U>
 // ---------------------------------------------------------------------------
 LStream& default_matrix_stream()
 {
-    // Leaked on purpose: a long-lived LStream must not be destroyed after
-    // Runtime::shutdown() (cookbook §7.10 trap 1).
-    static auto* s = new LStream{main_stream()};
-    return *s;
+    // One process-wide stream, deliberately: each LStream owns its own CommandList,
+    // so a second one would be a hidden batching split (its commands would jump ahead
+    // of the frame's recorded work, recording nothing into the frame's list).
+    return LStream::current();
 }
 
 // ---------------------------------------------------------------------------

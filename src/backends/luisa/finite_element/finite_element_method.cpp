@@ -131,7 +131,7 @@ void download_vec3(span<Vector3> dst, lud::LCBufferView<LVector3> src)
     }
     std::vector<LVector3> tmp(src.size());
     src.copy_to(span<LVector3>{tmp});
-    lud::main_stream().synchronize();
+    lud::LStream::current().synchronize();
     for(size_t i = 0; i < dst.size(); ++i)
     {
         dst[i] = to_eigen(tmp[i]);

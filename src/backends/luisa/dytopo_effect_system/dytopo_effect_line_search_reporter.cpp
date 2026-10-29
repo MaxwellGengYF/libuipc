@@ -78,9 +78,8 @@ void DyTopoEffectLineSearchReporter::do_compute_energy(LineSearcher::ComputeEner
     else
     {
         // DeviceReduce of an empty array writes the identity in the reference too;
-        // the port writes it with a one-element copy recorded on the frame stream.
-        const Float zero = 0.0;
-        stream.record(info.energy().native().copy_from(lcrt::span<const Float>{&zero, 1u}));
+        // the port writes it with a device-side fill of the one-element energy view.
+        info.energy().fill(0.0, &stream);
     }
 }
 }// namespace uipc::backend::luisa

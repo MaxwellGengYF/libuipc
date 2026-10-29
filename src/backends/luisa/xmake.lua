@@ -145,6 +145,23 @@ target("luisa")
     -- luisa_device has out-of-line definitions -> export them from the module DLL
     -- (parity with target_compile_definitions(luisa PRIVATE UIPC_LUISA_DEVICE_EXPORT=1)).
     add_defines("UIPC_LUISA_DEVICE_EXPORT=1")
+    -- BN1 (bench_plan.md 13.3, N2): NVTX ranges behind one compile-time switch, UIPC_NVTX.
+    -- nvtx3 is header-only on this machine (CUDA 12.9 ships include/nvtx3 and no
+    -- nvToolsExt64_1.lib/.dll; nvtxInit resolves libnvToolsExt with LoadLibraryW), so this
+    -- adds an include dir and a define, never a link dependency. Off by default: without
+    -- `xmake f --nvtx=y` nothing is added and UIPC_NVTX stays 0
+    -- (src/backends/common/nvtx_range.h), so a throughput run is byte-identical to before.
+    if has_config("nvtx") then
+        local cuda_inc = path.join(os.getenv("CUDA_PATH") or
+                                   "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9",
+                                   "include")
+        if not os.isdir(path.join(cuda_inc, "nvtx3")) then
+            raise("--nvtx=y needs a CUDA toolkit include dir containing nvtx3/: " ..
+                  cuda_inc .. " (set CUDA_PATH)")
+        end
+        add_includedirs(cuda_inc)
+        add_defines("UIPC_NVTX=1")
+    end
     add_deps("uipc_geometry", "uipc_io")
     if is_plat("windows") then
         -- Explicit export list instead of WINDOWS_EXPORT_ALL_SYMBOLS: every kernel

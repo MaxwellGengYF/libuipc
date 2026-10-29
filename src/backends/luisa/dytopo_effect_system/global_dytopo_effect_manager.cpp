@@ -267,8 +267,8 @@ namespace
         stream.synchronize();
         if(!dst.empty())
         {
-            stream.stream() << one.native().copy_to(dst);
-            stream.stream().synchronize();
+            stream.record(one.native().copy_to(dst));
+            stream.synchronize();
         }
         if(was_open)
         {
@@ -480,15 +480,10 @@ void GlobalDyTopoEffectManager::Impl::_distribute(ComputeDyTopoEffectInfo& info)
             // clear the range in device
             loose_resize(gradient_range, 2u);
             // `gradient_range = Vector2i{0, 0}`: the reference assigns the whole
-            // device scalar, i.e. one H2D copy on the default stream; the port keeps
-            // the pair in one flat buffer and clears it with a two-element copy on
-            // the *frame* stream (an LDeviceBuffer::copy_from would submit on the
-            // main stream and would not be ordered before the k1 dispatch below).
-            {
-                const std::int32_t zeros[2] = {0, 0};
-                stream.record(gradient_range.view().native().copy_from(
-                    lcrt::span<const std::int32_t>{zeros, 2u}));
-            }
+            // device scalar; the port keeps the pair in one flat buffer and clears it
+            // with a device-side fill of the two elements, which is ordered before the
+            // k1 dispatch below and captures no host pointer.
+            gradient_range.view().fill(std::int32_t{0}, &stream);
 
             // partition
             {

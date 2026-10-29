@@ -359,7 +359,10 @@ class SimplicialSurfaceIntersectionCheck final : public BackendSanityChecker
 
             vector<LVector2i> h_pairs(qbuffer.size());
             if(!h_pairs.empty())
+            {
                 qbuffer.view().copy_to(h_pairs);
+                stream.synchronize();
+            }
 
             // ---- the reference's LeafPred, evaluated on the host -------------------
             vector<Vector2i> result;

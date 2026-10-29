@@ -108,7 +108,7 @@ void AffineBodyStateAccessorFeatureOverrider::do_copy_to(geometry::SimplicialCom
         auto q_subview  = m_abd.qs().subview(q_offset, q_count);
         std::vector<LVector12> staging(q_count);
         q_subview.copy_to(span<LVector12>{staging});
-        lud::main_stream().synchronize();
+        lud::LStream::current().synchronize();
         std::ranges::transform(staging, m_buffer.begin(), [](const LVector12& q) { return to_eigen(q); });
         std::ranges::transform(m_buffer,
                                trans_view.begin(),
@@ -123,7 +123,7 @@ void AffineBodyStateAccessorFeatureOverrider::do_copy_to(geometry::SimplicialCom
         auto q_v_subview = m_abd.q_vs().subview(q_offset, q_count);
         std::vector<LVector12> staging(q_count);
         q_v_subview.copy_to(span<LVector12>{staging});
-        lud::main_stream().synchronize();
+        lud::LStream::current().synchronize();
         std::ranges::transform(staging, m_buffer.begin(), [](const LVector12& q) { return to_eigen(q); });
         std::ranges::transform(m_buffer,
                                vel_view.begin(),
@@ -146,7 +146,7 @@ void AffineBodyStateAccessorFeatureOverrider::do_copy_transform_to(
 
     std::vector<LVector12> staging(body_count);
     q_subview.copy_to(span<LVector12>{staging});
-    lud::main_stream().synchronize();
+    lud::LStream::current().synchronize();
 
     // the caller's buffer is a host buffer (see the file header)
     auto* dst_ptr =
@@ -173,7 +173,7 @@ void AffineBodyStateAccessorFeatureOverrider::do_copy_velocity_to(
 
     std::vector<LVector12> staging(body_count);
     q_v_subview.copy_to(span<LVector12>{staging});
-    lud::main_stream().synchronize();
+    lud::LStream::current().synchronize();
 
     // the caller's buffer is a host buffer (see the file header)
     auto* dst_ptr =

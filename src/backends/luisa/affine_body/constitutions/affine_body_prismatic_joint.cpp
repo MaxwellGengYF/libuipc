@@ -554,7 +554,7 @@ void AffineBodyPrismaticJoint::write_scene()
     frame_stream().synchronize();
     if(!h_current_distances.empty())
         current_distances.cview().copy_to(span<Float>{h_current_distances});
-    lud::main_stream().synchronize();
+    lud::LStream::current().synchronize();
 
     IndexT geo_joint_index = 0;
 

@@ -41,9 +41,71 @@
 #include <contact_system/global_contact_manager.h>
 #include <collision_detection/global_trajectory_filter.h>
 
+// OP-A1/A6: the frame command-list bracket and the process-wide frame stream.
+#include <frame_stream.h>
+#include <luisa_device/tuning.h>
+#include <uipc/common/timer.h>
+
+#include <algorithm>
 
 namespace uipc::backend::luisa
 {
+namespace
+{
+/**
+ * @brief RAII bracket for the frame command list (optimize_plan.md OP-A1, risk R-5).
+ *
+ * `advance()` opens the list and the destructor commits it, so an exception thrown
+ * anywhere in the frame (SimSystemException for "already converged" is normal
+ * control flow here) cannot leave a non-empty list open. That matters twice:
+ * LC asserts on destroying a non-empty uncommitted list, and a list left open
+ * would be submitted at the *next* frame's commit, mixed with the new frame's
+ * commands. `commit()` is idempotent, so the explicit commit at the end of the
+ * frame is safe with the destructor as the fallback.
+ */
+class FrameBracket
+{
+  public:
+    FrameBracket(luisa_device::LStream& stream, bool enabled) noexcept
+        : m_stream{stream}
+        , m_enabled{enabled}
+    {
+        if(m_enabled)
+        {
+            m_stream.begin();
+        }
+    }
+
+    FrameBracket(const FrameBracket&)            = delete;
+    FrameBracket& operator=(const FrameBracket&) = delete;
+
+    ~FrameBracket()
+    {
+        if(m_enabled)
+        {
+            m_stream.commit();
+        }
+    }
+
+  private:
+    luisa_device::LStream& m_stream;
+    bool                   m_enabled;
+};
+
+Json counters_to_json(const luisa_device::LStreamCounters& c)
+{
+    Json j = Json::object();
+    j["commands"]       = c.commands;
+    j["direct_submits"] = c.direct_submits;
+    j["commits"]        = c.commits;
+    j["frame_opens"]    = c.frame_opens;
+    j["uploads"]        = c.uploads;
+    j["syncs"]          = c.syncs;
+    j["sync_ms"]        = c.sync_ms;
+    return j;
+}
+}  // namespace
+
 SimEngine::SimEngine(EngineCreateInfo* info)
     : backend::SimEngine{info}
 {
@@ -81,9 +143,91 @@ void SimEngine::init_device(const Json& config)
     {
         backend = config["luisa_backend"].get<std::string>();
     }
+    // OP-A1: the runtime A/B switch from optimize_plan.md §7. Both settings come
+    // from the same binary, so the A/B runs in one session on one scene.
+    if(config.is_object() && config.contains("luisa") && config["luisa"].is_object())
+    {
+        const auto& lc = config["luisa"];
+        if(lc.contains("frame_batching") && lc["frame_batching"].is_boolean())
+        {
+            m_frame_batching = lc["frame_batching"].get<bool>();
+        }
+        // `Timer` is a process-wide switch in the core library, so this is honoured
+        // only when the scenario asks for it; a throughput run leaves it alone.
+        if(lc.contains("timers") && lc["timers"].is_boolean())
+        {
+            if(lc["timers"].get<bool>())
+            {
+                Timer::enable_all();
+            }
+            else
+            {
+                Timer::disable_all();
+            }
+        }
+        // OP-C1 / OP-C3: the trace-time knobs (luisa_device/tuning.h).  They are read
+        // while a shader is traced -- i.e. after this point -- and baked into the shader,
+        // so a new value needs a fresh process, which is exactly the A/B protocol of
+        // optimize_plan.md §7.  The environment (`UIPC_LUISA_*`) is applied on the first
+        // `tuning()` access and therefore wins over the config: it is the sweep channel.
+        auto& tune = luisa_device::tuning();
+        if(lc.contains("block_dim") && lc["block_dim"].is_number_integer())
+        {
+            const auto v = lc["block_dim"].get<std::uint32_t>();
+            if(v >= 32u && v <= 1024u && (v % 32u) == 0u)
+                tune.block_dim = v;
+            else
+                logger::warn("config luisa.block_dim = {} rejected (32..1024, multiple of 32)",
+                             v);
+        }
+        if(lc.contains("ccd_max_iter") && lc["ccd_max_iter"].is_number_integer())
+        {
+            auto v = lc["ccd_max_iter"].get<int>();
+            v      = std::clamp(v, luisa_device::kCcdMaxIterFloor, luisa_device::kCcdMaxIterLimit);
+            tune.ccd_max_iter = v;
+        }
+        if(lc.contains("block_dim_table") && lc["block_dim_table"].is_object())
+        {
+            for(const auto& [kernel, value] : lc["block_dim_table"].items())
+            {
+                if(!value.is_number_integer())
+                    continue;
+                const auto v = value.get<std::uint32_t>();
+                if(v >= 32u && v <= 1024u && (v % 32u) == 0u)
+                    luisa_device::detail::set_named_block_dim(kernel, v);
+                else
+                    logger::warn("config luisa.block_dim_table['{}'] rejected "
+                                 "(32..1024, multiple of 32)",
+                                 kernel);
+            }
+        }
+    }
+
     auto program_path = luisa_device::default_program_path();
     logger::info("LuisaCompute device: backend='{}', program='{}'", backend, program_path);
     luisa_device::Runtime::instance().init(backend, program_path);
+
+    // OP-A6.1 (the asymmetry bench_plan.md B7 calls out): without a sync function
+    // `Timer` scopes measure when the host *enqueued* the work, not when the device
+    // finished it, which flatters the port against the CUDA backend -- that one
+    // installs `cuda_tool::wait_device()` in the same place. Timers are off unless a
+    // scenario enables them (`Timer::enable_all()`, wired through
+    // `config["luisa"]["timers"]`), so this costs nothing in a throughput run.
+    Timer::set_sync_func([] { frame_stream().synchronize(); });
+
+    logger::info("Frame command-list batching: {}",
+                 m_frame_batching ? "on" : "off (A/B baseline)");
+
+    // Resolve the trace-time knobs now, so the environment override is applied before the
+    // first shader is traced and this log describes the values that will really be baked
+    // into the shaders.
+    luisa_device::detail::apply_env_once();
+    const auto& tune = luisa_device::tuning();
+    logger::info("Trace-time tuning: block_dim = {}, ccd_max_iter = {} "
+                 "(UIPC_LUISA_BLOCK_DIM / UIPC_LUISA_BLOCK_DIM_TABLE / "
+                 "UIPC_LUISA_CCD_MAX_ITER override the config)",
+                 tune.block_dim,
+                 tune.ccd_max_iter);
 }
 
 void SimEngine::do_init(InitInfo& info)
@@ -322,8 +466,23 @@ void SimEngine::advance()
     ++m_current_frame;
     m_newton_iter      = 0;
     m_line_search_iter = 0;
+    m_frame_completed  = false;
 
     logger::info("do_advance() called, frame = {}", m_current_frame);
+
+    // OP-A1: open the frame command list. Every `frame_stream().record(...)` in the
+    // systems below is then *appended* instead of submitted, so one frame costs
+    // O(commits) submissions instead of O(commands). The bracket commits at scope
+    // exit (exception safe) and the explicit commit before the counters covers the
+    // normal path.
+    auto&      stream      = frame_stream();
+    const auto counters_at = stream.counters();
+    // OP-A4: compile *calls* per frame.  Every shader creation in this backend goes
+    // through `luisa_device::compile1/2/3`, so this delta is the exact JIT count of the
+    // frame; "0 after frame 1" is the acceptance of optimize_plan.md OP-A4, and it is
+    // what catches a `static` lost during a refactor (which would re-JIT every frame).
+    const auto compiles_at = luisa_device::compile_stats::total();
+    FrameBracket bracket{stream, m_frame_batching};
 
     // Rebuild Scene
     {
@@ -374,6 +533,16 @@ void SimEngine::advance()
         m_time_integrator_manager->update_state();
     }
 
+    // Commit explicitly (the bracket's destructor is the exception path) so that the
+    // counters below describe a frame that was really submitted.
+    if(m_frame_batching)
+    {
+        stream.commit();
+    }
+    m_frame_counters  = counters_to_json(stream.counters() - counters_at);
+    m_frame_counters["compiles"] = luisa_device::compile_stats::total() - compiles_at;
+    m_frame_completed = true;
+
     logger::info("<<< End Frame: {}", m_current_frame);
 }
 
@@ -398,9 +567,12 @@ void SimEngine::do_advance()
 
 void SimEngine::do_sync()
 {
-    // Phase 8 wires the per-frame pipeline here. The only synchronization the
-    // shell performs is flushing the LC frame command list.
-    luisa_device::main_stream().synchronize();
+    // OP-A1 (risk R-3): this used to synchronize the *raw* lcrt::Stream. With a frame
+    // list open that is a no-op -- the work is still sitting in the list, so
+    // `World::sync()` returned while the GPU had queued work and the following
+    // `retrieve()` could read stale state. `LStream::synchronize()` commits the list
+    // first, then waits (and re-opens the list for the next frame).
+    frame_stream().synchronize();
 }
 
 void SimEngine::do_retrieve()
@@ -415,10 +587,30 @@ SizeT SimEngine::get_frame() const
 
 Json SimEngine::do_frame_stats() const
 {
-    Json stats = Json::object();
-    stats["frame"]            = m_current_frame;
-    stats["newton_iters"]     = m_newton_iter;
-    stats["line_search_iters"] = m_line_search_iter;
+    // OP-A6.3: the same schema the CUDA backend emits (sim_engine.cu:147), so one
+    // collector reads both backends. The Newton/line-search fields are the shell's
+    // bookkeeping until the Phase 8 solver drives them.
+    Json stats                  = Json::object();
+    stats["schema_version"]     = 1;
+    stats["backend"]            = "luisa";
+    stats["frame"]              = m_current_frame;
+    stats["pipeline"]           = m_pipeline_type == PipelineType::Basic ? "ipc" : "al-ipc";
+    stats["completed"]          = m_frame_completed;
+    stats["converged"]          = false;  // the Newton loop is Phase 8 (T8.4)
+    stats["newton_iterations"]  = m_newton_iter;
+    stats["line_search_trials"] = m_line_search_iter;
+    stats["linear_solver_iterations"] = 0;
+    stats["hit_newton_limit"]         = false;
+    stats["hit_line_search_limit"]    = false;
+    stats["last_line_search_alpha"]   = 1.0;
+    stats["last_ccd_toi"]             = 1.0;
+    stats["last_cfl_alpha"]           = 1.0;
+    // OP-A1/A6 attribution: what the frame cost in submissions (see LStreamCounters).
+    stats["frame_batching"] = m_frame_batching;
+    if(!m_frame_counters.empty())
+    {
+        stats["counters"] = m_frame_counters;
+    }
     return stats;
 }
 

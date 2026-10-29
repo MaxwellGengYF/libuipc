@@ -15,7 +15,7 @@
  * unchanged and kernel argument passing is transparent:
  *
  *   LBufferView<Vector3> pos = positions.view();
- *   stream << kernel(pos, n).dispatch(n);       // pos -> BufferView<Vector3>
+ *   stream.record(kernel(pos, n).dispatch(n));  // pos -> BufferView<Vector3>
  *
  * Lifetime rule (plan risk R5): views are frame-scoped. Growing the owning
  * LBuffer reallocates and invalidates outstanding views; do not keep one across
@@ -111,8 +111,11 @@ class LBufferView
             // through: nothing to do.
             return;
         }
-        auto& stream = s ? s->stream() : main_stream();
-        stream << native().copy_from(src);
+        // An upload captures the *host* pointer, and a recorded upload is a
+        // deferred memcpy: record_upload() submits it now, ordered after whatever
+        // the frame has recorded so far (OP-A2).
+        auto& stream = s ? *s : LStream::current();
+        stream.record_upload(native().copy_from(src));
     }
 
     void copy_to(std::span<T> dst, LStream* s = nullptr) const
@@ -125,8 +128,11 @@ class LBufferView
         {
             return;
         }
-        auto& stream = s ? s->stream() : main_stream();
-        stream << native().copy_to(dst);
+        // Recorded, not submitted: the copy is ordered after the frame's recorded
+        // kernels, and the caller synchronizes before reading `dst` (so `dst` must
+        // stay alive until that synchronize).
+        auto& stream = s ? *s : LStream::current();
+        stream.record(native().copy_to(dst));
     }
 
     // device -> device
@@ -140,8 +146,10 @@ class LBufferView
         {
             return;
         }
-        auto& stream = s ? s->stream() : main_stream();
-        stream << native().copy_from(src.native());
+        // Device -> device: recorded, so it runs after the kernels that produce
+        // `src` instead of jumping ahead of them (the live `z = r` bug this fixes).
+        auto& stream = s ? *s : LStream::current();
+        stream.record(native().copy_from(src.native()));
     }
 
     // host read-back with an implicit synchronize (cuda_tool parity for
@@ -149,8 +157,9 @@ class LBufferView
     [[nodiscard]] T read_host() const
     {
         T v{};
-        auto& stream = main_stream();
-        stream << native().copy_to(lcrt::span{&v, 1u});
+        auto& stream = LStream::current();
+        stream.record(native().copy_to(lcrt::span{&v, 1u}));
+        // Commits the frame list (the copy included), waits, and re-opens it.
         stream.synchronize();
         return v;
     }
@@ -158,8 +167,8 @@ class LBufferView
     // WARNING: only valid for size() == 1 (single scalar view).
     void write_host(const T& v) const
     {
-        auto& stream = main_stream();
-        stream << native().copy_from(lcrt::span{&v, 1u});
+        auto& stream = LStream::current();
+        stream.record_upload(native().copy_from(lcrt::span{&v, 1u}));
     }
 
     // Fill every element with `value` (device-side fill kernel).
@@ -197,7 +206,8 @@ void LBufferView<T>::fill(const T& value, LStream* s) const
     {
         return;
     }
-    auto& stream = s ? s->stream() : main_stream();
-    stream << detail::fill_kernel<T>()(native(), value).dispatch(static_cast<uint32_t>(m_size));
+    // A fill is a dispatch with device-resident arguments only: recordable.
+    auto& stream = s ? *s : LStream::current();
+    stream.record(detail::fill_kernel<T>()(native(), value).dispatch(static_cast<uint32_t>(m_size)));
 }
 }// namespace uipc::backend::luisa::luisa_device

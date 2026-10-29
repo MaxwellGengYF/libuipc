@@ -7,10 +7,32 @@ target("cuda")
         add_rules("clangd")
     end
     add_headerfiles("**.h", "**.inl")
-    add_includedirs(path.join(os.projectdir(), "src"))
+    -- public: the backend's own public headers (`cuda_tool/launch_base.h`) include the
+    -- shared instrumentation header <backends/common/nvtx_range.h>, so every consumer of
+    -- this module (the backend test target, the benchmark binaries) needs `src/` on its
+    -- include path too. Before BN1 nothing in `cuda_tool/` reached outside it, and the
+    -- `src/` entry was private, which broke the CUDA test target's build.
+    add_includedirs(path.join(os.projectdir(), "src"), {public = true})
     add_includedirs(os.scriptdir(), {public = true})
     -- cuda_tool (self-written device utilities) on the include path for <cuda_tool/...>
     add_includedirs(path.join(os.scriptdir(), "cuda_tool"), {public = true})
+    -- BN1 (bench_plan.md 13.3): NVTX ranges behind one compile-time switch, UIPC_NVTX.
+    -- nvtx3 is header-only on this machine (CUDA 12.9 ships include/nvtx3 and no
+    -- nvToolsExt64_1.lib/.dll; nvtxInit resolves libnvToolsExt with LoadLibraryW), so this
+    -- adds an include dir and a define, never a link dependency. Off by default: without
+    -- `xmake f --nvtx=y` nothing is added and UIPC_NVTX stays 0
+    -- (src/backends/common/nvtx_range.h), so a throughput run is byte-identical to before.
+    if has_config("nvtx") then
+        local cuda_inc = path.join(os.getenv("CUDA_PATH") or
+                                   "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9",
+                                   "include")
+        if not os.isdir(path.join(cuda_inc, "nvtx3")) then
+            raise("--nvtx=y needs a CUDA toolkit include dir containing nvtx3/: " ..
+                  cuda_inc .. " (set CUDA_PATH)")
+        end
+        add_includedirs(cuda_inc)
+        add_defines("UIPC_NVTX=1")
+    end
     if has_config("github_actions") then
         add_cugencodes("sm_89")
     else

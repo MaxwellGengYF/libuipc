@@ -16,6 +16,7 @@
  * (cookbook §7.9).
  *********************************************************************/
 #include <luisa_device/linear/spmv.h>
+#include <luisa_device/tuning.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -129,6 +130,15 @@ template <typename T, int N>
         [](BufferVar<std::int32_t> rows, BufferVar<std::int32_t> cols, BufferVar<T> vals,
            BufferVar<T> x, BufferVar<T> y, Var<T> a, Var<std::uint32_t> count) noexcept
         {
+            // OP-C1: this kernel is block-size agnostic -- one thread per triplet, every
+            // write an atomic add, no shared memory and no warp collectives -- so its block
+            // size is a pure scheduling choice and is read from the tuning knob
+            // (luisa_device/tuning.h; UIPC_LUISA_BLOCK_DIM_TABLE=spmv.sym=<n>).  The grid is
+            // dispatched at round_up(n) (a multiple of the historical 256), so any block size
+            // is sound here: a smaller block launches the same range in more blocks, a larger
+            // one a few inactive threads in the last block, and the body is guarded by
+            // `$if (i < count)`.
+            lcrt::set_block_size(luisa_device::block_dim_for("spmv.sym"));
             auto A  = CView::from_handles(rows, cols, vals, count, count, count);
             auto xd = CDense::from_handles(x, count);
             auto yd = Dense::from_handles(y, count);
@@ -509,7 +519,7 @@ void LSpmv<T, N>::cpu_sym_spmv(T a, MatrixView A, VectorView x, T b, MutVectorVi
         x.buffer_view().copy_to(lcrt::span<T>{xh});
         y.buffer_view().copy_to(lcrt::span<T>{yh});
     }
-    main_stream().synchronize();
+    LStream::current().synchronize();
 
     // the symmetric (upper-packed) expansion: one entry per (i, j, block) plus the
     // transposed mirror when i != j; duplicates accumulate as they are visited
@@ -541,7 +551,7 @@ void LSpmv<T, N>::cpu_sym_spmv(T a, MatrixView A, VectorView x, T b, MutVectorVi
     if(dofs != 0u)
     {
         y.buffer_view().copy_from(lcrt::span<const T>{yh});
-        main_stream().synchronize();
+        LStream::current().synchronize();
     }
 }
 

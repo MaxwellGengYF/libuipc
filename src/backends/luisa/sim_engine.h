@@ -156,5 +156,16 @@ class SimEngine final : public backend::SimEngine
     SizeT m_current_frame = 0;
     SizeT m_newton_iter   = 0;
     SizeT m_line_search_iter = 0;
+
+    // ---- OP-A1/A6: frame command-list batching + attribution --------------
+    // `config["luisa"]["frame_batching"]` (default true) is the runtime A/B switch
+    // the plan requires (optimize_plan.md §7): both settings come from one binary,
+    // so a run can be measured both ways in one session.
+    bool m_frame_batching = true;
+    // Counters of the last completed frame: the delta of the LStream counters across
+    // the frame bracket. Emitted by do_frame_stats() under the same schema the CUDA
+    // backend uses, so one collector reads both (optimize_plan.md OP-A6.3).
+    Json m_frame_counters = Json::object();
+    bool m_frame_completed = false;
 };
 }// namespace uipc::backend::luisa

@@ -45,10 +45,13 @@
  *    Note the budget exit returns *true* in the reference, so a run that never
  *    terminated is "found".
  *
- * Cost: the loop is unrolled `max_iter` times at trace time for the device.  The
- * reference's callers pass `constexpr SizeT max_iter = 1000` as a *budget*, not as
- * a typical iteration count; a device call-site that cares about shader size
- * should pass a convergence-sized bound (see the T2.3 report / cookbook §7.8).
+ * Cost (OP-C3): on the device the loop is a runtime `$while`, emitted **once** as
+ * control flow (it used to be unrolled `max_iter` times at trace time, which is what
+ * forced the TOI kernels down to a reduced bound).  Shader size and JIT time are now
+ * independent of `max_iter`, so the reference's budget can be passed: the port's TOI
+ * kernels use `luisa_device::ccd_max_iter()` (default 64, the convergence-sized value
+ * the parity cases are measured at -- see `luisa_device/tuning.h`).  The host
+ * instantiation keeps the plain loop: there is no `$while` outside a traced kernel.
  *********************************************************************/
 #include <luisa_device/math/distance/flagged.h>
 
@@ -86,9 +89,22 @@ inline constexpr int kCcdUnboundedIterations = 64;
 /// The reference's `max_iter` is a host value: a non-negative budget bounds the
 /// loop, a negative one means "iterate until a termination test fires", for which
 /// the port uses `kCcdUnboundedIterations`.
-[[nodiscard]] constexpr int ccd_iterations(int max_iter) noexcept
+///
+/// OP-C3: the bound may also be a *device* value (`lcrt::Var<int>`), which is how a
+/// kernel passes a runtime budget (see `luisa_device/ccd_config.h`).  The reference's
+/// negative "unbounded" spelling is host control flow and has no device meaning, so a
+/// device bound is used as it stands (the caller guarantees `>= 0`).
+template <typename IterT>
+[[nodiscard]] inline auto ccd_iterations(IterT&& max_iter) noexcept
 {
-    return max_iter >= 0 ? max_iter : kCcdUnboundedIterations;
+    if constexpr(std::is_arithmetic_v<std::remove_cvref_t<IterT>>)
+    {
+        return max_iter >= 0 ? int(max_iter) : kCcdUnboundedIterations;
+    }
+    else
+    {
+        return static_cast<std::remove_cvref_t<IterT>>(max_iter);
+    }
 }
 
 /// The reference's conservative-advancement loop with every data-dependent exit
@@ -99,14 +115,14 @@ inline constexpr int kCcdUnboundedIterations = 64;
 /// @param update    `update()` -> the current squared distance; it rebuilds the
 ///                  flags of the current configuration (and, for edge-edge,
 ///                  applies the reference's `dFunc <= 0` endpoint fallback)
-template <typename T, int N, typename Update>
+template <typename T, int N, typename IterT, typename Update>
 [[nodiscard]] inline bool_of_t<T> ccd_loop(LVec<T, 3>*       x,
                                            const LVec<T, 3>* dx,
                                            T                 eta,
                                            T                 thickness,
                                            T                 max_disp_mag,
                                            ccd_bool_t<T>     sleeping,
-                                           int               max_iter,
+                                           IterT             max_iter,
                                            T&                toc,
                                            Update&&          update) noexcept
 {
@@ -120,12 +136,21 @@ template <typename T, int N, typename Update>
     const T toc_prev = toc;
 
     // `running` == false freezes the whole iteration.
+    //
+    // `T` and `ccd_bool_t<T>` are `Var`s on the device (`math::storage_of_t`
+    // materialises every DSL value into a local reference variable), so each
+    // assignment below is a *store* and the state below is loop-carried -- which is
+    // what lets the body be traced once inside a `$while` (OP-C3) instead of being
+    // unrolled once per iteration.
     ccd_bool_t<T> running = !sleeping;
     ccd_bool_t<T> hit     = false;
     T             toc_cur = zero_of<T>();
 
-    const int iters = ccd_iterations(max_iter);
-    for(int it = 0; it < iters; ++it)
+    auto iters = ccd_iterations(max_iter);
+
+    // One conservative-advancement iteration.  Shared verbatim by the two loop
+    // spellings below, so the host instantiation and the device kernel cannot drift.
+    auto iterate = [&]() noexcept
     {
         // tocLowerBound = (1 - eta) * (dist2 - th^2) / ((dist + th) * maxDispMag)
         auto toc_lower = div(mul(sub(1.0, eta), sub(dist2, thickness2)),
@@ -141,8 +166,8 @@ template <typename T, int N, typename Update>
 
         // if(toc && (d2 - th^2)/(d + th) < gap) break;   (-> true)
         auto gap_fired = detail::pred_and(running,
-                         toc_cur != zero_of<T>(),
-                         div(sub(dist2, thickness2), add(dist, thickness)) < gap);
+                                          toc_cur != zero_of<T>(),
+                                          div(sub(dist2, thickness2), add(dist, thickness)) < gap);
 
         // toc += tocLowerBound — skipped exactly when the gap test fired
         toc_cur = add(toc_cur, select_scalar(zero_of<T>(), toc_lower, running & !gap_fired));
@@ -151,7 +176,30 @@ template <typename T, int N, typename Update>
         auto fail_fired = detail::pred_and(running, !gap_fired, toc_cur > toc_prev);
 
         hit     = detail::pred_or(hit, gap_fired);
-        running   = detail::pred_and(running, !gap_fired, !fail_fired);
+        running = detail::pred_and(running, !gap_fired, !fail_fired);
+    };
+
+    if constexpr(math::is_dsl_value_v<T>)
+    {
+        // OP-C3 — a runtime `$while`, not a trace-time unroll.  The loop is emitted
+        // once as control flow, so shader size and JIT time stop scaling with the
+        // iteration budget; that is what allows passing the reference's budget
+        // (see `ccd_config.h`) instead of a reduced, fidelity-compromising one.
+        lcrt::Var<int> it = 0;
+        $while((it < iters) & running)
+        {
+            iterate();
+            it = add(it, 1);  // the port's DSL scalar spelling (RULE M1), not `it + 1`
+        };
+    }
+    else
+    {
+        // Host instantiation (the `_device_vs_host` comparison tests): there is no
+        // `$while` outside a traced kernel, and the trace-time unroll is free here.
+        for(int it = 0; it < iters; ++it)
+        {
+            iterate();
+        }
     }
 
     // `toc` is written exactly where the reference writes `toc = 0` (i.e. not at

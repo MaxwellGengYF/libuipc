@@ -109,8 +109,8 @@ inline void read_back_vector(lud::LStream& stream, const lud::LCBufferView<Float
         return;
     const bool was_open = stream.frame_open();
     stream.synchronize();
-    stream.stream() << src.native().copy_to(lcrt::span<Float>{dst.data(), dst.size()});
-    stream.stream().synchronize();
+    stream.record(src.native().copy_to(lcrt::span<Float>{dst.data(), dst.size()}));
+    stream.synchronize();
     if(was_open)
     {
         stream.begin();

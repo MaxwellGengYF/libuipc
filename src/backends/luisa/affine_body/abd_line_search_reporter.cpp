@@ -66,8 +66,8 @@ void copy_device(lud::LDeviceBuffer<T>& dst, const lud::LDeviceBuffer<T>& src)
 /// `cuda_tool::DeviceReduce().Sum(in.data(), out.data(), n)` on the shared frame
 /// stream (T3.2).  A zero-length reduction writes the reduce identity in the
 /// reference's CUB path too, but an empty `LBufferView` carries a *null* handle
-/// that must not become a kernel argument, so that case is a one-element copy
-/// recorded on the same stream.
+/// that must not become a kernel argument, so that case is a device-side fill of
+/// the one-element view, recorded on the same stream (no host scalar involved).
 void reduce_sum_onto(const lud::LDeviceBuffer<Float>& in, lud::LDeviceVar<Float>& out)
 {
     if(in.size() > 0u)
@@ -76,8 +76,7 @@ void reduce_sum_onto(const lud::LDeviceBuffer<Float>& in, lud::LDeviceVar<Float>
     }
     else
     {
-        const Float zero = 0.0;
-        frame_stream().record(out.view().native().copy_from(lcrt::span<const Float>{&zero, 1u}));
+        out.view().fill(Float{0.0});
     }
 }
 

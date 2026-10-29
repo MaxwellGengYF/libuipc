@@ -251,7 +251,7 @@ void InfoStacklessBVHSimplexTrajectoryFilter::Impl::detect(DetectInfo& info)
     std::array<IndexT, 4> host_counts{};
     stream.flush();
     query_counts.cview().copy_to(span<IndexT>{host_counts});
-    lud::main_stream().synchronize();
+    stream.synchronize();
 
     if(lbvh_CodimP.prepare_query_result(raw_AllP_CodimP_pairs, host_counts[0]))
         launch_allp_codimp(false);
@@ -464,7 +464,7 @@ void InfoStacklessBVHSimplexTrajectoryFilter::Impl::filter_active(FilterActiveIn
         std::array<std::uint32_t, 4> host_counts{};
         stream.flush();
         selected_counts.cview().copy_to(span<std::uint32_t>{host_counts});
-        lud::main_stream().synchronize();
+        stream.synchronize();
 
         IndexT PP_count = static_cast<IndexT>(host_counts[0]);
         IndexT PE_count = static_cast<IndexT>(host_counts[1]);

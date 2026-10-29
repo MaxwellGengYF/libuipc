@@ -150,7 +150,8 @@ namespace ldist = luisa_device::math::distance;
 
 /// filters pass to the identical CCD call for the identical loop
 
-/// (`details/simplex_trajectory_filter_kernels.h: kToiMaxIter = 16`); with eta = 0.2 the
+/// (OP-C3: `details/simplex_trajectory_filter_kernels.h: kToiMaxIter()`,
+/// `luisa.ccd_max_iter`, default 64); with eta = 0.2 the
 
 /// loop's gap test fires within two iterations for every approaching pair, so the
 
@@ -180,9 +181,9 @@ void read_back_into(lud::LStream& stream, const lud::LBufferView<T>& src, std::s
 
     stream.synchronize();
 
-    stream.stream() << src.native().copy_to(dst);
+    stream.record(src.native().copy_to(dst));
 
-    stream.stream().synchronize();
+    stream.synchronize();
 
     if(was_open)
 
