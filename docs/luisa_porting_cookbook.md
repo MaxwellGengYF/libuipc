@@ -5860,6 +5860,33 @@ Class-A goldens the plan asked for.  The rules below are the reusable ones.
     non-zero contributions.
 
 
+
+#### Correction to 7.36 (made during the S5 review, 2026-11-05)
+
+Three claims in the 7.36 text above were wrong and are corrected here; the code comments in
+`contact_models/*.cpp` were corrected in the same commit.
+
+1. **The "batch deadlock" is a cold NVRTC compile, not a deadlock.** The PT/EE/PE/PP modules
+   are 3.30/3.31/1.44/0.47 MB of PTX; a cold `luisa_nvrtc.exe` compile of one of them takes
+   ~11 min, which is indistinguishable from a hang from the outside (the parent process has
+   ~2 s of CPU while the NVRTC child burns a core). The four-way split plus the per-dispatch
+   `frame_stream().synchronize()` is kept — serial, bounded and attributable — but the reason
+   is compile *cost*, not a lock.
+2. **The reference's `utils/make_spd.h` is not a tolerance-driven Jacobi loop.** It runs
+   Eigen's `SelfAdjointEigenSolver` (`cuda_tool/eigen/evd.h:8-23`). The port's fixed 8-sweep
+   Jacobi variant is still the only practical device-side choice, but the numerical gap it
+   opens (convergence-driven vs fixed sweeps) is **not** measured on contact blocks: the
+   `[t64b]` 8-vs-20 comparison (1.18e-15) was made on a different matrix.
+3. **`World::init()`/`advance()` do not abort.** The AST-builder type-mismatch assertion that
+   7.36 and the T8.1b progress row named as the blocker was an LC header/binary ABI drift
+   (insertion of the bfloat16 alternatives into `detail::LiteralValue`), fixed in `3d17541b`
+   by restoring the install prefix's headers to the commit its binaries were built from.
+   `shell_init_advance_retrieve` passes and multi-frame `advance()` runs. The class-B/C parity
+   gates remain open for different reasons: there is no CUDA ground truth in this environment
+   (`--backend_cuda=y` fails at `src/backends/cuda/components.lua:86`, `unknown interface:
+   raise()`), `apps/tests/sim_case/**` hard-codes `Engine{"cuda"}`, and two scenes
+   (`abd_constraint`, `abd_joint_c`) fail a cold NVRTC compile.
+
 ### 7.37 Findings from the xmake build path (T10.1) — making the LuisaCompute backend build and run under xmake
 
 Context: `src/backends/luisa/xmake.lua` had existed since T1.1 but had **never been

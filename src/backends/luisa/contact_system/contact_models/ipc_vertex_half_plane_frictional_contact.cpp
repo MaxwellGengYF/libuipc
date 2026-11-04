@@ -29,7 +29,7 @@ namespace
 namespace lla = luisa_device::linalg;
 
 /// The reference's `cuda::make_spd(H)` on the 3x3 friction Hessian: the port's fixed-sweep
-/// `lps::make_spd_inplace` (the reference's `utils/make_spd.h` loop is tolerance-driven; the
+/// `lps::make_spd_inplace` (the reference's `utils/make_spd.h` loop runs an eigensolver; the
 /// T5.2 measurement — `hs1d_detail::kMakeSpdSweeps` — is the port's 8).
 inline constexpr int kMakeSpdSweeps = 8;
 

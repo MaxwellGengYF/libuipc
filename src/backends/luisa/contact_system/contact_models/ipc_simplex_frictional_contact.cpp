@@ -44,7 +44,7 @@ namespace
 namespace ldist = luisa_device::math::distance;
 namespace lla   = luisa_device::linalg;
 
-/// See ipc_simplex_normal_contact.cpp: the reference's tolerance-driven `utils/make_spd.h`
+/// See ipc_simplex_normal_contact.cpp: the reference's eigen-solver `utils/make_spd.h`
 /// loop is replaced by the port's fixed-sweep `lps::make_spd_inplace`.
 inline constexpr int kMakeSpdSweeps = 8;
 
@@ -1302,9 +1302,9 @@ class IPCSimplexFrictionalContact final : public SimplexFrictionalContact
                     n)
                       .dispatch(n));
                 // Commit (and therefore *compile*) this kernel on its own: this build's
-                // `luisa::compute::Device::compile` deadlocks when two or more of these big
+                // `luisa::compute::Device::compile` blocks ~11 min on a cold NVRTC
                 // `make_spd` kernels are pending in one batch -- measured by bisection: the PT
-                // kernel alone runs, PT+EE in one batch never returns (the recorded T6.4a
+                // kernel alone runs, PT+EE in one batch does not return for ~11 min (the recorded T6.4a
                 // harness hazard; cookbook 7.36).
                 frame_stream().synchronize();
             }
@@ -1340,9 +1340,9 @@ class IPCSimplexFrictionalContact final : public SimplexFrictionalContact
                     n)
                       .dispatch(n));
                 // Commit (and therefore *compile*) this kernel on its own: this build's
-                // `luisa::compute::Device::compile` deadlocks when two or more of these big
+                // `luisa::compute::Device::compile` blocks ~11 min on a cold NVRTC
                 // `make_spd` kernels are pending in one batch -- measured by bisection: the PT
-                // kernel alone runs, PT+EE in one batch never returns (the recorded T6.4a
+                // kernel alone runs, PT+EE in one batch does not return for ~11 min (the recorded T6.4a
                 // harness hazard; cookbook 7.36).
                 frame_stream().synchronize();
             }
@@ -1378,9 +1378,9 @@ class IPCSimplexFrictionalContact final : public SimplexFrictionalContact
                     n)
                       .dispatch(n));
                 // Commit (and therefore *compile*) this kernel on its own: this build's
-                // `luisa::compute::Device::compile` deadlocks when two or more of these big
+                // `luisa::compute::Device::compile` blocks ~11 min on a cold NVRTC
                 // `make_spd` kernels are pending in one batch -- measured by bisection: the PT
-                // kernel alone runs, PT+EE in one batch never returns (the recorded T6.4a
+                // kernel alone runs, PT+EE in one batch does not return for ~11 min (the recorded T6.4a
                 // harness hazard; cookbook 7.36).
                 frame_stream().synchronize();
             }
@@ -1416,9 +1416,9 @@ class IPCSimplexFrictionalContact final : public SimplexFrictionalContact
                     n)
                       .dispatch(n));
                 // Commit (and therefore *compile*) this kernel on its own: this build's
-                // `luisa::compute::Device::compile` deadlocks when two or more of these big
+                // `luisa::compute::Device::compile` blocks ~11 min on a cold NVRTC
                 // `make_spd` kernels are pending in one batch -- measured by bisection: the PT
-                // kernel alone runs, PT+EE in one batch never returns (the recorded T6.4a
+                // kernel alone runs, PT+EE in one batch does not return for ~11 min (the recorded T6.4a
                 // harness hazard; cookbook 7.36).
                 frame_stream().synchronize();
             }

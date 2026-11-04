@@ -33,7 +33,7 @@
  *    `lps::LMat<Var<Float>,12,12>`.
  *  * `Distance::point_triangle_distance_flag(...)` -> `ldist::point_triangle_distance_flag`.
  *  * `make_spd(H)` -> `lps::make_spd_inplace(H, kMakeSpdSweeps)` (the reference's
- *    `utils/make_spd.h` is a tolerance-driven Jacobi loop, so the port fixes the sweep
+ *    `utils/make_spd.h` runs Eigen's SelfAdjointEigenSolver (cuda_tool/eigen/evd.h), whose convergence loop, so the port fixes the sweep
  *    count; the T5.2 `hs1d_detail::kMakeSpdSweeps` choice, which reaches the exact eigenvalue
  *    clamp for N = 6/9/12 — the same 8.
  *  * `DoubletVectorAssembler DVA{PT_Gs}` / `TripletMatrixAssembler TMA{PT_Hs}` -> the port's
@@ -66,7 +66,7 @@ namespace ldist = luisa_device::math::distance;
 namespace lla   = luisa_device::linalg;
 
 /// The sweep count passed to `lps::make_spd_inplace` for the 12x12/9x9/6x6 pair Hessians
-/// (the reference's tolerance-driven `utils/make_spd.h` loop has no device equivalent; the
+/// (the reference's `utils/make_spd.h` eigen-solver loop has no device equivalent here; the
 /// T5.2 measurement — `hs1d_detail::kMakeSpdSweeps` — is the port's 8).
 inline constexpr int kMakeSpdSweeps = 8;
 
@@ -1156,9 +1156,9 @@ class IPCSimplexNormalContact final : public SimplexNormalContact
                     n)
                       .dispatch(n));
                 // Commit (and therefore *compile*) this kernel on its own: this build's
-                // `luisa::compute::Device::compile` deadlocks when two or more of these big
+                // `luisa::compute::Device::compile` blocks ~11 min on a cold NVRTC
                 // `make_spd` kernels are pending in one batch -- measured by bisection: the PT
-                // kernel alone runs, PT+EE in one batch never returns (the recorded T6.4a
+                // kernel alone runs, PT+EE in one batch does not return for ~11 min (the recorded T6.4a
                 // harness hazard; cookbook 7.36).
                 frame_stream().synchronize();
             }
@@ -1192,9 +1192,9 @@ class IPCSimplexNormalContact final : public SimplexNormalContact
                     n)
                       .dispatch(n));
                 // Commit (and therefore *compile*) this kernel on its own: this build's
-                // `luisa::compute::Device::compile` deadlocks when two or more of these big
+                // `luisa::compute::Device::compile` blocks ~11 min on a cold NVRTC
                 // `make_spd` kernels are pending in one batch -- measured by bisection: the PT
-                // kernel alone runs, PT+EE in one batch never returns (the recorded T6.4a
+                // kernel alone runs, PT+EE in one batch does not return for ~11 min (the recorded T6.4a
                 // harness hazard; cookbook 7.36).
                 frame_stream().synchronize();
             }
@@ -1228,9 +1228,9 @@ class IPCSimplexNormalContact final : public SimplexNormalContact
                     n)
                       .dispatch(n));
                 // Commit (and therefore *compile*) this kernel on its own: this build's
-                // `luisa::compute::Device::compile` deadlocks when two or more of these big
+                // `luisa::compute::Device::compile` blocks ~11 min on a cold NVRTC
                 // `make_spd` kernels are pending in one batch -- measured by bisection: the PT
-                // kernel alone runs, PT+EE in one batch never returns (the recorded T6.4a
+                // kernel alone runs, PT+EE in one batch does not return for ~11 min (the recorded T6.4a
                 // harness hazard; cookbook 7.36).
                 frame_stream().synchronize();
             }
@@ -1264,9 +1264,9 @@ class IPCSimplexNormalContact final : public SimplexNormalContact
                     n)
                       .dispatch(n));
                 // Commit (and therefore *compile*) this kernel on its own: this build's
-                // `luisa::compute::Device::compile` deadlocks when two or more of these big
+                // `luisa::compute::Device::compile` blocks ~11 min on a cold NVRTC
                 // `make_spd` kernels are pending in one batch -- measured by bisection: the PT
-                // kernel alone runs, PT+EE in one batch never returns (the recorded T6.4a
+                // kernel alone runs, PT+EE in one batch does not return for ~11 min (the recorded T6.4a
                 // harness hazard; cookbook 7.36).
                 frame_stream().synchronize();
             }
