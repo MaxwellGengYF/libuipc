@@ -1,6 +1,7 @@
 #include <linear_system/global_linear_system.h>
 #include <linear_system/global_linear_system_function.h>
 #include <linear_system/diag_linear_subsystem.h>
+#include <linear_system/off_diag_linear_subsystem.h>
 #include <linear_system/local_preconditioner.h>
 #include <uipc/common/range.h>
 #include <uipc/common/enumerate.h>
@@ -17,28 +18,31 @@
 *   - solve(), _dump_A_b(), _dump_x()  (the debug/UDA path; they live next to
 *     solve()'s `need_debug_dump` branch and drag in <utils/matrix_market.h> +
 *     BackendPathTool -- T8.3),
-*   - Impl::solve_linear_system(), Impl::apply_preconditioner(), Impl::spmv(),
-*     Impl::spmv_dot(), matrix_data_ptrs()  (T8.3: they need IterativeSolver,
-*     GlobalPreconditioner, the CUDA-graph validity key),
+*   - Impl::solve_linear_system(), Impl::apply_preconditioner()'s global branch,
+*     Impl::spmv(), Impl::spmv_dot(), matrix_data_ptrs()  (T8.3: they need
+*     IterativeSolver, GlobalPreconditioner, the CUDA-graph validity key),
 *   - the `triplet_count_dev = ...` upload in `build_linear_system()` (its only
 *     consumer is the graph-stable spmv_dot).
 * All of those are declared-but-undefined in the header, each with a
 * `SCOPE NOTE (T8.3)`.
 *
-* ONE MORE SCOPE NOTE (T8.3) — the OFF-DIAG subsystem
-* ---------------------------------------------------
-* `OffDiagLinearSubsystem` does not exist in this backend yet (it is T8.3's, and
-* T5.1's rule 13 forbids inventing a placeholder type), so the reference's
-* off-diag branches cannot be transcribed: `Impl::init()`'s second sort,
-* `_update_subsystem_extent()`'s `SizeT2{lr, rl}` fill,
-* `_assemble_linear_system()`'s two `.submatrix(...)` views and
-* `_assemble_preconditioner()`'s global-preconditioner block all dereference
-* types that only T8.3 defines.  They are marked `SCOPE NOTE (T8.3)` at each site.
-* The port keeps `off_diag_subsystems` / `off_diag_lr_triplet_counts` /
-* `off_diag_span` sized from the *host* subsystem table and treats the off-diag
-* count as zero; since the reference's collection is empty for every scene of
-* this backend, the observable behaviour is identical (`subsystem_infos` holds
-* exactly the diag entries, in the same order, with the same `index`).
+* T8.3a-1 — THE OFF-DIAG SUBSYSTEM IS LIVE (the previous scope note is resolved)
+* -----------------------------------------------------------------------------
+* T5.4a could not transcribe the reference's four off-diag branches, because
+* `OffDiagLinearSubsystem` did not exist and `SimSystemSlotCollection<T>` needs a
+* *complete* `T`.  With linear_system/off_diag_linear_subsystem.h in the tree
+* they are transcribed verbatim now:
+*   * `Impl::init()`'s second (uid-ascending) sort, the
+*     `diag + off_diag` subsystem table with `index = diag_count + i`,
+*     `off_diag->init()` and `off_diag_lr_triplet_counts.resize(off_diag_count)`;
+*   * `_update_subsystem_extent()`'s `else` branch (`{lr, rl}` per off-diag
+*     subsystem, `subsystem_triplet_counts[idx] = lr + rl`);
+*   * `_assemble_linear_system()`'s two `.submatrix(...)` windows
+*     (`lr` at `(l_off, r_off)`, `rl` at `(r_off, l_off)`);
+*   * `add_subsystem(OffDiagLinearSubsystem*)`.
+* The one addition (not in the reference): the duplicate/self-pair rejection,
+* see `off_diag_layout_detail::check_unique_pairs()` +
+* global_linear_system_function.h.
 *************************************************************************************************/
 namespace uipc::backend::luisa
 {
@@ -76,7 +80,8 @@ void GlobalLinearSystem::Impl::init()
 {
     // 1) Init all diag subsystems and off-diag subsystems
 
-    auto diag_subsystem_view = diag_subsystems.view();
+    auto diag_subsystem_view     = diag_subsystems.view();
+    auto off_diag_subsystem_view = off_diag_subsystems.view();
 
     {
         // Sort the diag subsystems by their UIDs to ensure the order is consistent
@@ -84,21 +89,62 @@ void GlobalLinearSystem::Impl::init()
         std::ranges::sort(diag_subsystem_view,
                           [](const DiagLinearSubsystem* a, const DiagLinearSubsystem* b)
                           { return a->uid() < b->uid(); });
-
-        // SCOPE NOTE (T8.3): the reference sorts `off_diag_subsystems.view()` right
-        // here as well (same uid predicate).  `OffDiagLinearSubsystem` is T8.3's
-        // type, so the collection cannot be viewed yet; it is empty in every scene
-        // of this backend, so the order and the counts below are identical.
+        // ... and the off-diag subsystems by their (l, r) uid pair: the block
+        // order of the global matrix *is* this order (plan 14 §4: never reorder
+        // the block layout to make a dump nicer -- BSR/PCG depend on it).
+        std::ranges::sort(off_diag_subsystem_view,
+                          [](const OffDiagLinearSubsystem* a,
+                             const OffDiagLinearSubsystem* b) -> bool
+                          { return a->uid() < b->uid(); });
     }
 
-    auto total_count = diag_subsystem_view.size();  // + off_diag_subsystem_view.size(): T8.3
+    {
+        // Reject duplicate / self-referential off-diag pairs BEFORE anything is
+        // sized from the off-diag count.  A deliberate deviation from the
+        // reference (it has no such check): two subsystems owning the same block
+        // are silently *summed* by the BCOO->BSR segmentation reduction, and a
+        // self pair writes a block the diag subsystem already owns.
+        std::vector<U64> off_diag_uid_l(off_diag_subsystem_view.size());
+        std::vector<U64> off_diag_uid_r(off_diag_subsystem_view.size());
+        for(auto&& [i, off_diag_subsystem] : enumerate(off_diag_subsystem_view))
+        {
+            auto uid           = off_diag_subsystem->uid();
+            off_diag_uid_l[i] = std::get<0>(uid);
+            off_diag_uid_r[i] = std::get<1>(uid);
+        }
+        auto pair_check = off_diag_layout_detail::check_unique_pairs(
+            std::span<const U64>{off_diag_uid_l}, std::span<const U64>{off_diag_uid_r});
+
+        // the diagnostic is built only on the failing path (UIPC_ASSERT formats
+        // lazily, but the subsystem names have to be resolved here)
+        std::string pair_error;
+        if(!pair_check.ok)
+        {
+            auto& first  = *off_diag_subsystem_view[pair_check.first];
+            auto& second = *off_diag_subsystem_view[pair_check.second];
+            pair_error   = pair_check.self
+                               ? fmt::format("Off-diag linear subsystem {} connects the diagonal "
+                                             "subsystem {} to itself; that diag block is already "
+                                             "owned by the diag subsystem.",
+                                             first.name(),
+                                             first.name())
+                               : fmt::format("Off-diag linear subsystems {} and {} connect the same "
+                                             "(left, right) pair of diagonal subsystems; their "
+                                             "blocks would overlap in the global matrix.",
+                                             first.name(),
+                                             second.name());
+        }
+        UIPC_ASSERT(pair_check.ok, "{}", pair_error);
+    }
+
+    auto total_count = diag_subsystem_view.size() + off_diag_subsystem_view.size();
     subsystem_infos.resize(total_count);
 
     // Diag System Always Go First
     auto diag_span = std::span{subsystem_infos}.subspan(0, diag_subsystem_view.size());
-    // Off Diag System Always After Diag System (T8.3; empty here)
-    auto off_diag_span =
-        std::span{subsystem_infos}.subspan(diag_subsystem_view.size(), SizeT{0});
+    // Off Diag System Always After Diag System
+    auto off_diag_span = std::span{subsystem_infos}.subspan(diag_subsystem_view.size(),
+                                                            off_diag_subsystem_view.size());
     {
         auto offset = 0;
         for(auto i : range(diag_span.size()))
@@ -118,14 +164,17 @@ void GlobalLinearSystem::Impl::init()
             dst_off_diag.is_diag     = false;
             dst_off_diag.local_index = i;
             dst_off_diag.index       = offset + i;
-            // SCOPE NOTE (T8.3): the reference also writes `->m_index` here (via
-            // the off-diag subsystem's own `init()` below).
+            // NOTE: an off-diag subsystem has no `m_index` member (the reference's
+            // header has none either) -- its index lives *only* here, in
+            // `subsystem_infos[i].index`, and is passed to it through
+            // `OffDiagInfo::m_index` at assembly time.
         }
 
         for(auto diag_subsystem : diag_subsystem_view)
             diag_subsystem->init();
 
-        // SCOPE NOTE (T8.3): `for(auto off_diag : off_diag_subsystem_view) off_diag->init();`
+        for(auto off_diag_subsystem : off_diag_subsystem_view)
+            off_diag_subsystem->init();
     }
 
     // 2) DoF Offsets/Counts
@@ -172,11 +221,9 @@ void GlobalLinearSystem::Impl::init()
 
     // 3) Triplet Offsets/Counts
     subsystem_triplet_offsets_counts.resize(total_count);
-    // SCOPE NOTE (T8.3): the reference sizes this from the off-diag count
-    // (`off_diag_lr_triplet_counts.resize(off_diag_subsystem_view.size())`); the
-    // off-diag collection is empty here, so the size is 0 -- the member is kept
-    // (and stays empty) for the T8.3 branch.
-    off_diag_lr_triplet_counts.resize(0);
+    // sized from the off-diag count *before* `_update_subsystem_extent()` writes
+    // `off_diag_lr_triplet_counts[local_index]` (an out-of-bounds write otherwise)
+    off_diag_lr_triplet_counts.resize(off_diag_subsystem_view.size());
 
     // 4) Preconditioner
     // find out diag systems that don't have preconditioner
@@ -248,6 +295,7 @@ bool GlobalLinearSystem::Impl::_update_subsystem_extent()
     bool triplet_count_changed = false;
 
     auto diag_subsystem_view       = diag_subsystems.view();
+    auto off_diag_subsystem_view   = off_diag_subsystems.view();
     auto diag_dof_counts           = diag_dof_offsets_counts.counts();
     auto diag_dof_offsets          = diag_dof_offsets_counts.offsets();
     auto subsystem_triplet_counts  = subsystem_triplet_offsets_counts.counts();
@@ -272,13 +320,17 @@ bool GlobalLinearSystem::Impl::_update_subsystem_extent()
         }
         else
         {
-            // SCOPE NOTE (T8.3): the reference's off-diag branch
-            //   OffDiagExtentInfo info; off_diag_subsystem->report_extent(info);
-            //   auto total = info.m_lr_block_count + info.m_rl_block_count;
-            //   subsystem_triplet_counts[triplet_i] = total;
-            //   off_diag_lr_triplet_counts[local_index] = SizeT2{lr, rl};
-            // is unreachable here: `subsystem_infos` holds only diag entries
-            // (`OffDiagLinearSubsystem` is T8.3's type).
+            auto  triplet_i = subsystem_info.index;
+            auto& off_diag_subsystem = off_diag_subsystem_view[subsystem_info.local_index];
+            OffDiagExtentInfo info;
+            off_diag_subsystem->report_extent(info);
+
+            auto total_block_count = info.m_lr_block_count + info.m_rl_block_count;
+
+            triplet_count_changed |= subsystem_triplet_counts[triplet_i] != total_block_count;
+            subsystem_triplet_counts[triplet_i] = total_block_count;
+            off_diag_lr_triplet_counts[subsystem_info.local_index] =
+                SizeT2{info.m_lr_block_count, info.m_rl_block_count};
         }
     }
 
@@ -338,7 +390,8 @@ void GlobalLinearSystem::Impl::_assemble_linear_system()
     auto B = b.view();
     B.buffer_view().fill(0.0);
 
-    auto diag_subsystem_view = diag_subsystems.view();
+    auto diag_subsystem_view     = diag_subsystems.view();
+    auto off_diag_subsystem_view = off_diag_subsystems.view();
 
     auto diag_dof_counts  = diag_dof_offsets_counts.counts();
     auto diag_dof_offsets = diag_dof_offsets_counts.offsets();
@@ -350,11 +403,53 @@ void GlobalLinearSystem::Impl::_assemble_linear_system()
     {
         if(!subsystem_info.is_diag)
         {
-            // SCOPE NOTE (T8.3): the reference's off-diag branch builds the two
-            // `.submatrix(...)` windows from `off_diag_subsystem->m_l->m_index` /
-            // `->m_r->m_index` and calls `off_diag_subsystem->assemble(info)`.
-            // `OffDiagLinearSubsystem` is T8.3's type (no placeholder type --
-            // T5.1 rule 13), so it lands there; the branch is unreachable here.
+            auto  triplet_i          = subsystem_info.index;
+            auto  local_index        = subsystem_info.local_index;
+            auto& off_diag_subsystem = off_diag_subsystem_view[local_index];
+            // the two ends' *diag* indices (assigned by `Impl::init()` above)
+            auto l_diag_index = off_diag_subsystem->m_l->m_index;
+            auto r_diag_index = off_diag_subsystem->m_r->m_index;
+
+            auto l_blocked_dof_offset = diag_dof_offsets[l_diag_index] / DoFBlockSize;
+            auto l_blocked_dof_count  = diag_dof_counts[l_diag_index] / DoFBlockSize;
+            auto r_blocked_dof_offset = diag_dof_offsets[r_diag_index] / DoFBlockSize;
+            auto r_blocked_dof_count  = diag_dof_counts[r_diag_index] / DoFBlockSize;
+
+            // the (lr, rl) split of this subsystem's triplet slice: `lr` first,
+            // `rl` immediately after (that is how `_update_subsystem_extent()`
+            // budgets it, so the two windows tile the slice exactly)
+            auto lr_triplet_offset = subsystem_triplet_offsets[triplet_i];
+            auto lr_triplet_count  = off_diag_lr_triplet_counts[local_index].x;
+            auto rl_triplet_offset = lr_triplet_offset + lr_triplet_count;
+            auto rl_triplet_count  = off_diag_lr_triplet_counts[local_index].y;
+
+            OffDiagInfo info{this};
+            info.m_index = triplet_i;
+
+            // an off-diag subsystem writes both sides from one stiffness
+            // expression (plan 14 §3.2): `A(l, r)` at (l_off, r_off) and
+            // `A(r, l) = A(l, r)^T` at (r_off, l_off).  Writing only `lr` leaves
+            // A non-symmetric -- and ge2sym would silently drop it whenever the
+            // pair is written in the *other* order (cookbook §7.39).
+            info.m_lr_hessian =
+                HA.subview(lr_triplet_offset, lr_triplet_count)
+                    .submatrix(lla::index_pair<std::int32_t>{
+                                   static_cast<std::int32_t>(l_blocked_dof_offset),
+                                   static_cast<std::int32_t>(r_blocked_dof_offset)},
+                               lla::index_pair<std::int32_t>{
+                                   static_cast<std::int32_t>(l_blocked_dof_count),
+                                   static_cast<std::int32_t>(r_blocked_dof_count)});
+
+            info.m_rl_hessian =
+                HA.subview(rl_triplet_offset, rl_triplet_count)
+                    .submatrix(lla::index_pair<std::int32_t>{
+                                   static_cast<std::int32_t>(r_blocked_dof_offset),
+                                   static_cast<std::int32_t>(l_blocked_dof_offset)},
+                               lla::index_pair<std::int32_t>{
+                                   static_cast<std::int32_t>(r_blocked_dof_count),
+                                   static_cast<std::int32_t>(l_blocked_dof_count)});
+
+            off_diag_subsystem->assemble(info);
             continue;
         }
 
@@ -586,11 +681,7 @@ void GlobalLinearSystem::add_subsystem(OffDiagLinearSubsystem* subsystem)
 {
     check_state(SimEngineState::BuildSystems, "add_subsystem()");
     UIPC_ASSERT(subsystem != nullptr, "The subsystem should not be nullptr.");
-    // SCOPE NOTE (T8.3): `m_impl.off_diag_subsystems.register_sim_system(*subsystem);`
-    // -- `SimSystemSlotCollection<OffDiagLinearSubsystem>::register_sim_system`
-    // instantiates `T::is_valid()`, so it needs the (T8.3) complete type.  The
-    // entry point is kept (the reference's public surface) and the registration
-    // lands with the off-diag subsystem.
+    m_impl.off_diag_subsystems.register_sim_system(*subsystem);
 }
 
 void GlobalLinearSystem::add_solver(IterativeSolver* solver)
@@ -643,12 +734,15 @@ void GlobalLinearSystem::ComputeGradientInfo::buffer_view(DenseVectorView grad) 
 //   void  GlobalLinearSystem::_dump_x();
 //   Float GlobalLinearSystem::diag_norm();   // only called by SimEngine::do_advance
 //   Float GlobalLinearSystem::mass_norm();   // only called by SimEngine::do_advance
-//   void  GlobalLinearSystem::add_subsystem(OffDiagLinearSubsystem*);
 //   void  GlobalLinearSystem::add_preconditioner(GlobalPreconditioner*);
 //
 // T8.3 adds them together with IterativeSolver / LinearPCG (+ the CUDA-graph
 // fused variant, whose validity key is what matrix_data_ptrs() and
-// triplet_count_dev exist for), GlobalPreconditioner and
-// OffDiagLinearSubsystem, plus the SimEngine::do_init / do_advance wiring.
+// triplet_count_dev exist for), GlobalPreconditioner and the
+// SimEngine::do_init / do_advance wiring.
+//
+// RESOLVED BY T8.3a-1: `add_subsystem(OffDiagLinearSubsystem*)` is now a real
+// registration, together with the three off-diag branches inside `Impl` (see the
+// file header).  The list above is therefore one entry shorter than before.
 // ===========================================================================
 }  // namespace uipc::backend::luisa

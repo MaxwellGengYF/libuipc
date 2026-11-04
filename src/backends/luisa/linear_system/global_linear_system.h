@@ -16,13 +16,21 @@
  * `_assemble_preconditioner` -> `solve_linear_system`).
  *
  * `solve()` needs `IterativeSolver` + `LinearPCG` (+ `LinearFusedPCG`/CUDA
- * graphs), `GlobalPreconditioner`, `OffDiagLinearSubsystem` and
- * `CurrentFrameDiffDofReporter` — none of which exist in this backend yet.  They
- * are T8.3's task.  The port therefore keeps the *whole public surface* and the
- * *whole assembly/layout half*, and leaves the solve path declared but
- * **undefined**, each one marked `SCOPE NOTE (T8.3)` below, so nothing is
- * silently dropped (T5.1's rule 13: never invent a placeholder type — an
- * undefined member is fine as long as nothing ODR-uses it).
+ * graphs), `GlobalPreconditioner` and `CurrentFrameDiffDofReporter` — none of
+ * which exist in this backend yet.  They are T8.3's task.  The port therefore
+ * keeps the *whole public surface* and the *whole assembly/layout half*, and
+ * leaves the solve path declared but **undefined**, each one marked
+ * `SCOPE NOTE (T8.3)` below, so nothing is silently dropped (T5.1's rule 13:
+ * never invent a placeholder type — an undefined member is fine as long as
+ * nothing ODR-uses it).
+ *
+ * `OffDiagLinearSubsystem` WAS on that list until T8.3a-1: with
+ * linear_system/off_diag_linear_subsystem.h complete, `Impl::init()`'s off-diag
+ * half, `_update_subsystem_extent()`'s `{lr, rl}` budget,
+ * `_assemble_linear_system()`'s two `.submatrix(...)` windows and
+ * `add_subsystem(OffDiagLinearSubsystem*)` are the reference's again.  The
+ * build-time check that proved it: `SimSystemSlotCollection<T>` instantiates
+ * `T::is_valid()`, which needs a complete `T`.
  *
  * PORTED NOW
  *   * the header's public surface: every `*Info` class (`InitDofExtentInfo`,

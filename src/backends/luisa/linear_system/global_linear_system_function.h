@@ -18,6 +18,12 @@
  *
  * The routines are host-only on purpose: the reference's ordering/scan run on
  * host vectors (`OffsetCountCollection` is host-only in both backends).
+ *
+ * T8.3a-1 adds `off_diag_layout_detail::check_unique_pairs()` next to it, for the
+ * same reason: the reference has no duplicate/self off-diag rejection at all, so
+ * the port's version is factored into a *predicate* that `Impl::init()` turns into
+ * a `UIPC_ASSERT` and that a test can drive directly (an assert aborts the test
+ * process -- cookbook 7.22 "harness hazards").
  *********************************************************************/
 #include <type_define.h>
 #include <uipc/common/vector.h>
@@ -93,4 +99,77 @@ struct DofLayout
     return layout;
 }
 }  // namespace global_linear_system_detail
+
+namespace off_diag_layout_detail
+{
+/**
+ * @brief The verdict of `check_unique_pairs()`.
+ *
+ * `first`/`second` are indices into the caller's arrays: the two colliding
+ * entries for a duplicate pair, `(first, first)` for a self pair.
+ */
+struct PairCheck
+{
+    bool  ok     = true;
+    SizeT first  = ~SizeT{0};
+    SizeT second = ~SizeT{0};
+    /// the offending entry couples a diagonal block to itself (`uid_l == uid_r`)
+    bool self = false;
+};
+
+/**
+ * @brief Reject two off-diag subsystems owning the same block, and an off-diag
+ * subsystem coupling a diagonal block to itself.
+ *
+ * A DELIBERATE DEVIATION (T8.3a-1, research 4.4): the reference has no such
+ * check.  Two off-diag subsystems registered on the same `(l, r)` pair write the
+ * same block coordinates of `triplet_A`, and the BCOO conversion's
+ * segmentation-reduction then *silently sums* them -- a wrong matrix with no
+ * diagnostic.  Likewise `l == r` writes a block that the diagonal subsystem
+ * already owns.
+ *
+ * This is a *predicate* (no assert, no throw except the size-mismatch guard) on
+ * purpose: `UIPC_ASSERT` aborts the process, so `GlobalLinearSystem::Impl::init()`
+ * is the only caller that turns it into a diagnostic, and a unit test can drive
+ * every verdict here without killing the test binary.
+ */
+[[nodiscard]] inline PairCheck check_unique_pairs(std::span<const U64> uid_l,
+                                                  std::span<const U64> uid_r)
+{
+    if(uid_l.size() != uid_r.size())
+    {
+        throw std::invalid_argument{"check_unique_pairs: uid_l/uid_r size mismatch"};
+    }
+
+    PairCheck result;
+
+    for(SizeT i = 0; i < uid_l.size(); ++i)
+    {
+        // (b) a self pair: the two ends are the same diagonal block
+        if(uid_l[i] == uid_r[i])
+        {
+            result.ok     = false;
+            result.first  = i;
+            result.second = i;
+            result.self   = true;
+            return result;
+        }
+
+        // (a) a duplicate pair: two subsystems own the same block
+        for(SizeT j = i + 1; j < uid_l.size(); ++j)
+        {
+            if(uid_l[i] == uid_l[j] && uid_r[i] == uid_r[j])
+            {
+                result.ok     = false;
+                result.first  = i;
+                result.second = j;
+                result.self   = false;
+                return result;
+            }
+        }
+    }
+
+    return result;
+}
+}  // namespace off_diag_layout_detail
 }  // namespace uipc::backend::luisa

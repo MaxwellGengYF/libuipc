@@ -5920,6 +5920,130 @@ a scene, a golden or a backend leg.
    and must never gate a result — measured: two runs of the same scene differ there and
    nowhere else.
 
+### 7.39 Patterns established in T8.3a-1 (the off-diagonal linear subsystem + the global assembly's off-diag half)
+
+**Scope.** New `src/backends/luisa/linear_system/off_diag_linear_subsystem.{h,cpp}` (the
+reference's class surface verbatim) + the four off-diag branches of
+`global_linear_system.cpp` that T5.4a had left as `SCOPE NOTE (T8.3)` no-ops
+(`add_subsystem(OffDiagLinearSubsystem*)`, `Impl::init()`'s second sort /
+`diag + off_diag` subsystem table / `off_diag_lr_triplet_counts`,
+`_update_subsystem_extent()`'s `{lr, rl}` budget, `_assemble_linear_system()`'s two
+`.submatrix(...)` windows) + the duplicate/self-pair predicate in
+`global_linear_system_function.h`. Test:
+`apps/tests/backends/luisa/luisa_offdiag_linear_test.cpp` (`[offdiag]`, 3 cases + 1 SKIP,
+104 assertions). No consumer exists yet (only ABD↔FEM would be one, plan 18), so the
+batch's fixture is a *synthetic* pair of diag subsystems with hand-derived extents —
+which is exactly why it can gate S1 before the coupling lands.
+
+1. **The incompleteness *was* the task.** `SimSystemSlotCollection<T>::register_sim_system()`
+   instantiates `T::is_valid()` and `view()` instantiates `lazy_init()`
+   (`src/backends/common/details/sim_system_slot.inl:82-89`, `:107-133`), so the three
+   `SCOPE NOTE (T8.3)` bodies could not be "just un-commented": the header has to be the
+   *first* thing in the tree. Once it is, every one of the four branches is a verbatim
+   transcription with no restructuring — the port's deferral note was right about the cause
+   and wrong about nothing.
+2. **`m_index` does not exist on an off-diag subsystem; the index lives in
+   `subsystem_infos[index].index` only.** The T5.4a comment claiming the reference "also
+   writes `->m_index`" was wrong and is corrected: `_assemble_linear_system()` reads
+   `off_diag_subsystem->m_l->m_index` (the two *diag* subsystems' indices) and passes the
+   off-diag's own index to the subsystem through `OffDiagInfo::m_index`.
+3. **Block coordinates, and why the two windows tile one slice.**
+   `_update_subsystem_extent()` stores `subsystem_triplet_counts[idx] = lr + rl` and
+   `off_diag_lr_triplet_counts[local] = {lr, rl}`, so `_assemble_linear_system()` derives
+   `rl_offset = lr_offset + lr_count` and cuts `lr` at `(l_off, r_off)` and `rl` at
+   `(r_off, l_off)` from that one slice. Measured on the synthetic scene: budget 22 =
+   4 (diag A) + 8 (diag B) + 5 + 5, offsets `{0, 4, 12}`, `dof_count` 18 = 6 + 12.
+4. **An under-budget allocation is corruption, not truncation.** `TripletMatrixView`'s
+   index checks are `if constexpr(!Storage::is_device)`
+   (`luisa_device/linear/views.h:795-820`), i.e. compiled out for the view the assembler
+   hands to a subsystem, and the write index is `m_triplet_index_offset + i` into the
+   *shared* triplet buffer — an extra block write lands on the next subsystem's slice. The
+   test therefore asserts `triplet_A.non_zeros() == Σ diag + Σ(lr + rl)` right after
+   `_update_subsystem_extent()` and the exact hand-derived `(row, col)` multiset after
+   assembly, not just the values.
+5. **Which off-diag side survives `ge2sym` is decided by the dof order, never by the write
+   order.** `build_linear_system()` runs `converter.ge2sym(triplet_A)` first
+   (`global_linear_system.cpp:226-233`) and `ge2sym` keeps only `row <= col`
+   (`luisa_device/linear/converter.cpp:704-772`). So `connect(diag_a, diag_b)` keeps the
+   `lr` window (block row 0 < block col 2) and drops all of `rl`; `connect(diag_b, diag_a)`
+   keeps `rl` and drops all of `lr`. Measured in `offdiag_reversed_pair`: the reversed,
+   `report_extent(lr, 0)`-only registration assembles the same 17 triplets, loses the whole
+   5-block contribution through `ge2sym` (BCOO 11 instead of 16) and the pipeline output
+   differs from the two-sided oracle by 11.0 — *with no diagnostic*. That is the reference's
+   behaviour (its only consumer, `abd_fem_linear_subsystem.cu:119-148`, writes one side), so
+   it is **pinned, not fixed**: a real fix belongs to the consumer, and §7's "one-sided write
+   is invisible" trap is now covered in-process on the pre-`ge2sym` triplet.
+6. **The pre-`ge2sym` matrix is *not* symmetric, and asserting that it is would be wrong.**
+   A diag subsystem reports only its upper (`row <= col`) blocks — the packed convention the
+   solver's SpMV mirrors — so the reported matrix is upper-triangular at block level; only
+   the *off-diag pair* has to be two-sided (`A(l,r) == A(r,l)ᵀ`). The test asserts
+   (a) the reported matrix equals the host/Eigen oracle *bitwise* (Δ == 0; same arithmetic,
+   no atomics, no duplicate keys), (b) `max |A(l,r) - A(r,l)ᵀ| == 0` on the two off-diag
+   windows, and (c) the *symmetric closure* (`symmetric_closure()`, i.e. every upper block
+   mirrored below as its transpose) equals `sym2ge(convert(ge2sym(triplet_A)))` exactly and
+   the oracle to 1e-14 relative (measured 0.000e+00). A file-level `A == Aᵀ` on a
+   Matrix-Market dump is vacuous: the dump is upper-packed by construction.
+7. **In a *test fixture*, the diagonal blocks must be symmetric inside the block and the
+   off-diagonal blocks must not.** `ge2sym`/`sym2ge` never symmetrise a diagonal block (they
+   copy it verbatim), so an asymmetric `block_entry(k, r, c)` makes the assembled matrix
+   genuinely asymmetric — measured as a 0.5 asymmetry in the `sym2ge` output before the fix.
+   Conversely, a *symmetric* off-diag block would make a missing transpose in the `rl` mirror
+   unobservable. Two value tables (`diagonal_block_entry`, symmetric in-block;
+   `block_entry`, asymmetric) is the smallest shape that keeps both checks discriminating.
+8. **`ge2sym` shrinks `triplet_A`; a second assembly needs the extent pass again.** `ge2sym`
+   ends with `to.resize_triplets_discard(h_total)` (`converter.cpp:769`), so after one
+   pipeline run the container holds 16 of the 22 budgeted triplets and
+   `_assemble_linear_system()`'s windows would be cut from the wrong shape (the host
+   `subview()` assert fires). The negative-control case re-runs
+   `impl._update_subsystem_extent()` first — which is also the cheapest proof that the extent
+   step is idempotent.
+9. **The duplicate/self-pair rejection is a *predicate*, not an assert (deliberate
+   deviation).** The reference has no such check. Two off-diag subsystems on the same
+   `(l, r)` pair write the same block coordinates, and the BCOO→BSR segmentation reduction
+   silently *sums* them; `l == r` writes a block the diag subsystem already owns.
+   `off_diag_layout_detail::check_unique_pairs(span<const U64> uid_l, span<const U64> uid_r)`
+   in `global_linear_system_function.h` returns `PairCheck{ok, first, second, self}` (the
+   same "host-callable so a test can drive it" idiom as `plan_dof_layout`), `Impl::init()`
+   turns it into a `UIPC_ASSERT` with both subsystem names, and the test drives all four
+   verdicts (ok / duplicate / self / reversed-pair-is-not-a-duplicate) *without* calling the
+   asserting path (a failing `UIPC_ASSERT` aborts the process — §7.22).
+10. **The export list's vtable trap, second occurrence — and the fix that generalises.**
+    Adding the test produced 6 unresolved externals (the intended loud signal). After
+    bootstrapping, `scripts/luisa_module_def.py` *dropped* `OffDiagLinearSubsystem::do_init`:
+    only referenced through a vtable slot, it never enters the exe's import table, so the
+    generator cannot see it and the next link fails again. The fix (the §7.28 rule 7 recipe,
+    now with a second data point) is to make the reference a *used* import — the override
+    calls the base's default no-op explicitly
+    (`OffDiagLinearSubsystem::do_init(info);`). Measured: list 524 → 533 entries (9 new:
+    the 6 vtable/direct ones + `sym2ge<double,3>` + the 3 pre-existing `LStream::*` symbols
+    the checked-in file had drifted away from), `--check` rc 0 and a rebuild that stays a
+    no-op. The same mechanism explains why *any* test that derives from `DiagLinearSubsystem`
+    references the base's `final do_build()`.
+11. **Pre-existing drift is not yours to hide, but it is yours to fix.** `--check` was
+    already rc 1 at the batch's start (3 `LStream` symbols — `current`, `counters`,
+    `reset_counters` — imported by the exe but absent from the committed list, i.e. the tree
+    at HEAD would not relink from scratch). Regenerating is part of "the battery's two
+    permanent steps" (§7.28 rule 17) and the refresh is byte-identical to what the generator
+    produces, so the drift is reported with the batch instead of being worked around.
+12. **The synthetic fixture is three `REGISTER_SIM_SYSTEM` types, gated on their own marker
+    attribute.** Two `DiagLinearSubsystem`s (uids `0x54383344` / `0x54383345`, 6 / 12 dofs,
+    4 / 8 blocks) and one `OffDiagLinearSubsystem` (5 + 5 blocks) whose `do_build(BuildInfo&)`
+    always calls `connect(&a, &b)` — a *registered* off-diag probe that skipped `connect()`
+    makes `Impl::init()`'s uid sort dereference a null `m_l` and crashes every scene of the
+    shared binary (research §7 trap 6). Everything is inert (zero extents) unless the
+    current scene carries `t83_offdiag_marker`, so the three existing tests that call
+    `GlobalLinearSystem::init()` on the *engine's* system see an unchanged dof layout
+    (`dof_count()` still 24 for T5.4a's scene, 18 here).
+13. **Test-local `Impl` + the engine's `init()` are both driven, for different assertions.**
+    `GlobalLinearSystem::Impl` is a public nested class, so a test can register exactly the
+    three fixtures and run the shipped `init()` / `_update_subsystem_extent()` /
+    `_assemble_linear_system()` / `converter.*` — that is what every layout and value
+    assertion uses. The *engine's* `GlobalLinearSystem` is only reachable through
+    `gls->init()` + `dof_count()`, which pins the other half (the off-diag families coexist
+    with the real diag subsystems without perturbing the dof scan). `dof_offset()` /
+    `dof_count()` on a subsystem read the *engine's* collection, so they may only be called
+    after `gls->init()` — calling them earlier aborts on the empty offsets array.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
