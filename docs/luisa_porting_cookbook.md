@@ -106,6 +106,8 @@ The checkout's prebuilt binaries were stale: `luisa::compute::detail::debug_func
 was **not exported** from `luisa-ast.dll`, so any consumer calling `define_kernel`
 (`device.compile<1>`) failed to link. Rebuilding LC from source (commit `112bf1daf`,
 "Fix build") exports the symbol and the spike links. **Always rebuild LC after updating it.**
+That is the mild form of the failure family documented in **1.6**: a header tree that is
+newer than the LC binaries. 1.6 is the severe form (a silent `std::variant` index shift).
 
 ### 1.3 fmt/spdlog must be unified (one `fmt::v10` per process)
 
@@ -203,6 +205,104 @@ constitutive routine.
    *other* codegen path. After changing LC (or its codegen selection), purge
    `rm -rf build/Release/bin/.cache build/Release/bin/.data` -- it costs a full re-JIT (~17 min
    for the whole suite) and it is the only way to be sure nothing stale is reused.
+
+### 1.6 LC header/binary ABI drift — the `LiteralValue` variant (2026-11-04 blocking regression)
+
+**Symptom.** Every DOF-based test aborted at `World::init()`, right after
+`SimEngine::dump_system_info()`:
+
+```
+[console] [error] Assertion '*type == *t' failed: Type mismatch: declared as double, got byte.
+[LuisaCompute/src/ast/function_builder.cpp:436]
+```
+
+Host-only suites (`[matrix]`, `[luisa][device]` math, `backend_module_loads`) kept passing,
+which makes it look like a ported-kernel bug. It is not: the abort is LC's *own*
+self-consistency assert (`FunctionBuilder::literal()` checks that the declared literal type
+matches the C++ type the value was built from) firing because the two sides disagree about a
+**`std::variant` alternative index** — a header/binary ABI drift, not a type error in libuipc.
+
+**Trigger (bisected to two statements).** Any kernel that materialises a `double` literal
+aborts; `float`/`half`/`int`/`bool` literals are fine:
+
+```cpp
+lcrt::Var<double> v;        // aborts inside Var() (apply_default_initializer -> assign -> literal)
+lcrt::Var<double> v = 0.0;  // aborts (same path)
+lcrt::Var<float>  vf;       // fine
+```
+
+That type-selective pattern is the fingerprint. `[distance]` failed in a *test* lambda and
+`[abd_base]` in `global_geometry`'s `init_attributes_kernel`, i.e. the two have no helper in
+common — they only share "contains a `double` literal".
+
+**Root cause.** `luisa::compute::detail::LiteralValue` is a `luisa::variant<...>` whose
+alternative list *is* `basic_types` (`include/luisa/core/basic_types.h`), and it is handed to
+`FunctionBuilder::literal(const Type *, LiteralValue)` **by value across the DLL boundary**.
+`std::variant` dispatches on the index, so the position of every alternative is ABI. LC commit
+`65fb3c4b5` ("bfloat16", 2026-11-02) inserted `bfloat16`/`bfloat162/3/4` into that tuple:
+
+| index | 8 | 9 | 10 | 11 |
+|---|---|---|---|---|
+| `9dde901bf` (the prebuilt DLLs) | `half` | `double` | `byte` | `ubyte` |
+| `HEAD` (the installed headers) | `half` | `bfloat16` | `double` | `byte` |
+
+libuipc compiled against the new headers puts `double` at index 10; the *old*
+`luisa-ast.dll` reads index 10 as `byte` and asserts `declared as double, got byte`. The
+declared type is valid — the *value* was mis-read. Two more cross-DLL ABI edits landed in the
+same range and would have bitten next: `CallOp::MAKE_BFLOAT16_2/3/4` inserted *mid-enum* in
+`ast/op.h` (every later opcode — including all `MAKE_FLOAT*X*` matrix ops — shifts by 3) and
+`ConstantData::_decode_bfloat16` inserted *mid-vtable* in `ast/constant_data.h`.
+
+**Evidence (2026-11-04, this machine).**
+
+* `LuisaCompute/build-msvc/bin/luisa-ast.dll`, mtime 2026-10-29 12:47, built from LC
+  `9dde901bf`; `git show 9dde901bf:src/ast/type.cpp | grep bfloat16` is empty, and the DLL
+  does not contain the string:
+
+  ```bash
+  python -c "print(b'bfloat16' in open('build/windows/x64/release/luisa-ast.dll','rb').read())"
+  # False   (True for a DLL built from HEAD)
+  ```
+
+* `LuisaCompute/install-msvc/include/luisa/core/basic_types.h`, mtime 2026-11-02 10:12 — the
+  prefix was re-installed from a *newer* checkout than the binaries — contains it.
+* `git -C LuisaCompute diff --stat 9dde901bf HEAD -- include/` → 15 files, including the three
+  ABI-relevant ones above.
+
+**Repair.** Treat the LC headers and the LC DLLs as one unit; mixing two commits is never
+valid. Either
+
+```bash
+# (a) the durable fix: rebuild + reinstall LC from the checkout you compile against
+cmake --build LuisaCompute/build-msvc --target install && cmake --install LuisaCompute/build-msvc
+# (b) the no-rebuild workaround: regenerate the whole header tree of the prefix from the
+#     commit the binaries were built from, then rebuild libuipc
+cd LuisaCompute && git archive 9dde901bf include/luisa | tar -x -C install-msvc/
+#     git archive does not carry submodule content: copy include/luisa/ext/** back by hand
+cd /d/libuipc && /d/xmake/xmake.exe build -j12 backend_luisa        # ~6.5 min, all TUs
+```
+
+Verified end to end with (b): libuipc compiles unchanged (rc 0) and the previously aborting
+tags match their recorded baselines exactly (`[abd_base]` 2143/7, `[contact_core]` 314/9,
+`[fem]` 644/8, `[distance]` 30101/8). (a) is blocked on this machine only because
+re-configuring LC's CMake build needs the vcpkg-provided spdlog.
+
+**Rule ABI-0.** Before blaming a ported kernel for a type / opcode / vtable mismatch, compare
+the deployed LC DLLs with the header tree: `md5sum` them against the install prefix (1.5,
+trap 1) and check that no header mtime postdates the DLLs. A drift always presents *inside*
+LC, with an LC assert, on an innocent kernel.
+
+**Debug recipe that localised this in ~40 minutes** (reuse it for the next init-time abort):
+
+1. `logger::info`/`git log` are useless here — the abort has no libuipc frame. Instrument the
+   single choke point every shader passes through, `luisa_device::compile1/2/3`, with
+   `std::fprintf(stderr, "[TRACE] %s\n", typeid(Def).name())`: MSVC's RTTI name carries the
+   enclosing function (`...::init_attributes_kernel(void)'::`2'::<lambda_1>`), so the last
+   line before the abort names the kernel.
+2. Bisect *inside* that kernel body with `std::fprintf` between statements — the lambda body
+   runs once at trace time as ordinary host code, so the markers are free and ordered.
+3. When the marker lands on a `Var<T>`/literal statement, stop looking for "the wrong type"
+   and check the LC ABI (this section).
 
 ## 2. Build & run recipes (Windows)
 
