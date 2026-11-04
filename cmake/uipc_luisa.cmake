@@ -37,4 +37,15 @@ function(uipc_luisa_resolve_dependency)
     if(NOT TARGET luisa::compute)
         uipc_error("LuisaCompute did not provide the 'luisa::compute' target.")
     endif()
+
+    target_compile_definitions(luisa::compute INTERFACE
+        LUISA_USE_SYSTEM_SPDLOG=1
+        
+    )
+
+    if(EXISTS "${LUISA_COMPUTE_PREFIX}/include/luisa/ext")
+        target_include_directories(luisa::compute INTERFACE
+            "${LUISA_COMPUTE_PREFIX}/include/luisa/ext"
+        )
+    endif()
 endfunction()
