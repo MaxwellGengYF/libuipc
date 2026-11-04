@@ -6620,6 +6620,127 @@ glob).
     Class-C band. `solve()` is idempotent per build and `last_solve_iterations` is valid
     afterwards, which is the whole call contract plan 11 owes plan 10.
 
+### 7.43 Patterns established in T8.5-2 / S9' (the distance diagnoser)
+
+**Scope.** New `src/backends/luisa/distance_system/distance_diagnoser.{h,cpp}` (the
+`DistanceDiagnoser` `SimSystem`, its `core::DistanceDiagnoserFeature` overrider, the
+`REGISTER_SIM_SYSTEM`, and the reference's four queries + three closest-point-coordinate
+helpers), one test TU `apps/tests/backends/luisa/luisa_distance_diagnoser_test.cpp`
+(`[luisa][diagnoser]`, 11 cases / 361 513 assertions), `docs/luisa_backend_progress.md`.
+**No build-file edit** (both systems glob, §0/§7.43 rule 12) and **no `luisa_module.def`
+change** — the test names only core API (`world.features().find<core::DistanceDiagnoserFeature>()`
+and that feature's four methods), so no new cross-TU symbol is imported and `--check` stayed at
+577 symbols / rc 0.
+
+1. **Host evaluation is the design of this port, not a shortcut.** The four queries are
+   ordinary host code over host spans with `T = double`: no LC kernel, no stream, no device
+   buffers. Three independent reasons, all checkable in this tree: (a) every pair is computed
+   independently from host-visible inputs — no atomics, no reduction, no order dependence — so
+   the place of evaluation cannot change a value; (b) the whole math layer is host-evaluable by
+   design (`luisa_device/math/vec.h`: `T = double` -> host evaluation) and every primitive is
+   already instantiated on the host by green tests; (c) the ported sanity checkers already
+   evaluate the reference's arithmetic as host code over host spans
+   (`sanity_check/simplicial_surface_distance_check.cpp`). The counter-argument is cost: a
+   kernel path would need `Vector12`/`Matrix12x12` buffer element types and a cold NVRTC build
+   of two 12x12 chains (~11-12 min, §7.36 rule 3) for a *diagnostic* API whose CUDA counterpart
+   is a straight-line per-pair evaluation.
+2. **`DeviceBuffer<T>` -> `uipc::vector<T>`, `copy_back` unchanged.** The reference's
+   device->host traffic disappears with the host decision: the per-pair loop writes a host
+   buffer of the same dimension and `detail::copy_back` does find-or-create + a bulk copy into
+   `R.instances()`. Keep the reference's template shape — `T` deduced from the **buffer**, the
+   default value a free type — because the call sites pass Eigen nullary expressions
+   (`Vector12::Zero()`) and `T(default_val)` is the create-time fill.
+3. **CORRECTION to plan 21: there are no config keys.** The plan's §1.3/§2 six keys
+   (`dist2/{grad,hess}`, `e_k/{grad,hess}`, `barrier/{grad,hess}`) do not exist: the reference
+   has zero `config.find<>` calls (§2 of the research: the only `find<>`s are
+   `sc.vertices().find` and `R.instances().find`, `.cu:294/308/772`) and those six names are
+   **attribute names**, written unconditionally (`.cu:733-740, 855-869, 949-956, 1028-1033`).
+   The port therefore creates the whole attribute set on every call; the only "defaults" are
+   (a) `create<T>(name, T(default))`'s initial fill and (b) the per-entry values the kernel
+   leaves at its local zero for an inactive pair. (a) is observable in exactly one place —
+   `mollifier_coeff`, which is created with `1e-3` and never copied into — while (b) is what
+   the tests pin: `barrier == 0`, `barrier/grad == 0`, `barrier/hess == 0` outside the band,
+   and `e_k == 1` (its default is 1, not 0, `.cu:861`).
+4. **`active_count(flag) < 4` zeroes only `e_k/{grad,hess}`, and the flag drives everything.**
+   A wrong flag is a wrong gradient with a right distance — the plan's headline subtle failure.
+   The EE query therefore zeroes `Gradek`/`Hessek` when the flag is not fully active
+   (`.cu:464-469`) while keeping `e_k` itself, and the tests pin the flag per Voronoi region
+   (PT: the seven cases of the reference's chain; PE: three; EE: measured `{1,1,1,1}`,
+   `{1,1,1,0}`, `{0,1,1,0}` for the interior / point-edge / point-point representatives) plus
+   the invariant `|q_a - q_b|^2 == dist2` reconstructed from `coord`.
+5. **The math is calls, not expressions** (§7.6 rule 4): `ldist::*_distance_flag` /
+   `*_distance2` / `*_gradient` / `*_hessian` (T2.3), `ldist::edge_edge_mollifier*` (T2.3),
+   `sym::codim_ipc_contact::KappaBarrier` / `dKappaBarrierdD` / `ddKappaBarrierddD` (T8.1b),
+   `PT_/EE_/PE_/PP_d_hat` + `*_thickness` + `D_range` + `is_active_D` (T5.2/T7.2b). The only
+   arithmetic written out is the reference's own composition of those results — two lines for
+   the barrier, three for the mollified `E = e_k * B` — transcribed in the reference's
+   association order, because that order is part of the bit-exactness contract. **Deviation from
+   the research's suggestion:** the three `sym::codim_ipc_simplex_contact::*_barrier_gradient_hessian`
+   helpers were *not* used — they recompute `D`/`GradD`/`HessD` internally (the diagnoser has to
+   report those), and for EE they do not return `e_k`/`Gradek`/`Hessek`, which the EE query must
+   also produce.
+6. **The `detail` namespace trap.** The reference's helpers live in `namespace detail`. Adding a
+   second `uipc::backend::luisa::detail` is not safe: `affine_body`, `collision_detection` and
+   `finite_element` already declare that namespace, and two candidates make every unqualified
+   `detail::` ambiguous (a using-directive name loses to a name declared in the namespace, so an
+   alias would silently resolve to the wrong one). The helpers are therefore TU-local functions
+   in an unnamed namespace, keeping the reference's function names.
+7. **Host `if` on flags is allowed again (RULE M2 only constrains device values), so the three
+   `*_closest_point_coord` helpers are literal transcriptions** of the reference's `if` chains —
+   `coord.setZero()`, the dim-2/3/4 cases, `t_param = max(0, min(1, t_param))` (spelled
+   `lps::max(lps::zero_of<T>(), lps::min(lps::one_of<T>(), t_param))`). The ported layer's flag
+   element type is `int` for a host `T`, which is exactly the reference's `Vector4i`/`Vector3i`.
+   `PT`'s `coord` is `{0, u, v, w}` over the triangle's barycentrics (slot 0 is never written)
+   and `EE`'s is `{1-s, s, 1-t, t}`; the tests use those two shapes as an oracle-free invariant.
+8. **Order is part of the contract in `compute_edge_edge_distance`.** `mollifier_coeff` is read
+   *before* `R.instances().resize(num_pairs)` and created *after* it (`.cu:772-779, 868-869`):
+   `create` sizes itself off the collection's current size, so the reverse order makes a
+   0-length slot and an out-of-bounds fill. The port keeps the statement order and asserts
+   `view(*attr).size() == buf.size()` inside `copy_back` (a check the reference does not need
+   because it trusts the same invariant).
+9. **`Eigen::Vector`/`Matrix` stay at the boundary.** `LVec`/`LMat` are used only inside the math
+   calls (`LVec<double,3>` from `to_luisa(Vector3)`) and the attributes keep the reference's
+   Eigen types (`Vector12`, `Matrix12x12`, `Vector4i`, …) so downstream readers see the
+   reference's types. The conversion is element-wise (`to_eigen_vec` / `to_eigen_mat`), and
+   `LMat` is column-major, i.e. the same storage order as Eigen. A `uipc::vector<Matrix12x12>`
+   is legal: `Matrix12x12` is `alignas(16)` and C++17's pmr allocator honours over-alignment.
+10. **The Class-A gate and its measured shape.** `parity_golden/distance_pt.bin` (the reference
+    `.inl` evaluated on the host) feeds 40 point-triangle pairs through
+    `compute_point_triangle_distance`; **14 of the 40 are Class-A** (all-active flag; 2198 slots,
+    `|Δ| = 0.000e+00`, 6 of them fully NaN on both sides — the harness convention, §7.38
+    deviation 4) and the other **26 are flag-dispatched**: the golden evaluated the *unflagged*
+    full-simplex body while the diagnoser dispatches on the flag exactly like CUDA's diagnoser
+    does, so the two are legitimately different (and both correct) answers. Those 26 are checked
+    against an in-test sub-simplex oracle instead (measured `|Δ| = 1.975e-16`). Do not "fix" this
+    by comparing the flagged result to the unflagged golden — that would be a bit-exactness
+    theatre of the worst kind. The golden's absence is a SKIP with an explicit message (verified
+    by renaming the file: `1 skipped`).
+11. **The FD recipe that actually works.** Central differences of the *reported* value:
+    `h = 1e-6` for the gradient and `h = 1e-4` for the Hessian with the 4-point mixed stencil
+    `(++ − +− − −+ + −−)/(4h²)`, `h` applied to **both** axes of each corner. Measured after the
+    stencil was fixed (`dist2`'s Hessian is a quadratic form inside one Voronoi region, so the
+    stencil is exact up to round-off): grad `1.5e-10` / hess `2.3e-8` relative for PT, PE and EE,
+    and `2.5e-6` for the barrier (a log² law with `d²B/dD² ≈ 1.6e4`). **The failure signature of a
+    broken stencil is a value of exactly `1/h`** (`1e4` at `h = 1e-4`): losing one corner makes
+    the stencil degenerate to `(f(+h) − f(−h))/(4h²)`, which is `1/h` times the first derivative.
+12. **`geometry::trimesh/linemesh/pointcloud` do not accept empty spans.** `trimesh({}, {})`
+    crashes (measured: silent process death inside the factory/facet-closure path — `dim()` is 0,
+    and `build_vertices` does `view(*pos)` on a possibly-missing `position` slot). To build a
+    "0 pairs" input, create a real 1-element complex and `vertices()/edges()/triangles().resize(0)`
+    instead. The diagnoser's contract is about the *pair count* (`num_pairs == 0 ⇒
+    resize(0); return`, `.cu:673-677`), not about how a caller made an empty mesh.
+13. **Aborts cannot be tested in-process.** `UIPC_ASSERT` calls `uipc::abort()`
+    (`src/core/common/abort.cpp`), which takes the whole shared test binary down — and this
+    binary aborts *identically* with or without the feature. A missing `d_hat`/`thickness` is
+    therefore pinned by asserting the *condition* that aborts (the sibling
+    `luisa_fem_base_test.cpp` zero-volume-tet precedent), not by calling the query.
+14. **The system is inert by construction.** `do_build()` is the reference's six lines
+    (`.cu:61-66`): one overrider, one feature, `features().insert(...)` — no action, no
+    `require<>`. It is built unconditionally at `world.init()` like every other system, so
+    "does it perturb a solve?" has no mechanism; the *observable* form of that claim
+    (`newton_iterations` with and without the system) needs plan 10's engine loop and is
+    recorded as a SKIP in the test rather than faked.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
