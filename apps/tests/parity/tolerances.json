@@ -1,0 +1,39 @@
+{
+  "schema": "uipc-parity-tolerances/1",
+  "_comment": [
+    "Tolerance file of the CUDA<->Luisa parity harness (S0 / T9.3a).",
+    "Rules (03-parity-harness.md §5.2): every non-default number carries a _why entry",
+    "keyed by its dotted path; 'iterations'/'counts' are compared exactly, never with a",
+    "band; a tolerance may only be loosened together with a note in",
+    "docs/luisa_backend_progress.md and docs/luisa_porting_cookbook.md.",
+    "The defaults are all 0.0 on purpose: bit-exactness is the strongest gate there is,",
+    "and NO tolerance value in this file has been validated against a real CUDA",
+    "reference yet (the CUDA backend cannot be built in this environment -- see",
+    "AGENT_ENV_BRIEF.md:13). The first cross-backend run must either stay exact or add",
+    "an override with a measured number and its _why."
+  ],
+  "defaults": {
+    "abs": 0.0,
+    "rel": 0.0,
+    "eps_scale": 1.0,
+    "scalars": {
+      "float_abs": 0.0,
+      "float_rel": 0.0,
+      "ignore": [
+        "counters.sync_ms",
+        "counters.sync_seconds"
+      ]
+    }
+  },
+  "probes": {},
+  "scenes": {},
+  "_why": {
+    "defaults.abs": "Bit-exact: Class A. Two runs of the same backend on the same machine must not differ by a single ulp; a bigger number here would hide a real ordering change.",
+    "defaults.rel": "Bit-exact: see defaults.abs.",
+    "defaults.eps_scale": "The relative denominator is max(|ref|, eps_scale). 1.0 keeps a near-zero reference from turning an absolute epsilon into an unbounded relative error.",
+    "defaults.scalars.float_abs": "Scalar floats are compared exactly by default; last_line_search_alpha / last_ccd_toi / last_cfl_alpha are deterministic for a fixed scene.",
+    "defaults.scalars.float_rel": "See defaults.scalars.float_abs.",
+    "defaults.scalars.ignore[0]": "counters.sync_ms is wall-clock time measured by the backend (src/backends/luisa/sim_engine.cpp frame stats). It is the only non-deterministic field of the scalars probe: it must never gate a parity result, and the iteration/flag fields next to it are what the structural gate uses.",
+    "defaults.scalars.ignore[1]": "Same as counters.sync_ms; recorded so an alternative spelling of the timing counter is ignored too instead of failing the first run that reports it."
+  }
+}

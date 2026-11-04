@@ -18,6 +18,9 @@ includes("sanity_check")
 -- luisa-only configuration used to skip them entirely.
 if has_config("backend_cuda") or has_config("backend_luisa") then
     includes("backends")
+    -- S0 / T9.3a: the CUDA<->Luisa parity harness (uipc_parity_runner +
+    -- uipc_parity_reference). Same gating as backends/, see parity/xmake.lua.
+    includes("parity")
 end
 
 if has_config("backend_cuda") then

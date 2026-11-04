@@ -58,6 +58,9 @@ add_subdirectory(sanity_check)
 
 if(UIPC_WITH_CUDA_BACKEND OR UIPC_WITH_LUISA_BACKEND)
     add_subdirectory(backends)
+    # S0 / T9.3a: the CUDA<->Luisa parity harness (uipc_parity_runner +
+    # uipc_parity_reference), gated exactly like backends/.
+    add_subdirectory(parity)
     add_subdirectory(sim_case)
     add_subdirectory(regression)
 endif()

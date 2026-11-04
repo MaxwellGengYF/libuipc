@@ -5742,6 +5742,84 @@ fixes; seven are xmake-specific traps, the eighth is a version pin.
    that captured stdout through a pipe), and `luisa.runtime` cannot copy the LC DLLs while a
    test binary is running — it surfaces as *"cannot copy file ... busy"*.
 
+### 7.38 Patterns established in T9.3a (the CUDA<->Luisa parity harness, apps/tests/parity/)
+
+The harness is new code with no reference counterpart, so what it establishes is a set of
+*procedural* rules plus the measured traps called out below. Read this before adding a probe,
+a scene, a golden or a backend leg.
+
+1. **Two processes, always, and only one Engine per process.** `uipc_parity_runner` takes
+   `--backend=<name>` and lets `core::Engine` load `uipc_backend_<name>.dll` from its own
+   directory; it therefore never links a backend module and can never hold two. Comparison
+   is file based, through the public `uipc::core` API only. Do not add an in-process
+   dual-backend mode "for convenience" — it is the documented LC stream crash (§1.5, plan
+   §8 trap 1), and the runner's own exit codes (0 ok, 2 usage, 3 backend unavailable,
+   4 simulation error, 5 non-finite) are the contract every caller gates on.
+2. **SKIP is exit code 3 plus `SKIP.json`, never exit 0.** The runner checks
+   `uipc_backend_<name>.dll` next to *itself* before constructing the Engine, writes
+   `<out>/<backend>/SKIP.json` with the reason, prints one `SKIP ...` line on stderr and
+   returns 3. `scripts/parity_compare.py` propagates 3, `scripts/parity_run.py` reports 3
+   (or 1 with `--strict`), and the Catch2 cases assert the exit code of the child process —
+   Catch2 does **not** fail a run for a skipped case (measured: `[parity]` with 1 of 4 cases
+   skipped exits 0), so a skip is only visible if the gate looks at exit codes.
+3. **Never trust a recorded checksum: recompute it.** `arrays[i]` of the manifest and
+   `frame_checksum()` in `scripts/parity_compare.py` use the same FNV-1a/53-bit definition as
+   the C++ writer (`apps/tests/parity/parity_checksum.h`, a byte-for-byte copy of
+   `apps/benchmarks/engine/ab_main.cpp:275-291`). The driver recomputes every frame's digest
+   from the raw arrays, so a truncated or reordered payload cannot pass as "identical"
+   (measured on a flipped element: rc 1, "checksum recorded ... but the raw arrays give").
+4. **Read live backend state through `create_geometry()` + `copy_to()`, never through
+   `copy_transform_to(raw_pointer)`.** The Luisa overrider writes to a *host* buffer while the
+   CUDA one reinterprets the handle as a device pointer
+   (`affine_body/affine_body_state_accessor_feature.cpp:12-22`), and the geometry's own
+   `transform` attribute is stale after the first frame until `dump()`. Both state accessors
+   (`core/affine_body_state_accessor`, `core/finite_element_state_accessor`) need their
+   attributes created explicitly before `copy_to()` — `create_geometry()` deliberately
+   creates neither.
+5. **Measured trap: `World::init()` aborts for every dof-based scene in this tree.**
+   `Assertion '*type == *t' failed: Type mismatch: declared as double, got byte
+   [LuisaCompute/src/ast/function_builder.cpp:436]`, right after the `systems.json` dump. It is
+   *not* scene-specific and *not* this harness's: the independent `[abd_base]` tag
+   (`luisa_abd_base_test.cpp`, case "abd_base_scene") aborts identically. It also reproduces
+   when a kernel takes a ported `LVec<Var<double>,3>` / `LVec<Var<double>,12>` /
+   `LMat<Var<double>,12,12>` argument, which is why the Tier-1 golden's device half is deferred
+   (rule 8). Consequence for the harness: the registry keeps `harness_smoke` (a tetmesh with
+   **no constitution** — no dof system is built, so the artifact plumbing, the raw-array
+   writer, the per-frame checksum, the comparator and the cross-process reproducibility gate
+   all run today) next to the two gravity scenes (`gravity_abd`, `gravity_fem`). `[parity]`'s
+   `parity_gravity_scene` SKIPs with the observed exit code while the abort exists and becomes
+   a real gate the moment it is fixed — it never reports a pass.
+6. **Measured trap: `std::system("\"exe\" args > \"log\"")` does not work on Windows.**
+   `cmd /c` sees more than two quotes and applies its "strip the first quote and the last
+   quote" rule, yielding rc 1, no log file and *"the filename, directory name, or volume label
+   syntax is incorrect"*. The parity test spawns its children with `CreateProcessA` and an
+   inheritable file handle for stdout+stderr instead (`luisa_parity_selfcheck_test.cpp`,
+   `run_logged`), which also survives spaces in the build path. `parity_run.py` uses
+   `subprocess.run` with the same effect.
+7. **The golden payload is interleaved per case, and Class A has three edge rules.** Each
+   record is `double[n_input], double[n_output]` for one case (magic `UIPCGOLD1`, version,
+   name, counts, then the records). A planar reader silently reads garbage while still matching
+   the header — measured: 6276/6280 "mismatches" that were really the *next* case's inputs.
+   Comparison rules for a Class-A golden: exact `==` (no tolerance), NaN matches NaN (the
+   reference produces NaN for a zero-area/collapsed triangle — 471 of 6280 slots here, which
+   the golden deliberately pins), and `-0.0` vs `0.0` (same value, different bit pattern) is
+   *counted and reported*, not failed.
+8. **The Tier-1 generator is host-only and must not link CUDA.** `parity_reference` includes
+   `src/backends/cuda/utils/distance/details/*.inl` directly with `#define UIPC_GENERIC`
+   (empty in a host TU, `src/backends/cuda/type_define.h:30-34`), so it builds and runs under
+   `--backend_cuda=n` — no nvcc, no CUDA backend. Goldens are written to `<exe
+   dir>/parity_golden/` (`build/` is gitignored) and a missing golden is a Catch2 `SKIP`,
+   never a pass. The .inl files that spell `__device__` inline (the IPC, codim, AL and stitch
+   families) cannot be host-compiled and are registered as `not_implemented` with the owning
+   plan number instead.
+9. **`tolerances.json` is self-auditing.** Every numeric leaf outside `defaults` must have a
+   `_why` entry keyed by its dotted path; `parity_compare.py --check-tolerances` fails
+   otherwise (rc 1), and the committed file's defaults are all `0.0` (bit-exact) because no
+   tolerance value has been validated against a real CUDA reference here. The only
+   non-numeric exception is the `scalars.ignore` list: `counters.sync_ms` is wall-clock time
+   and must never gate a result — measured: two runs of the same scene differ there and
+   nowhere else.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp
