@@ -172,7 +172,7 @@ template <class S>
     lps::LMat<S, 3, 3> A_inv_T = A_inv.transpose();
     lps::LMat<S, 3, 3> FA      = (lps::make_scalar<S>(0.5) * tau) * skew(e) * A_inv_T;
     lps::LVec<S, 12>   F       = lps::LVec<S, 12>::Zero();
-    F.segment<9>(3)            = A_to_q(FA);
+    F.template segment<9>(3)   = A_to_q(FA);
     return scalar_detail::select_container(lps::LVec<S, 12>::Zero(), F, ok);
 }
 

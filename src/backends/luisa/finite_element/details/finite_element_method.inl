@@ -88,7 +88,7 @@ void FiniteElementMethod::FilteredInfo::for_each(span<S<geometry::GeometrySlot>>
                                                  ViewGetter&& view_getter,
                                                  ForEach&& for_each_action) const
 {
-    FiniteElementMethod::template _for_each(geo_infos(),
+    FiniteElementMethod::_for_each(geo_infos(),
                                             geo_slots,
                                             std::forward<ViewGetter>(view_getter),
                                             std::forward<ForEach>(for_each_action));
@@ -98,7 +98,7 @@ template <typename ForEachGeometry>
 void FiniteElementMethod::FilteredInfo::for_each(span<S<geometry::GeometrySlot>> geo_slots,
                                                  ForEachGeometry&&               for_each) const
 {
-    FiniteElementMethod::template _for_each(geo_infos(),
+    FiniteElementMethod::_for_each(geo_infos(),
                                             geo_slots,
                                             std::forward<ForEachGeometry>(for_each));
 }

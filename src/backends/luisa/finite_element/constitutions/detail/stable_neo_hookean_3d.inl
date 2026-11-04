@@ -62,13 +62,13 @@ inline void ddEddVecF(lps::LMat<T, 9, 9>&       R,
 
     lps::LMat<T, 9, 9> H1 = lps::LMat<T, 9, 9>::Identity() * 2.0;
     lps::LVec<T, 9>    g1;
-    g1.segment<3>(0) = F.col(0) * 2.0;
-    g1.segment<3>(3) = F.col(1) * 2.0;
-    g1.segment<3>(6) = F.col(2) * 2.0;
+    g1.template segment<3>(0) = F.col(0) * 2.0;
+    g1.template segment<3>(3) = F.col(1) * 2.0;
+    g1.template segment<3>(6) = F.col(2) * 2.0;
     lps::LVec<T, 9> gJ;
-    gJ.segment<3>(0) = lps::cross(F.col(1), F.col(2));
-    gJ.segment<3>(3) = lps::cross(F.col(2), F.col(0));
-    gJ.segment<3>(6) = lps::cross(F.col(0), F.col(1));
+    gJ.template segment<3>(0) = lps::cross(F.col(1), F.col(2));
+    gJ.template segment<3>(3) = lps::cross(F.col(2), F.col(0));
+    gJ.template segment<3>(6) = lps::cross(F.col(0), F.col(1));
 
     // f0hat << 0, -F(2,0), F(1,0), F(2,0), 0, -F(0,0), -F(1,0), F(0,0), 0;
     lps::LMat<T, 3, 3> f0hat;
@@ -105,15 +105,15 @@ inline void ddEddVecF(lps::LMat<T, 9, 9>&       R,
     f2hat(2, 2) = 0.0;
 
     lps::LMat<T, 9, 9> HJ;
-    HJ.block<3, 3>(0, 0) = lps::LMat<T, 3, 3>::Zero();
-    HJ.block<3, 3>(0, 3) = -f2hat;
-    HJ.block<3, 3>(0, 6) = f1hat;
-    HJ.block<3, 3>(3, 0) = f2hat;
-    HJ.block<3, 3>(3, 3) = lps::LMat<T, 3, 3>::Zero();
-    HJ.block<3, 3>(3, 6) = -f0hat;
-    HJ.block<3, 3>(6, 0) = -f1hat;
-    HJ.block<3, 3>(6, 3) = f0hat;
-    HJ.block<3, 3>(6, 6) = lps::LMat<T, 3, 3>::Zero();
+    HJ.template block<3, 3>(0, 0) = lps::LMat<T, 3, 3>::Zero();
+    HJ.template block<3, 3>(0, 3) = -f2hat;
+    HJ.template block<3, 3>(0, 6) = f1hat;
+    HJ.template block<3, 3>(3, 0) = f2hat;
+    HJ.template block<3, 3>(3, 3) = lps::LMat<T, 3, 3>::Zero();
+    HJ.template block<3, 3>(3, 6) = -f0hat;
+    HJ.template block<3, 3>(6, 0) = -f1hat;
+    HJ.template block<3, 3>(6, 3) = f0hat;
+    HJ.template block<3, 3>(6, 6) = lps::LMat<T, 3, 3>::Zero();
 
     // The reference's single expression, in its own association order: the scalar
     // sub-expressions go through the trampolines (RULE M1), the container products

@@ -131,7 +131,7 @@ class DoubletVectorAssembler
         {
             for(int ii = 0; ii < N; ++ii)
             {
-                ElementVector G = value.segment<SegmentDim>(ii * SegmentDim);
+                ElementVector G = value.template segment<SegmentDim>(ii * SegmentDim);
                 m_assembler.m_doublet(m_I + ii).write(indices(ii), G);
             }
         }
@@ -219,7 +219,7 @@ class TripletMatrixAssembler
                 for(int jj = 0; jj < N; ++jj)
                 {
                     ElementMatrix H =
-                        value.block<BlockDim, BlockDim>(ii * BlockDim, jj * BlockDim);
+                        value.template block<BlockDim, BlockDim>(ii * BlockDim, jj * BlockDim);
                     tri(m_I + counter++).write(l_indices(ii), r_indices(jj), H);
                 }
         }
@@ -297,8 +297,8 @@ class TripletMatrixAssembler
                     auto row = matrix_assembler_detail::select_scalar(r, l, keep);
                     auto col = matrix_assembler_detail::select_scalar(l, r, keep);
                     auto H   = matrix_assembler_detail::select_mat(
-                        value.block<BlockDim, BlockDim>(jj * BlockDim, ii * BlockDim),
-                        value.block<BlockDim, BlockDim>(ii * BlockDim, jj * BlockDim),
+                        value.template block<BlockDim, BlockDim>(jj * BlockDim, ii * BlockDim),
+                        value.template block<BlockDim, BlockDim>(ii * BlockDim, jj * BlockDim),
                         keep);
                     tri(m_I + counter++).write(row, col, H);
                 }

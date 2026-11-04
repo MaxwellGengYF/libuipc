@@ -148,20 +148,20 @@ template <typename T, int N>
                 auto t   = A(i);
                 auto ri  = t.row_index * static_cast<std::uint32_t>(N);
                 auto cj  = t.col_index * static_cast<std::uint32_t>(N);
-                Vec  xj  = xd.segment<N>(cj).to_vec<N>();
+                Vec  xj  = xd.template segment<N>(cj).template to_vec<N>();
                 Vec  bx  = t.value * xj;  // B * x_j
                 Vec  res = a * bx;
-                yd.segment<N>(ri).atomic_add(res);
+                yd.template segment<N>(ri).atomic_add(res);
 
                 auto is_diagonal = t.row_index == t.col_index;
                 $if (!is_diagonal)
                 {
                     // mirrored, transposed contribution of the (j, i) block
-                    Vec  xi   = xd.segment<N>(ri).to_vec<N>();
+                    Vec  xi   = xd.template segment<N>(ri).template to_vec<N>();
                     auto bt   = block_transpose<N>(t.value);
                     Vec  bx2  = bt * xi;
                     Vec  res2 = a * bx2;
-                    yd.segment<N>(cj).atomic_add(res2);
+                    yd.template segment<N>(cj).atomic_add(res2);
                 };
             };
         });
@@ -202,7 +202,7 @@ template <typename T, int N>
             auto prev_row = pick(std::int32_t{-1}, rows->read(prev_idx), prev_ok);
 
             auto block = A(idx).value;
-            Vec  xj    = xd.segment<N>(col_r * static_cast<std::uint32_t>(N)).to_vec<N>();
+            Vec  xj    = xd.template segment<N>(col_r * static_cast<std::uint32_t>(N)).template to_vec<N>();
             Vec  bx    = block * xj;
             Vec  bz    = mask_vec<T, N>(bx, valid);
 
@@ -213,7 +213,7 @@ template <typename T, int N>
             $if (is_head)
             {
                 Vec res = a * folded;
-                yd.segment<N>(row_r * static_cast<std::uint32_t>(N)).atomic_add(res);
+                yd.template segment<N>(row_r * static_cast<std::uint32_t>(N)).atomic_add(res);
             };
         });
     return k;
@@ -251,17 +251,17 @@ template <typename T, int N>
             auto prev_row = pick(std::int32_t{-1}, rows->read(prev_idx), prev_ok);
 
             auto block = A(idx).value;
-            Vec  xj    = xd.segment<N>(col_r * static_cast<std::uint32_t>(N)).to_vec<N>();
+            Vec  xj    = xd.template segment<N>(col_r * static_cast<std::uint32_t>(N)).template to_vec<N>();
             Vec  bx    = block * xj;
 
             // mirrored lower-triangle contribution: y_j += a * B^T * x_i
             $if (valid & (row_r != col_r))
             {
-                Vec  xi   = xd.segment<N>(row_r * static_cast<std::uint32_t>(N)).to_vec<N>();
+                Vec  xi   = xd.template segment<N>(row_r * static_cast<std::uint32_t>(N)).template to_vec<N>();
                 auto bt   = block_transpose<N>(block);
                 Vec  bx2  = bt * xi;
                 Vec  res2 = a * bx2;
-                yd.segment<N>(col_r * static_cast<std::uint32_t>(N)).atomic_add(res2);
+                yd.template segment<N>(col_r * static_cast<std::uint32_t>(N)).atomic_add(res2);
             };
 
             Vec bz = mask_vec<T, N>(bx, valid);
@@ -273,7 +273,7 @@ template <typename T, int N>
             $if (is_head)
             {
                 Vec res = a * folded;
-                yd.segment<N>(row_r * static_cast<std::uint32_t>(N)).atomic_add(res);
+                yd.template segment<N>(row_r * static_cast<std::uint32_t>(N)).atomic_add(res);
             };
         });
     return k;
@@ -326,7 +326,7 @@ template <typename T, int N>
                 auto prev_row = pick(std::int32_t{-1}, rows->read(prev_idx), prev_ok);
 
                 auto block = A(idx).value;
-                Vec  xj    = xd.segment<N>(col_r * static_cast<std::uint32_t>(N)).to_vec<N>();
+                Vec  xj    = xd.template segment<N>(col_r * static_cast<std::uint32_t>(N)).template to_vec<N>();
                 Vec  bx    = block * xj;
 
                 // dot contribution: a * x_i^T B x_i (diagonal) or
@@ -338,12 +338,12 @@ template <typename T, int N>
                 };
                 $if (valid & (row_r != col_r))
                 {
-                    Vec  xi    = xd.segment<N>(row_r * static_cast<std::uint32_t>(N)).to_vec<N>();
+                    Vec  xi    = xd.template segment<N>(row_r * static_cast<std::uint32_t>(N)).template to_vec<N>();
                     dot_local  = (T{2} * a) * xi.dot(bx);
                     auto bt    = block_transpose<N>(block);
                     Vec  bx2   = bt * xi;
                     Vec  res2  = a * bx2;
-                    yd.segment<N>(col_r * static_cast<std::uint32_t>(N)).atomic_add(res2);
+                    yd.template segment<N>(col_r * static_cast<std::uint32_t>(N)).atomic_add(res2);
                 };
 
                 Vec bz = mask_vec<T, N>(bx, valid);
@@ -357,7 +357,7 @@ template <typename T, int N>
                 $if (is_head)
                 {
                     Vec res = a * folded;
-                    yd.segment<N>(row_r * static_cast<std::uint32_t>(N)).atomic_add(res);
+                    yd.template segment<N>(row_r * static_cast<std::uint32_t>(N)).atomic_add(res);
                 };
 
                 // block-level fold of the dot contribution: one partial per block
@@ -506,9 +506,9 @@ void LSpmv<T, N>::cpu_sym_spmv(T a, MatrixView A, VectorView x, T b, MutVectorVi
                                      T{0});
     if(n != 0u)
     {
-        A.row_indices().copy_to(lcrt::span<std::int32_t>{rows});
-        A.col_indices().copy_to(lcrt::span<std::int32_t>{cols});
-        A.values().copy_to(lcrt::span<T>{values});
+        A.row_indices().copy_to(rows);
+        A.col_indices().copy_to(cols);
+        A.values().copy_to(values);
     }
 
     const std::size_t          dofs = static_cast<std::size_t>(x.size());
@@ -516,8 +516,8 @@ void LSpmv<T, N>::cpu_sym_spmv(T a, MatrixView A, VectorView x, T b, MutVectorVi
     std::vector<T>             yh(dofs, T{0});
     if(dofs != 0u)
     {
-        x.buffer_view().copy_to(lcrt::span<T>{xh});
-        y.buffer_view().copy_to(lcrt::span<T>{yh});
+        x.buffer_view().copy_to(xh);
+        y.buffer_view().copy_to(yh);
     }
     LStream::current().synchronize();
 
@@ -550,7 +550,7 @@ void LSpmv<T, N>::cpu_sym_spmv(T a, MatrixView A, VectorView x, T b, MutVectorVi
     }
     if(dofs != 0u)
     {
-        y.buffer_view().copy_from(lcrt::span<const T>{yh});
+        y.buffer_view().copy_from(yh);
         LStream::current().synchronize();
     }
 }

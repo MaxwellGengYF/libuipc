@@ -143,9 +143,9 @@ inline void ddEddF_spd(lps::LMat<T, 9, 9>&       H,
 
     // Twist & flip eigenvalues: mu +/- sigma_i * (lambda*(J-1) - mu)
     const T evScale = lps::detail::sub(lps::detail::mul(lambda, lps::detail::sub(J, 1.0)), mu);
-    eigenvalues.segment<3>(0) = S * evScale;
-    eigenvalues.segment<3>(3) = -(S * evScale);
-    eigenvalues.segment<6>(0).array() += mu;
+    eigenvalues.template segment<3>(0) = S * evScale;
+    eigenvalues.template segment<3>(3) = -(S * evScale);
+    eigenvalues.template segment<6>(0).array() += mu;
 
     build_twist_flip_eigenvectors(U, V, Q);
 
@@ -169,7 +169,7 @@ inline void ddEddF_spd(lps::LMat<T, 9, 9>&       H,
         lps::LVec<T, 3>    block_values;
         lps::LMat<T, 3, 3> block_vectors;
         lps::evd(A, block_values, block_vectors);
-        eigenvalues.segment<3>(6) = block_values;
+        eigenvalues.template segment<3>(6) = block_values;
 
         for(int k = 0; k < 3; ++k)
         {

@@ -80,7 +80,7 @@ template <typename S>
     sym::abd_ortho_potential::dEdq(G9, kappa, q);
 
     lps::LVec<S, 12> G = lps::LVec<S, 12>::Zero();
-    G.segment<9>(3)    = G9 * Vdt2;
+    G.template segment<9>(3) = G9 * Vdt2;
     return G;
 }
 
@@ -116,7 +116,7 @@ template <typename S>
     auto Vdt2 = lps::detail::mul(lps::detail::mul(volume, dt), dt);
 
     lps::LMat<S, 12, 12> H = lps::LMat<S, 12, 12>::Zero();
-    H.block<9, 9>(3, 3)    = H9x9 * Vdt2;
+    H.template block<9, 9>(3, 3) = H9x9 * Vdt2;
     return H;
 }
 

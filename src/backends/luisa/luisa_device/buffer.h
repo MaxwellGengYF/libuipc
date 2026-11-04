@@ -96,7 +96,7 @@ class LDeviceBuffer
                 // (Spell the view as LBufferView, not lcrt::BufferView: the LC
                 // view's copy_from only *builds* a command, which would be discarded.)
                 std::vector<T> zeros(n - old_size);
-                LBufferView<T>{m_buffer, old_size, n - old_size}.copy_from(lcrt::span<const T>{zeros});
+                LBufferView<T>{m_buffer, old_size, n - old_size}.copy_from(zeros);
             }
         }
     }
@@ -171,6 +171,20 @@ class LDeviceBuffer
             // must synchronize the frame stream before reading `host`.
             LBufferView<T>{m_buffer, 0u, m_size}.copy_to(host);
         }
+    }
+
+    template <typename U>
+        requires std::is_same_v<std::remove_const_t<U>, T>
+    void copy_from(lcrt::span<U> host)
+    {
+        copy_from(std::span<const T>{host.data(), host.size()});
+    }
+
+    template <typename U>
+        requires std::is_same_v<U, T>
+    void copy_to(lcrt::span<U> host) const
+    {
+        copy_to(std::span<T>{host.data(), host.size()});
     }
 
     void fill(const T& value)

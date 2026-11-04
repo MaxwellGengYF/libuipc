@@ -267,7 +267,7 @@ namespace
         stream.synchronize();
         if(!dst.empty())
         {
-            stream.record(one.native().copy_to(dst));
+            stream.record(one.native().copy_to(::luisa::span<T>{dst.data(), dst.size()}));
             stream.synchronize();
         }
         if(was_open)

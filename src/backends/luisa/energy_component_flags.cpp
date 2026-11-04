@@ -4,6 +4,7 @@ namespace uipc::backend::luisa
 {
 std::string enum_flags_name(EnergyComponentFlags flags)
 {
-    return magic_enum::enum_flags_name(flags);
+    auto name = magic_enum::enum_flags_name(flags);
+    return std::string{name.data(), name.size()};
 }
 }// namespace uipc::backend::luisa

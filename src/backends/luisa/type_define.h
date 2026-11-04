@@ -231,7 +231,7 @@ void copy_host_to_device(lud::LDeviceBuffer<Dst>& dst, const SrcContainer& src)
         // using-declared class template (`using std::span;` in uipc/common/span.h),
         // and MSVC does not parse `span<const Dst>{host}` as a type-id in this
         // dependent context (measured C2760/C3878: "unexpected '{'; expected ')'").
-        dst.view().copy_from(span<const Dst>(host));
+        dst.view().copy_from(std::span<const Dst>(host));
 }
 }// namespace uipc::backend::luisa
 
