@@ -299,23 +299,6 @@ class T53ExternalForceReporter final : public gg::FiniteElementExternalForceRepo
         collected_forces  = m_forces_host;
     }
 
-    void do_step(ExternalForceInfo& info) override
-    {
-        ++step_count;
-        auto n = static_cast<uint32_t>(m_indices.size());
-        if(n == 0 || !write_enabled)
-            return;  // nothing marked (other scenes), or the test asked to skip
-        auto& k = scatter_force_kernel();
-        gg::frame_stream().record(
-            k(info.external_forces(), m_indices.cview(), m_forces.cview(), n).dispatch(n));
-    }
-
-  private:
-    std::vector<IndexT>          m_indices_host;
-    std::vector<Vector3>         m_forces_host;
-    lud::LDeviceBuffer<IndexT>       m_indices;
-    lud::LDeviceBuffer<gg::LVector3> m_forces;
-
     static auto& scatter_force_kernel()
     {
         static auto& k =
@@ -341,6 +324,24 @@ class T53ExternalForceReporter final : public gg::FiniteElementExternalForceRepo
                 });
         return k;
     }
+
+    void do_step(ExternalForceInfo& info) override
+    {
+        ++step_count;
+        auto n = static_cast<uint32_t>(m_indices.size());
+        if(n == 0 || !write_enabled)
+            return;  // nothing marked (other scenes), or the test asked to skip
+        auto& k = scatter_force_kernel();
+        gg::frame_stream().record(
+            k(info.external_forces(), m_indices.cview(), m_forces.cview(), n).dispatch(n));
+    }
+
+  private:
+    std::vector<IndexT>          m_indices_host;
+    std::vector<Vector3>         m_forces_host;
+    lud::LDeviceBuffer<IndexT>       m_indices;
+    lud::LDeviceBuffer<gg::LVector3> m_forces;
+
 };
 }  // namespace t53
 REGISTER_SIM_SYSTEM(t53::T53ExternalForceReporter);

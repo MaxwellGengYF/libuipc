@@ -181,7 +181,7 @@ void read_back_into(lud::LStream& stream, const lud::LBufferView<T>& src, std::s
 
     stream.synchronize();
 
-    stream.record(src.native().copy_to(dst));
+    stream.record(src.native().copy_to(::luisa::span<T>{dst.data(), dst.size()}));
 
     stream.synchronize();
 

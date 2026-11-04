@@ -55,9 +55,9 @@ inline constexpr double sqrt2 =
 template <typename T>
 inline void extractF(lps::LMat<T, 3, 3>& F, const lps::LVec<T, 12>& q)
 {
-    F.row(0) = q.segment<3>(3);
-    F.row(1) = q.segment<3>(6);
-    F.row(2) = q.segment<3>(9);
+    F.row(0) = q.template segment<3>(3);
+    F.row(1) = q.template segment<3>(6);
+    F.row(2) = q.template segment<3>(9);
 }
 
 /// Function to compute the ARAP energy
@@ -209,7 +209,7 @@ template <typename S>
     sym::abd_arap::dEdq(G9, kappa, q);
 
     lps::LVec<S, 12> G = lps::LVec<S, 12>::Zero();
-    G.segment<9>(3)    = G9 * Vdt2;
+    G.template segment<9>(3) = G9 * Vdt2;
     return G;
 }
 
@@ -227,7 +227,7 @@ template <typename S>
     sym::abd_arap::ddEddq(H9x9, kappa, q);
 
     lps::LMat<S, 12, 12> H = lps::LMat<S, 12, 12>::Zero();
-    H.block<9, 9>(3, 3)    = H9x9 * Vdt2;
+    H.template block<9, 9>(3, 3) = H9x9 * Vdt2;
     return H;
 }
 }  // namespace abd_arap_detail

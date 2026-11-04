@@ -115,7 +115,7 @@ class LBufferView
         // deferred memcpy: record_upload() submits it now, ordered after whatever
         // the frame has recorded so far (OP-A2).
         auto& stream = s ? *s : LStream::current();
-        stream.record_upload(native().copy_from(src));
+        stream.record_upload(native().copy_from(lcrt::span<const T>{src.data(), src.size()}));
     }
 
     void copy_to(std::span<T> dst, LStream* s = nullptr) const
@@ -132,7 +132,21 @@ class LBufferView
         // kernels, and the caller synchronizes before reading `dst` (so `dst` must
         // stay alive until that synchronize).
         auto& stream = s ? *s : LStream::current();
-        stream.record(native().copy_to(dst));
+        stream.record(native().copy_to(lcrt::span<T>{dst.data(), dst.size()}));
+    }
+
+    template <typename U>
+        requires std::is_same_v<std::remove_const_t<U>, T>
+    void copy_from(lcrt::span<U> src, LStream* s = nullptr) const
+    {
+        copy_from(std::span<const T>{src.data(), src.size()}, s);
+    }
+
+    template <typename U>
+        requires std::is_same_v<U, T>
+    void copy_to(lcrt::span<U> dst, LStream* s = nullptr) const
+    {
+        copy_to(std::span<T>{dst.data(), dst.size()}, s);
     }
 
     // device -> device

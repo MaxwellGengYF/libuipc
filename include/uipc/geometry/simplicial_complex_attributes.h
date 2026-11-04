@@ -44,7 +44,14 @@ class SimplicialComplexAttributes
     [[nodiscard]] AttributeSlot<TopoValueT>& topo()
         requires(!IsConst && N > 0)
     {
-        return *m_attributes.template find<TopoValueT>("topo");
+        if constexpr(!IsConst)
+        {
+            return *m_attributes.template find<TopoValueT>("topo");
+        }
+        else
+        {
+            throw std::logic_error{"unreachable"};
+        }
     }
 
     [[nodiscard]] const AttributeSlot<TopoValueT>& topo() const
@@ -59,7 +66,7 @@ class SimplicialComplexAttributes
     void resize(SizeT size)
         requires(!IsConst)
     {
-        m_attributes.resize(size);
+        if constexpr(!IsConst) m_attributes.resize(size);
     }
 
     /**
@@ -68,7 +75,7 @@ class SimplicialComplexAttributes
     void reserve(SizeT size)
         requires(!IsConst)
     {
-        m_attributes.reserve(size);
+        if constexpr(!IsConst) m_attributes.reserve(size);
     }
     /**
      * @sa AttributeCollection::clear
@@ -76,7 +83,7 @@ class SimplicialComplexAttributes
     void clear()
         requires(!IsConst)
     {
-        m_attributes.clear();
+        if constexpr(!IsConst) m_attributes.clear();
     }
     /**
      * @sa AttributeCollection::size
@@ -88,7 +95,7 @@ class SimplicialComplexAttributes
     void destroy(std::string_view name)
         requires(!IsConst)
     {
-        m_attributes.destroy(name);
+        if constexpr(!IsConst) m_attributes.destroy(name);
     }
 
     /**
@@ -98,7 +105,7 @@ class SimplicialComplexAttributes
     [[nodiscard]] decltype(auto) find(std::string_view name)
         requires(!IsConst)
     {
-        return m_attributes.template find<T>(name);
+        if constexpr(!IsConst) return m_attributes.template find<T>(name);
     }
 
     /**
@@ -114,14 +121,14 @@ class SimplicialComplexAttributes
     decltype(auto) create(std::string_view name, const T& default_value = {}, bool allow_destroy = true)
         requires(!IsConst)
     {
-        return m_attributes.template create<T>(name, default_value, allow_destroy);
+        if constexpr(!IsConst) return m_attributes.template create<T>(name, default_value, allow_destroy);
     }
 
     template <typename T>
     decltype(auto) share(std::string_view name, const AttributeSlot<T>& slot, bool allow_destroy = true)
         requires(!IsConst)
     {
-        return m_attributes.template share<T>(name, slot, allow_destroy);
+        if constexpr(!IsConst) return m_attributes.template share<T>(name, slot, allow_destroy);
     }
 
     void copy_from(SimplicialComplexAttributes<true, N> other,
@@ -130,7 +137,7 @@ class SimplicialComplexAttributes
                    span<const string>                   exclude_names = {})
         requires(!IsConst)
     {
-        m_attributes.copy_from(other.m_attributes, copy, include_names, exclude_names);
+        if constexpr(!IsConst) m_attributes.copy_from(other.m_attributes, copy, include_names, exclude_names);
     }
 
     Json to_json() const { return m_attributes.to_json(); }

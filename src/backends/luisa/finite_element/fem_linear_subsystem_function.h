@@ -183,7 +183,7 @@ void write_element_gradient(DoubletView    doublets,
                             const GVec&    element_gradient)
 {
     constexpr int N = static_cast<int>(lps::vec_dim_v<IVec>);
-    DoubletVectorAssembler{doublets}.segment<N>(doublet_offset).write(global_indices,
+    DoubletVectorAssembler{doublets}.template segment<N>(doublet_offset).write(global_indices,
                                                                      element_gradient);
 }
 
@@ -197,7 +197,7 @@ void write_element_hessian(TripletView    triplets,
                            const HMat&    element_hessian)
 {
     constexpr int N = static_cast<int>(lps::vec_dim_v<IVec>);
-    TripletMatrixAssembler{triplets}.half_block<N>(triplet_offset).write(global_indices,
+    TripletMatrixAssembler{triplets}.template half_block<N>(triplet_offset).write(global_indices,
                                                                         element_hessian);
 }
 
@@ -271,7 +271,7 @@ void scatter_gradient_row(DstView dst, SrcView src, const I& I_index, FixedAt&& 
     using S     = lps::vec_element_t<GVec>;
     auto zero   = lps::make_vec<S, 3>([](int) noexcept { return lps::zero_of<S>(); });
     auto g      = select_container(d.value, zero, is_fixed_at(d.index) != 0);
-    dst.segment<3>(d.index * 3).atomic_add(g);
+    dst.template segment<3>(d.index * 3).atomic_add(g);
 }
 
 /// `FEMLinearSubsystem_assemble_dytopo_effect_k1_kernel`:
@@ -290,7 +290,7 @@ void scatter_dytopo_gradient_row(DstView     gradients,
     using S    = lps::vec_element_t<GVec>;
     auto zero  = lps::make_vec<S, 3>([](int) noexcept { return lps::zero_of<S>(); });
     auto g     = select_container(d.value, zero, is_fixed_at(i) != 0);
-    gradients.segment<3>(i * 3).atomic_add(g);
+    gradients.template segment<3>(i * 3).atomic_add(g);
 }
 
 /// `FEMLinearSubsystem_assemble_dytopo_effect_k2_kernel`:

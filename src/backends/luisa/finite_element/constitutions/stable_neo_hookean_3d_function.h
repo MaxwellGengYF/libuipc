@@ -121,7 +121,7 @@ template <typename S>
 
     lps::LVec<S, 12> G12;
     for(int i = 0; i < 4; ++i)
-        G12.segment<3>(3 * i) = fem::project_F_gradient(shape_gradients.col(i), VecdEdF);
+        G12.template segment<3>(3 * i) = fem::project_F_gradient(shape_gradients.col(i), VecdEdF);
     return G12;
 }
 
@@ -166,7 +166,7 @@ template <typename S>
     lps::LMat<S, 12, 12> H12;
     for(int i = 0; i < 4; ++i)
         for(int j = 0; j < 4; ++j)
-            H12.block<3, 3>(3 * i, 3 * j) =
+            H12.template block<3, 3>(3 * i, 3 * j) =
                 fem::project_F_hessian_block(shape_gradients.col(i), ddEddF,
                                              shape_gradients.col(j));
     return H12;

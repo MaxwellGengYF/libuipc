@@ -437,7 +437,7 @@ auto& viewer_query_kernel()
                                                        hits = hits + 1u;
                                                        auto last =
                                                            counts.atomic(0u).fetch_add(1u);
-                                                       $if(last < pair_out->size())
+                                                       $if(last < lcrt::cast<std::uint32_t>(pair_out->size()))
                                                        {
                                                            pair_out->write(
                                                                last,

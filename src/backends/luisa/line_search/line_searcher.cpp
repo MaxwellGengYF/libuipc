@@ -38,7 +38,7 @@ namespace
         stream.synchronize();
         if(!dst.empty())
         {
-            stream.record(src.native().copy_to(dst));
+            stream.record(src.native().copy_to(lcrt::span<Float>{dst.data(), dst.size()}));
             stream.synchronize();
         }
         if(was_open)

@@ -513,26 +513,6 @@ inline constexpr U64 kMockInterConstitutionUID = 28;
 
     void do_compute_energy(ComputeEnergyInfo&) override {}
 
-    void do_compute_gradient_hessian(ComputeGradientHessianInfo& info) override
-    {
-        if(!enabled)
-            return;
-        auto qs = info.qs();
-        auto n  = static_cast<uint32_t>(info.qs().size());
-        if(n == 0)
-            return;
-
-        auto& k = kinetic_kernel();
-        gg::frame_stream().record(
-            k(info.gradients(), info.hessians(), qs, h_buffer(), h_buffer(), n).dispatch(n));
-    }
-
-  private:
-    /// The per-body `H_i` on the device (uploaded from the test's hand-written
-    /// matrices, sized by `kBodyCount`).
-    static lud::LDeviceBuffer<gg::LMatrix12x12>& body_hessian_buffer();
-    static lud::LBufferView<gg::LMatrix12x12>    h_buffer();
-
     static auto& kinetic_kernel()
     {
         static auto& k = lla::detail::cached_kernel<lcrt::Buffer<gg::LVector12>,
@@ -562,6 +542,27 @@ inline constexpr U64 kMockInterConstitutionUID = 28;
             });
         return k;
     }
+
+    void do_compute_gradient_hessian(ComputeGradientHessianInfo& info) override
+    {
+        if(!enabled)
+            return;
+        auto qs = info.qs();
+        auto n  = static_cast<uint32_t>(info.qs().size());
+        if(n == 0)
+            return;
+
+        auto& k = kinetic_kernel();
+        gg::frame_stream().record(
+            k(info.gradients(), info.hessians(), qs, h_buffer(), h_buffer(), n).dispatch(n));
+    }
+
+  private:
+    /// The per-body `H_i` on the device (uploaded from the test's hand-written
+    /// matrices, sized by `kBodyCount`).
+    static lud::LDeviceBuffer<gg::LMatrix12x12>& body_hessian_buffer();
+    static lud::LBufferView<gg::LMatrix12x12>    h_buffer();
+
 };
 
 /// The per-body `H_i` (a host buffer, uploaded lazily once).
@@ -694,6 +695,78 @@ class T61bLinearReporter final : public gg::ABDLinearSubsystemReporter
         last_hessian_count  = info.gradient_only() ? 0 : pair_entries().size();
     }
 
+    static auto& gradient_kernel()
+    {
+        static auto& k = lla::detail::cached_kernel<lcrt::Buffer<int32_t>,
+                                                    lcrt::Buffer<double>,
+                                                    lcrt::Buffer<gg::LVector12>,
+                                                    uint32_t>(
+            [](lcrt::BufferVar<int32_t>    indices,
+               lcrt::BufferVar<double>     values,
+               lcrt::BufferVar<gg::LVector12> g,
+               lcrt::Var<uint32_t>         count) noexcept
+            {
+                auto i = lcrt::dispatch_x();
+                $if(i < count)
+                {
+                    indices->write(i, lcrt::cast<std::int32_t>(i));
+                    for(int k = 0; k < 12; ++k)
+                        values->write(i * 12u + static_cast<uint32_t>(k), g->read(i).data[k]);
+                };
+            });
+        return k;
+    }
+
+    static auto& hessian_kernel()
+    {
+        static auto& k = lla::detail::cached_kernel<lcrt::Buffer<int32_t>,
+                                                    lcrt::Buffer<int32_t>,
+                                                    lcrt::Buffer<double>,
+                                                    int32_t,  // total block rows/cols
+                                                    int32_t,  // submatrix extent x
+                                                    int32_t,  // submatrix extent y
+                                                    lcrt::Buffer<gg::LVector4i>,  // pair entries
+                                                    lcrt::Buffer<gg::LMatrix3x3>, // 3x3 blocks
+                                                    lcrt::Buffer<gg::ABDJacobi>,  // the scene's jacobians
+                                                    lcrt::Buffer<int32_t>,        // per-body local vertex offset
+                                                    int32_t,                      // vertex offset (global)
+                                                    int32_t,                      // vertex count
+                                                    uint32_t>(                    // entry count
+            [](lcrt::BufferVar<int32_t>      rows,
+               lcrt::BufferVar<int32_t>      cols,
+               lcrt::BufferVar<double>       values,
+               lcrt::Var<int32_t>            total_block_rows,
+               lcrt::Var<int32_t>            /*extent_x*/,
+               lcrt::Var<int32_t>            /*extent_y*/,
+               lcrt::BufferVar<gg::LVector4i> entries,
+               lcrt::BufferVar<gg::LMatrix3x3> h3s,
+               lcrt::BufferVar<gg::ABDJacobi>  Js,
+               lcrt::BufferVar<int32_t>      body_vertex_offsets,
+               lcrt::Var<int32_t>            vertex_offset,
+               lcrt::Var<int32_t>            /*vertex_count*/,
+               lcrt::Var<uint32_t>           n) noexcept
+            {
+                auto i = lcrt::dispatch_x();
+                $if(i < n)
+                {
+                    auto e = entries->read(i);
+                    auto J_v = gg::load_jacobi(
+                        Js->read(vertex_offset + body_vertex_offsets->read(e.data[0]) + e.data[2]));
+                    auto J_w = gg::load_jacobi(
+                        Js->read(vertex_offset + body_vertex_offsets->read(e.data[1]) + e.data[3]));
+                    auto H3 = gg::load_mat3x3(h3s->read(i));
+                    auto H12 = gg::abd_jacobi_JT_H_J(J_v, H3, J_w);
+                    rows->write(i, e.data[0]);
+                    cols->write(i, e.data[1]);
+                    (void)total_block_rows;
+                    for(int c = 0; c < 12; ++c)
+                        for(int r = 0; r < 12; ++r)
+                            values->write(i * 144u + static_cast<uint32_t>(c * 12 + r), H12(r, c));
+                };
+            });
+        return k;
+    }
+
     void do_assemble(AssembleInfo& info) override
     {
         ++assemble_count;
@@ -768,77 +841,6 @@ class T61bLinearReporter final : public gg::ABDLinearSubsystemReporter
     /// slice (`body * kVertexPerBody`).
     static lud::LDeviceBuffer<std::int32_t>& vertex_offset_buffer();
 
-    static auto& gradient_kernel()
-    {
-        static auto& k = lla::detail::cached_kernel<lcrt::Buffer<int32_t>,
-                                                    lcrt::Buffer<double>,
-                                                    lcrt::Buffer<gg::LVector12>,
-                                                    uint32_t>(
-            [](lcrt::BufferVar<int32_t>    indices,
-               lcrt::BufferVar<double>     values,
-               lcrt::BufferVar<gg::LVector12> g,
-               lcrt::Var<uint32_t>         count) noexcept
-            {
-                auto i = lcrt::dispatch_x();
-                $if(i < count)
-                {
-                    indices->write(i, lcrt::cast<std::int32_t>(i));
-                    for(int k = 0; k < 12; ++k)
-                        values->write(i * 12u + static_cast<uint32_t>(k), g->read(i).data[k]);
-                };
-            });
-        return k;
-    }
-
-    static auto& hessian_kernel()
-    {
-        static auto& k = lla::detail::cached_kernel<lcrt::Buffer<int32_t>,
-                                                    lcrt::Buffer<int32_t>,
-                                                    lcrt::Buffer<double>,
-                                                    int32_t,  // total block rows/cols
-                                                    int32_t,  // submatrix extent x
-                                                    int32_t,  // submatrix extent y
-                                                    lcrt::Buffer<gg::LVector4i>,  // pair entries
-                                                    lcrt::Buffer<gg::LMatrix3x3>, // 3x3 blocks
-                                                    lcrt::Buffer<gg::ABDJacobi>,  // the scene's jacobians
-                                                    lcrt::Buffer<int32_t>,        // per-body local vertex offset
-                                                    int32_t,                      // vertex offset (global)
-                                                    int32_t,                      // vertex count
-                                                    uint32_t>(                    // entry count
-            [](lcrt::BufferVar<int32_t>      rows,
-               lcrt::BufferVar<int32_t>      cols,
-               lcrt::BufferVar<double>       values,
-               lcrt::Var<int32_t>            total_block_rows,
-               lcrt::Var<int32_t>            /*extent_x*/,
-               lcrt::Var<int32_t>            /*extent_y*/,
-               lcrt::BufferVar<gg::LVector4i> entries,
-               lcrt::BufferVar<gg::LMatrix3x3> h3s,
-               lcrt::BufferVar<gg::ABDJacobi>  Js,
-               lcrt::BufferVar<int32_t>      body_vertex_offsets,
-               lcrt::Var<int32_t>            vertex_offset,
-               lcrt::Var<int32_t>            /*vertex_count*/,
-               lcrt::Var<uint32_t>           n) noexcept
-            {
-                auto i = lcrt::dispatch_x();
-                $if(i < n)
-                {
-                    auto e = entries->read(i);
-                    auto J_v = gg::load_jacobi(
-                        Js->read(vertex_offset + body_vertex_offsets->read(e.data[0]) + e.data[2]));
-                    auto J_w = gg::load_jacobi(
-                        Js->read(vertex_offset + body_vertex_offsets->read(e.data[1]) + e.data[3]));
-                    auto H3 = gg::load_mat3x3(h3s->read(i));
-                    auto H12 = gg::abd_jacobi_JT_H_J(J_v, H3, J_w);
-                    rows->write(i, e.data[0]);
-                    cols->write(i, e.data[1]);
-                    (void)total_block_rows;
-                    for(int c = 0; c < 12; ++c)
-                        for(int r = 0; r < 12; ++r)
-                            values->write(i * 144u + static_cast<uint32_t>(c * 12 + r), H12(r, c));
-                };
-            });
-        return k;
-    }
 };
 
 inline lud::LDeviceBuffer<gg::LVector4i>& T61bLinearReporter::entries_buffer()
@@ -1413,59 +1415,6 @@ class T61bDyTopoReporter final : public gg::DyTopoEffectReporter
         info.hessian_count(info.gradient_only() ? 0 : n_hessian);
     }
 
-    void do_assemble(gg::GlobalDyTopoEffectManager::GradientHessianInfo& info) override
-    {
-        ++assemble_count;
-        if(!active())
-            return;
-        auto gradients = info.gradients();
-        auto hessians  = info.hessians();
-        last_gradient_count = static_cast<SizeT>(gradients.doublet_count());
-        last_hessian_count  = static_cast<SizeT>(hessians.triplet_count());
-        if(last_gradient_count > 0)
-        {
-            auto& k = gradient_kernel();
-            gg::frame_stream().record(
-                k(gradients.indices(),
-                  gradients.values(),
-                  entry_index_buffer().view(),
-                  entry_g_buffer().view(),
-                  static_cast<uint32_t>(gradients.total_extent()),
-                  static_cast<uint32_t>(last_gradient_count))
-                    .dispatch(static_cast<uint32_t>(last_gradient_count)));
-        }
-        if(last_hessian_count > 0)
-        {
-            auto& k = hessian_kernel();
-            gg::frame_stream().record(
-                k(hessians.row_indices(),
-                  hessians.col_indices(),
-                  hessians.values(),
-                  entry_index_buffer().view(),
-                  entry_index_buffer().view(),
-                  entry_h_buffer().view(),
-                  static_cast<uint32_t>(hessians.total_rows()),
-                  static_cast<uint32_t>(hessians.total_cols()),
-                  static_cast<uint32_t>(last_hessian_count))
-                    .dispatch(static_cast<uint32_t>(last_hessian_count)));
-        }
-    }
-
-    void do_compute_energy(gg::GlobalDyTopoEffectManager::EnergyInfo& info) override
-    {
-        (void)info;
-    }
-
-    gg::EnergyComponentFlags component_flags() override
-    {
-        return gg::EnergyComponentFlags::Complement;
-    }
-
-  private:
-    static lud::LDeviceBuffer<std::int32_t>& entry_index_buffer();
-    static lud::LDeviceBuffer<gg::LMatrix3x3>& entry_h_buffer();
-    static lud::LDeviceBuffer<gg::LVector3>&      entry_g_buffer();
-
     static auto& gradient_kernel()
     {
         static auto& k = lla::detail::cached_kernel<lcrt::Buffer<int32_t>,
@@ -1528,6 +1477,60 @@ class T61bDyTopoReporter final : public gg::DyTopoEffectReporter
             });
         return k;
     }
+
+    void do_assemble(gg::GlobalDyTopoEffectManager::GradientHessianInfo& info) override
+    {
+        ++assemble_count;
+        if(!active())
+            return;
+        auto gradients = info.gradients();
+        auto hessians  = info.hessians();
+        last_gradient_count = static_cast<SizeT>(gradients.doublet_count());
+        last_hessian_count  = static_cast<SizeT>(hessians.triplet_count());
+        if(last_gradient_count > 0)
+        {
+            auto& k = gradient_kernel();
+            gg::frame_stream().record(
+                k(gradients.indices(),
+                  gradients.values(),
+                  entry_index_buffer().view(),
+                  entry_g_buffer().view(),
+                  static_cast<uint32_t>(gradients.total_extent()),
+                  static_cast<uint32_t>(last_gradient_count))
+                    .dispatch(static_cast<uint32_t>(last_gradient_count)));
+        }
+        if(last_hessian_count > 0)
+        {
+            auto& k = hessian_kernel();
+            gg::frame_stream().record(
+                k(hessians.row_indices(),
+                  hessians.col_indices(),
+                  hessians.values(),
+                  entry_index_buffer().view(),
+                  entry_index_buffer().view(),
+                  entry_h_buffer().view(),
+                  static_cast<uint32_t>(hessians.total_rows()),
+                  static_cast<uint32_t>(hessians.total_cols()),
+                  static_cast<uint32_t>(last_hessian_count))
+                    .dispatch(static_cast<uint32_t>(last_hessian_count)));
+        }
+    }
+
+    void do_compute_energy(gg::GlobalDyTopoEffectManager::EnergyInfo& info) override
+    {
+        (void)info;
+    }
+
+    gg::EnergyComponentFlags component_flags() override
+    {
+        return gg::EnergyComponentFlags::Complement;
+    }
+
+  private:
+    static lud::LDeviceBuffer<std::int32_t>& entry_index_buffer();
+    static lud::LDeviceBuffer<gg::LMatrix3x3>& entry_h_buffer();
+    static lud::LDeviceBuffer<gg::LVector3>&      entry_g_buffer();
+
 };
 
 inline lud::LDeviceBuffer<std::int32_t>& T61bDyTopoReporter::entry_index_buffer()

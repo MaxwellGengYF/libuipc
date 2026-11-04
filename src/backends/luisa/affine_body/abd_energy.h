@@ -91,9 +91,9 @@ template <class S>
 
     S ret = lps::zero_of<S>();
 
-    const auto a1 = q.segment<3>(3);
-    const auto a2 = q.segment<3>(6);
-    const auto a3 = q.segment<3>(9);
+    const auto a1 = q.template segment<3>(3);
+    const auto a2 = q.template segment<3>(6);
+    const auto a3 = q.template segment<3>(9);
 
     ret = add(ret,
               abd_energy_detail::square(
@@ -125,13 +125,13 @@ template <class S>
 {
     lps::LVec<S, 9> ret;
 
-    const auto a1 = q.segment<3>(3);
-    const auto a2 = q.segment<3>(6);
-    const auto a3 = q.segment<3>(9);
+    const auto a1 = q.template segment<3>(3);
+    const auto a2 = q.template segment<3>(6);
+    const auto a3 = q.template segment<3>(9);
 
-    auto dEda1 = ret.segment<3>(0);
-    auto dEda2 = ret.segment<3>(3);
-    auto dEda3 = ret.segment<3>(6);
+    auto dEda1 = ret.template segment<3>(0);
+    auto dEda2 = ret.template segment<3>(3);
+    auto dEda3 = ret.template segment<3>(6);
 
     dEda1 = (lps::make_scalar<S>(4.0)
              * lps::detail::sub(lps::squaredNorm(a1), lps::make_scalar<S>(1.0)))
@@ -166,9 +166,9 @@ inline void shape_energy_hessian(const lps::LVec<S, 12>& q,
                                  lps::LMat<S, 3, 3>&     ddVda1da3,
                                  lps::LMat<S, 3, 3>&     ddVda2da3) noexcept
 {
-    const auto a1 = q.segment<3>(3);
-    const auto a2 = q.segment<3>(6);
-    const auto a3 = q.segment<3>(9);
+    const auto a1 = q.template segment<3>(3);
+    const auto a2 = q.template segment<3>(6);
+    const auto a3 = q.template segment<3>(9);
 
     ddV_ddai(ddVdda1, a1, a2, a3);
     ddV_ddai(ddVdda2, a2, a3, a1);
@@ -193,17 +193,17 @@ template <class S>
     lps::LMat<S, 3, 3> ddVdda1, ddVdda2, ddVdda3, ddVda1da2, ddVda1da3, ddVda2da3;
     shape_energy_hessian(q, ddVdda1, ddVdda2, ddVdda3, ddVda1da2, ddVda1da3, ddVda2da3);
 
-    H.block<3, 3>(0, 0) = ddVdda1;
-    H.block<3, 3>(0, 3) = ddVda1da2;
-    H.block<3, 3>(0, 6) = ddVda1da3;
+    H.template block<3, 3>(0, 0) = ddVdda1;
+    H.template block<3, 3>(0, 3) = ddVda1da2;
+    H.template block<3, 3>(0, 6) = ddVda1da3;
 
-    H.block<3, 3>(3, 0) = ddVda1da2.transpose();
-    H.block<3, 3>(3, 3) = ddVdda2;
-    H.block<3, 3>(3, 6) = ddVda2da3;
+    H.template block<3, 3>(3, 0) = ddVda1da2.transpose();
+    H.template block<3, 3>(3, 3) = ddVdda2;
+    H.template block<3, 3>(3, 6) = ddVda2da3;
 
-    H.block<3, 3>(6, 0) = ddVda1da3.transpose();
-    H.block<3, 3>(6, 3) = ddVda2da3.transpose();
-    H.block<3, 3>(6, 6) = ddVdda3;
+    H.template block<3, 3>(6, 0) = ddVda1da3.transpose();
+    H.template block<3, 3>(6, 3) = ddVda2da3.transpose();
+    H.template block<3, 3>(6, 6) = ddVdda3;
 
     return H;
 }

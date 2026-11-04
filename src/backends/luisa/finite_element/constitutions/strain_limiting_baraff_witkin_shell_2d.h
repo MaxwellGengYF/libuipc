@@ -350,10 +350,10 @@ namespace sym::strainlimiting_baraff_witkin_shell_2d
                     sqrtI5v > one);
 
 
-            H_stretc.block<3, 3>(0, 0) =
-                H_stretc.block<3, 3>(0, 0) + uCoeff * (fu * fu.transpose());
-            H_stretc.block<3, 3>(3, 3) =
-                H_stretc.block<3, 3>(3, 3) + vCoeff * (fv * fv.transpose());
+            H_stretc.template block<3, 3>(0, 0) =
+                H_stretc.template block<3, 3>(0, 0) + uCoeff * (fu * fu.transpose());
+            H_stretc.template block<3, 3>(3, 3) =
+                H_stretc.template block<3, 3>(3, 3) + vCoeff * (fv * fv.transpose());
         }
 
         lps::LMat<S, 6, 6> H_shear = lps::LMat<S, 6, 6>::Zero();

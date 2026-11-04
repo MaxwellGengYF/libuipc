@@ -68,9 +68,9 @@ template <typename S>
                                                      const lps::LVec<S, 3>& x2) noexcept
 {
     lps::LVec<S, 9> X;
-    X.segment<3>(0) = x0;
-    X.segment<3>(3) = x1;
-    X.segment<3>(6) = x2;
+    X.template segment<3>(0) = x0;
+    X.template segment<3>(3) = x1;
+    X.template segment<3>(6) = x2;
     return X;
 }
 

@@ -70,9 +70,9 @@ inline void dEdF(lps::LVec<T, 9>&       gradients,
 
     T kv = lps::detail::mul(kappa, v);
 
-    gradients.segment<3>(0) = dPsi_dF.col(0) * kv;
-    gradients.segment<3>(3) = dPsi_dF.col(1) * kv;
-    gradients.segment<3>(6) = dPsi_dF.col(2) * kv;
+    gradients.template segment<3>(0) = dPsi_dF.col(0) * kv;
+    gradients.template segment<3>(3) = dPsi_dF.col(1) * kv;
+    gradients.template segment<3>(6) = dPsi_dF.col(2) * kv;
 }
 
 /// Function to flatten a matrix into a vector (the reference's `vector << ...`
