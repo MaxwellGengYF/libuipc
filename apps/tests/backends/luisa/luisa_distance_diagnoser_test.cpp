@@ -1724,6 +1724,11 @@ TEST_CASE("t85_parity_golden_pt", "[luisa][diagnoser]")
         worst_dispatched);
 
     CHECK(class_a_cases + dispatched_cases == golden.case_count());
+    // Floor on the Class-A half: without it a regression that moved every case into
+    // the dist2-only "dispatched" bucket would still pass.  Measured split on the
+    // recorded golden: 14 all-active cases / 26 flag-dispatched (S9' review, F3).
+    CHECK(class_a_cases >= 14u);
+    CHECK(dispatched_cases <= 26u);
     CHECK(exact_mismatches == 0u);
     CHECK(worst_dispatched <= 1e-14);
 }
@@ -1772,10 +1777,12 @@ TEST_CASE("t85_no_simulation", "[luisa][diagnoser]")
     // (c) `do_build()` only inserts the feature: it registers no action and requires no
     // other system, so the scene's solve chain is byte-identical with and without it.  The
     // observable form of that claim (identical `newton_iterations` / frame stats over an
-    // `advance()`) needs plan 10's engine loop; the recorded pre-existing abort inside the
-    // first `advance()` (AGENT_ENV_BRIEF.md, shell_init_advance_retrieve) blocks it here.
+    // `advance()`) needs plan 10's engine loop: the port's `advance()` runs, but it has
+    // no Newton loop yet (`m_newton_iter` is pinned at 0), so there is nothing to
+    // compare.  (The AST-builder abort named here by the first version of this note
+    // was the LC header/binary ABI drift, fixed in 3d17541b - cookbook 7.36.)
     std::printf(
-        " [diagnoser] SKIP(newton_iterations comparison): the engine advance loop is blocked "
-        "by the pre-existing AST-builder abort (AGENT_ENV_BRIEF.md) - plan 10; the "
+        " [diagnoser] SKIP(newton_iterations comparison): plan 10's Newton loop is absent "
+        "(m_newton_iter is pinned at 0), so there is no iteration count to compare; "
         "insert-only do_build() is verified structurally (no action, no require<>)\n");
 }
