@@ -6044,6 +6044,176 @@ which is exactly why it can gate S1 before the coupling lands.
     `dof_count()` on a subsystem read the *engine's* collection, so they may only be called
     after `gls->init()` — calling them earlier aborts on the empty offsets array.
 
+### 7.40 Patterns established in T8.3a-2 (IterativeSolver + LinearPCG — "PCG on LC")
+
+**Scope.** New `src/backends/luisa/linear_system/iterative_solver.{h,cpp}` (the reference's
+class surface verbatim) and `linear_pcg.{h,cpp}` (the host loop of
+`linear_pcg.cu:234-320`), the four `GlobalLinearSystem::Impl` bodies the link needs
+(`spmv`, `spmv_dot`, `matrix_data_ptrs`, `solve_linear_system`) + the
+`triplet_count_dev` upload + a real `add_solver()`, and the config mapping that turns
+the schema's two solver names into that one implementation.  Test:
+`apps/tests/backends/luisa/luisa_pcg_test.cpp` (`[pcg]`, 10 cases + 2 SKIPs, 188
+assertions).  Measured headline numbers (8-block / 24-dof SPD chain, `tol_rate = 1e-3`):
+device `iters = 7` == host transcription `7`, `|dx|/|x| = 2.7e-15`, residual-curve worst
+relative `5.6e-16`, `||b - Ax||/||b|| = 1.3e-2 <= sqrt(1e-3)`, Class-A first iteration
+`|dx_1| = 0.0` (bitwise).
+
+**The three mandated paragraphs** (plan §8): the fused-VCG deviation, the sync
+discipline, the iteration criterion — rules 2-5 below.
+
+1. **The seam with plan 11 is not optional, it is a link-time fact.** `IterativeSolver`'s
+   seven utility members are *forwarders* to `m_system->m_impl.*` (the reference's
+   placement), so *defining* them ODR-uses `Impl::{spmv, spmv_dot, matrix_data_ptrs,
+   solve_linear_system}`.  Landing the solver without those four bodies is a guaranteed
+   `LNK2019`, exactly as research §4.3 predicted; they are 1-3 lines each and belong to
+   whichever task lands first (plan §5 phase 1 says so explicitly).  Plan 11 keeps
+   `solve()`, the two dumps, `diag_norm`/`mass_norm`, `add_preconditioner(Global*)`, the
+   Matrix-Market port and the engine wiring.
+2. **The fused / "CUDA-graph" variant is not ported — it is *mapped*.** There is no graph
+   to capture on LC: a frame already owns one open `CommandList` (`record()` appends,
+   `commit()` submits), so the reference's `LinearFusedPCG` (device-side alpha/beta/
+   convergence, a 12-pointer validity key, `graph_mode` 0/1/2) has no counterpart.  One
+   `LinearPCG` serves both names, and the mapping is an *observable contract* a reviewer
+   can falsify: with `linear_system/solver ∈ {"linear_pcg", "fused_pcg"}` the same class
+   runs, the same iteration count is reported, and `use_cuda_graph` (0/1/2, still forced
+   to 0 when `contact/constitution != "ipc"`) and `check_interval` change **no number**
+   — they are read, validated, logged once and ignored.  Measured: default (no key) /
+   `"linear_pcg"` / `"fused_pcg"` / `use_cuda_graph = 2` + `al-ipc` all give `iters = 7`
+   and a bitwise-identical `x` and curve.  **Consequence to state loudly:** a CUDA run in
+   `fused_pcg` mode reports `iter_done`, a multiple of `check_interval`, so any
+   cross-backend count comparison must set `linear_system/solver = "linear_pcg"` on the
+   CUDA side of the harness.
+3. **Sync discipline (measured, not estimated).** The loop is host code that needs host
+   values, so `counters.syncs ≈ 2·iters` (`ctx().dot()` is two `synchronize()`s) and
+   `counters.commits` is `O(iters)`, **not** `O(1)`.  Measured for a 3-iteration
+   preconditioned solve inside an explicitly opened frame list: `commands 40 > commits 15`,
+   `direct_submits 1`, `syncs 14`, `uploads 1`, and `compile_stats::total()` delta `0` on
+   the second solve.  Two rules follow: (a) never claim "one submit per solve"; (b) do not
+   "optimise" `LinearPCG`'s `spmv` + `dot` pair into `spmv_dot` — the reference's plain
+   variant is the one whose residual sequence the parity gate compares, and the fused
+   primitive's different summation tree would silently change the trace.
+4. **The iteration criterion, and the bound it actually implies.** Convergence needs
+   *both* `accuracy_statisfied(r)` *and* `|rz_k| <= tol_rate·|rz_0|` with
+   `rz = r^T z`.  With no preconditioner `rz = ||r||^2`, so the *derived* bound on
+   `||r||/||b||` is `sqrt(tol_rate)`, **not** `tol_rate` (the research note's test table
+   says the latter; `pcg_converges_vs_host` asserts `sqrt` and prints the measured
+   `1.3e-2`).  `x0 = 0`, `max_iter = 2·n` is hard-coded (`max_iter_ratio = 2.0`, never a
+   config value), clamped to `>= 1`, and `iter >= max_iter` emits the reference's
+   `reached max_iter` warning — measured twice, verbatim:
+   `[warning] LinearPCG: reached max_iter = 48 (no early convergence); check
+   preconditioner or linear_system/tol_rate.`
+5. **The name gate is the single highest-risk line in the port.** The schema's enum is
+   `{"fused_pcg", "linear_pcg"}` and its **default is `"fused_pcg"`**
+   (`scene_default_config.cpp:152-163`).  The reference's `linear_pcg.cu:47` accepts only
+   `"linear_pcg"`; transcribing that line would leave *every default scene* without a
+   solver, `Impl::solve_linear_system()` would silently skip (`if(iterative_solver)`), and
+   the scene would "converge" with `x = 0`.  Accept both, `UIPC_ASSERT_THROW` otherwise,
+   and do **not** widen the shared schema enum (CUDA's `LinearPCG` would then register no
+   solver for the new value).
+6. **A test can drive the shipped chain only through one extra public accessor
+   (`impl()`), and that is the honest way to test it.** `IterativeSolver`'s forwards
+   dereference `m_system->m_impl`, and `m_system` is set by the *engine* to the engine's
+   `GlobalLinearSystem`, so a **test-local `Impl`** (the T5.4b/T8.3a-1 idiom) cannot work
+   here: the solver would call back into a *different*, unassembled `Impl`.  The
+   alternatives were a test-only friend (T5.1 rule 9 forbids widening the friend list) or
+   a parallel re-implementation of the solve chain in the test (rule 7).  Hence
+   `GlobalLinearSystem::impl()` is public, documented as a deviation, for the same reason
+   `init()` is (cookbook §7.38): the engine calls neither entry point yet (plans 10/11).
+   What it buys: the test runs `gls->init()` -> `impl().build_linear_system()` ->
+   `impl().solve_linear_system()` -> `IterativeSolver::solve()` -> `LinearPCG::do_solve()`
+   -> back into the same `Impl::spmv`/`apply_preconditioner`, i.e. *the production path*,
+   and reads `gls->last_solve_iterations()` (the reference's own accessor).
+7. **A fixture that writes the block table from the host is legal and keeps the
+   arithmetic exact.** `TripletMatrixView`'s handles are `LBufferView`s, so
+   `row_indices().subview(begin, count).copy_from(host_span)` (and the same for
+   `col_indices()` / `values().subview(begin*9, count*9)`) writes one subsystem's window
+   verbatim; the stored indices are **global** block indices (`write()` adds
+   `submatrix_offset`, `at()` subtracts it) and the flat value layout is *column-major
+   inside a block*.  With a dyadic table `A·b`, `b^T A b` and `x_1 = alpha·b` are exactly
+   representable, so `Impl::spmv(b) == A·b` and `x_1` hold **bitwise** (`Δ == 0`) — a
+   Class-A gate that catches a broken operator at O(1) instead of at rounding level.  A
+   broken operator is then easy to stage: re-assemble with the coupling blocks dropped and
+   the residual against the *true* `A` is `3.8e-1` (gate `sqrt(1e-3) = 3.2e-2`).
+8. **Three fixture traps that cost a debugging cycle each (all measured).**
+   (a) A *path Laplacian* — `c = 1` at both ends, off-diagonal `-1` — has determinant 0
+   (the constant vector is in its null space); the first `p^T A p` is then ~0, `alpha`
+   explodes and the loop NaNs out at iteration 17.  Use `c_i > 2` (here 2, 3, 4, 6, 8, 12,
+   16, 24).
+   (b) A *smooth or constant* right-hand side is nearly orthogonal to every row sum of a
+   chain operator (`b^T A b = 1.97` versus `b^T b = 47`), with the same explosion.  Use an
+   alternating-sign `b`: `b^T A b = 527`, and the first PCG step drops `|rz|` to
+   `0.39·|rz_0|`.
+   (c) A **uniform** diagonal makes block-Jacobi a scalar multiple of the identity, and
+   PCG is invariant under `M -> c·M`, so the preconditioner cannot change the iteration
+   count.  `pcg_diag_preconditioner` needs a *heterogeneous* table (measured: none 7,
+   block-Jacobi 3, wrong-block 4).
+9. **Two of the research note's three negative controls cannot exist, and the test says so
+   instead of pretending.** An SPD `A` is nonsingular, so *every* `b` converges — "wrong b
+   does not converge" is only realisable against a **singular** operator with `b ∉
+   range(A)` (implemented: the last block zeroed and isolated; measured `iters = 48/48`,
+   `||b - Ax||/||b|| = 7.2e+2`, `|rz|/|rz_0| = 5.2e+205`, curve identical across two
+   runs).  And **PCG is sign-invariant in both `A` and `M`**: negating the whole table only
+   flips `alpha`'s sign, so the count and the curve are unchanged (measured: `iters 7`,
+   bitwise-identical curve, `x -> -x` exactly), and a negative-definite preconditioner
+   converges in 3 iterations.  "Non-SPD" is therefore *not* a failure mode of this
+   algorithm; the two controls collapse into the singular one.  (`pcg_singular_does_not_converge`
+   carries both assertions plus the explanation.)
+10. **Factor the guards out of the asserting path — and flush your diagnostics.**
+    `check_init_rz_nan_inf` / `check_iter_rz_nan_inf` call `UIPC_ASSERT(false, ...)`, which
+    `abort()`s the process (cookbook §7.22), so the reference's message shape is produced by
+    `linear_pcg_detail::{init,iter}_message(frame, newton, rz, |r|, |z|)` and the guards
+    pass its return value to `UIPC_ASSERT` — identical text, but a test can pin it
+    (`pcg_nan_guard`).  The predicate is `linear_pcg_detail::rz_nan_inf(rz)`.  Related
+    lesson from this batch: a redirected stdout is *fully buffered*, so every `printf` in a
+    test that can reach an aborting assert needs an `fflush` (`T82_LOG`) — otherwise the
+    numbers you need are exactly the ones lost.
+11. **The export list needs a bootstrap when a new *consumer* (not just a symbol) appears.**
+    Deriving the test fixture from `LocalPreconditioner` and calling
+    `Impl::{spmv, spmv_dot, matrix_data_ptrs, solve_linear_system}` produced 10 unresolved
+    externals — including `LocalPreconditioner::{do_build,init}` (protected virtuals that
+    until now were only referenced *inside* the module) and the two
+    `linear_pcg_detail::*_message` functions.  The generator reads the **linked** exe's
+    import table, so it cannot see a symbol that does not link: append the linker's own
+    decorated names to `luisa_module.def`, link, then re-run
+    `python scripts/luisa_module_def.py` (it reproduces the list exactly) and keep
+    `--check` at rc 0.  Measured: 533 -> 543 symbols, `--check` rc 0, rebuild a no-op;
+    `luisa_check_module_abi.py --dll <xmake output>` -> `== module ABI: OK`.
+12. **`scripts/format_changed.py` must not be run in this environment (third data point,
+    now with a cheap undo).** It formats *every* file changed vs `origin/main`
+    (`git diff --name-only origin/main...HEAD`) with whatever `clang-format` is on `PATH` —
+    here 19.1.0 while the repo is formatted with 18 — so one invocation rewrote **533**
+    files, i.e. 687 modified paths, including untouched code (measured: it re-aligns
+    existing declaration blocks and re-wraps `logger::warn(` / `::extent(...)` /
+    `.submatrix(...)` calls).  Undo: `git checkout -- <the 688 paths that are not yours>`
+    (`git diff --name-only` intersected with your own file list), then re-apply your own
+    edits **by hand** to the two files the formatter also touched — after that
+    `git diff --stat` was `90`/`127` lines (my edits only) instead of `111`/`202`.  Note
+    that clang-format writes **LF**; this tree is mixed (the S1 test TU is LF, older
+    files are CRLF) and `git add` normalises on commit, so there is no line-ending churn —
+    but do not let the formatter's output *become* the diff.
+13. **`extras/debug/dump_linear_pcg` cannot dump yet, and says so.** `export_vector_market`
+    exists only in `src/backends/cuda/utils/matrix_market.h` (plan 11 phase 2/4 owns the
+    port), so the flag produces the *reference FusedPCG's* warning shape instead of
+    silently doing nothing, and the residual *curve* is exposed in memory
+    (`LinearPCG::residual_trace()`, `|rz_k|/|rz_0|` for `k = 0..iters`, collected from the
+    values the loop already reads — no extra read, no extra kernel).  This is the accessor
+    the plan's §6.1 curve gate needs; a CUDA-side `--dump` comparison cannot run here at
+    all (no CUDA backend).
+14. **`matrix_data_ptrs()` stays public surface and becomes an identity token.** The
+    reference returns `{row_indices.data(), col_indices.data(), values.data()}` as the
+    FusedPCG graph-validity key; a buffer DSL has no raw element pointer (cookbook §7.9)
+    and there is no graph to key, so the port returns the addresses of the `Impl`'s own
+    container handles plus `nullptr`, documented as "nothing may depend on the value" (plan
+    §3.3(3)).  Nothing in the loop or the counters reads it.
+15. **What is still blocked.** `pcg_from_mtx` (plan §6.1, CUDA ground truth) SKIPs with the
+    exact reason string: no CUDA backend (`--backend_cuda=y` cannot configure), no
+    `_dump_A_b`/`matrix_market` in this backend.  `pcg_frame_pcg_two_block` (plan §6.2 —
+    per-frame `linear_solver_iterations`, `compiles == 0` after frame 1) is
+    **BLOCKED-BY-S0.6** (multi-frame `world.advance()` deadlocks after frame 1) *and* by
+    plan 10/11 (the engine never calls `GlobalLinearSystem::solve()` yet), so there is no
+    per-frame number to compare; the per-solve counters that do not need the engine loop
+    are asserted instead (`pcg_batching_counters`).
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

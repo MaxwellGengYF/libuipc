@@ -43,25 +43,48 @@
  *     `last_solve_iterations()`, `compute_gradient()`, `ctx()` and the type
  *     aliases;
  *   * `Impl::{init,build_linear_system,_update_subsystem_extent,
- *     _assemble_linear_system,distribute_solution,accuracy_statisfied,
- *     compute_gradient,diag_norm,mass_norm,_assemble_preconditioner}`,
+ *     _assemble_linear_system,_assemble_preconditioner,apply_preconditioner,
+ *     spmv,spmv_dot,matrix_data_ptrs,solve_linear_system,distribute_solution,
+ *     accuracy_statisfied,compute_gradient,diag_norm,mass_norm}`,
  *     `DiagExtentInfo::extent`, `OffDiagExtentInfo::extent`,
  *     `AssemblyInfo::A`, `LocalPreconditionerAssemblyInfo::{dof_offset,dof_count}`,
  *     `ComputeGradientInfo::{flags,buffer_view}` and the `add_*()` definitions.
  *
- * DEFERRED TO T8.3 (declared here, not defined — `SCOPE NOTE (T8.3)`)
+ * T8.3a-2 — THE SOLVER SUBSTRATE IS LIVE (the seam with plan 11, research §4.3)
+ * ------------------------------------------------------------------------------
+ * `IterativeSolver`/`LinearPCG` forward their whole utility surface to
+ * `m_system->m_impl.*`, so *defining* them ODR-uses the four `Impl` bodies this
+ * header had left declared-only.  They are the reference's, one to three lines
+ * each, and land here (not in plan 11): `spmv`, `spmv_dot`, `matrix_data_ptrs`,
+ * `solve_linear_system`, plus the `triplet_count_dev` upload in
+ * `build_linear_system()` and a real `add_solver()` registration.  Plan 11 still
+ * owns `solve()`, `_dump_A_b()` / `_dump_x()`, `diag_norm()` / `mass_norm()`,
+ * `add_preconditioner(GlobalPreconditioner*)`, the Matrix-Market port and the
+ * engine wiring.
+ *
+ * `matrix_data_ptrs()` is deliberately an *identity token* here: the reference's
+ * body returns three raw device pointers as the FusedPCG graph-validity key, and
+ * neither exists on LuisaCompute (a buffer DSL exposes no element pointer, and
+ * there is no graph to key — plan §3.3(3)).  It returns the addresses of the
+ * `Impl`'s own container handles and nothing may depend on the value.
+ *
+ * DEFERRED TO T8.3 plan 11 (declared here, not defined — `SCOPE NOTE (T8.3)`)
  * * `do_build()` — only defined as an empty body, because it is a pure-virtual
  *   override (a system must be constructible) and the reference's whole body is
  *   the *debug dump* config (`extras/debug/dump_linear_system`), which is
  *   decidable only together with `solve()`;
- * * `solve()`, `Impl::solve_linear_system()`, `Impl::spmv()`,
- *   `Impl::spmv_dot()`, `matrix_data_ptrs()`;
+ * * `solve()`;
  * * `_dump_A_b()` / `_dump_x()` (they need `utils/matrix_market` + the
  *   `BackendPathTool` workspace plumbing, i.e. the debug path) — the references
  *   to them are inside `solve()`, which is itself deferred;
- * * `need_debug_dump` / `debug_dump_path` and the graph-stability key
- *   `triplet_count_dev` (whose only purpose is a launch shape that does not
- *   change when nnz varies inside the reserved capacity).
+ * * `need_debug_dump` / `debug_dump_path`.
+ *
+ * RESOLVED BY T8.3a-2: `Impl::spmv()`, `Impl::spmv_dot()`, `matrix_data_ptrs()`,
+ * `Impl::solve_linear_system()`, the `triplet_count_dev` upload in
+ * `build_linear_system()` and `add_solver()` are now the reference's definitions
+ * (see the T8.3a-2 paragraph above).  `triplet_count_dev`'s ONLY remaining purpose
+ * is `spmv_dot`'s device-side count argument; there is no graph-stable-launch
+ * requirement any more.
  *
  * COMPLETED BY T5.4b: `Impl::apply_preconditioner()` — the local-preconditioner
  * fan-out plus the no-local-preconditioner `z <- r` copy fallback.  It was under
@@ -95,9 +118,8 @@
  * extent -> assemble -> convert -> `_assemble_preconditioner()` chain) and
  * `apply_preconditioner()` on such an instance, once a `FEMDiagPreconditioner` is
  * registered in it;
- * solver-only (T8.3): the `solve()` chain, the *global*-preconditioner branch of
- * `apply_preconditioner`, `spmv`, `spmv_dot`, the debug dump and the CUDA-graph
- * validity key.
+ * solver-only: the `solve()` chain (plan 11), the *global*-preconditioner branch of
+ * `apply_preconditioner` (plan 13), the debug dump and the CUDA-graph validity key.
  *
  * DEVIATION (T5.4a, reported): `init()` is declared **public** here.  The
  * reference keeps it private + `friend class SimEngine`, because only
@@ -107,6 +129,15 @@
  * unreachable from a test, which the brief's §2 forbids; the alternatives were a
  * test-only friend (T5.1 rule 9 forbids widening the friend list) or a test-only
  * hook.  Everything else keeps the reference's access levels.
+ *
+ * DEVIATION (T8.3a-2, reported): `impl()` (below) is public, for the same reason and
+ * under the same constraint.  `IterativeSolver`'s utility forwards dereference
+ * `m_system->m_impl` — the reference's arrangement — so the only way for a test to
+ * drive the *shipped* solve chain (`build_linear_system()` ->
+ * `solve_linear_system()` -> `IterativeSolver::solve()` -> `LinearPCG::do_solve()` ->
+ * back into the same `Impl::spmv`/`apply_preconditioner`) instead of a second,
+ * parallel implementation of it, is to hand it the same `Impl` the solver will call
+ * back into.  The engine calls neither entry point yet (plans 10/11).
  *********************************************************************/
 #include <sim_system.h>
 #include <functional>
@@ -398,7 +429,10 @@ class GlobalLinearSystem : public SimSystem
         bool _update_subsystem_extent();
         void _assemble_linear_system();
         void _assemble_preconditioner();
-        // SCOPE NOTE (T8.3): declared, deliberately not defined here.
+        /// The reference's `if(iterative_solver) { SolvingInfo info{this}; … }`:
+        /// `iterative_solver->solve(info)` runs the solver, and the returned count
+        /// lands in `last_solve_iterations` here (not in the solver — the reference's
+        /// placement, global_linear_system.cu:437-447).
         void solve_linear_system();
         void distribute_solution();
 
@@ -429,9 +463,9 @@ class GlobalLinearSystem : public SimSystem
         lla::LTripletMatrix<Float, 3, 3>        triplet_A;
         lla::LBCOOMatrix<Float, 3, 3>           bcoo_A;
         lla::LDenseMatrix<Float>                debug_A;  // dense A for debug
-        // SCOPE NOTE (T8.3): device-side copy of bcoo_A's triplet count, for the
-        // graph-stable SpMV launch (its only consumer is `spmv_dot`).  Declared so
-        // the interface is complete; `build_linear_system()` does not fill it.
+        // device-side copy of bcoo_A's triplet count, uploaded by
+        // `build_linear_system()` and consumed by `spmv_dot` (the fused variant's
+        // device-side count argument).  T8.3a-2: a real upload, no graph semantics.
         lud::LDeviceVar<IndexT> triplet_count_dev;
 
         lla::Spmv spmver;
@@ -441,9 +475,9 @@ class GlobalLinearSystem : public SimSystem
         bool  empty_system          = true;
         SizeT last_solve_iterations = 0;
 
-        // SCOPE NOTE (T8.3): the remaining apply/spmv entries of the solve path —
-        // only the *global*-preconditioner branch of `apply_preconditioner` is left
-        // to them (T5.4b defined the local fan-out + the copy fallback).  The
+        // SCOPE NOTE (T8.3): the reference's *first* step is the fan-out to the
+        // *global* preconditioner (plan 13).  The local fan-out below and the
+        // `z <- r` copy fallback are T5.4b's and are what `LinearPCG` uses.
         // `cudaStream_t` parameters map onto the port's `lud::LStream*`.
         void apply_preconditioner(lla::LDenseVectorView<Float>  z,
                                   lla::LCDenseVectorView<Float> r,
@@ -459,13 +493,12 @@ class GlobalLinearSystem : public SimSystem
                       lud::LBufferView<Float>       d_dot,
                       lud::LStream*                 stream = nullptr);
 
-        // SCOPE NOTE (T8.3): data pointers of the assembled matrix buffers
-        // (row/col/value), used by the FusedPCG CUDA-graph validity key.  The
-        // reference's body is `bcoo_A.cview().{row_indices,col_indices,values()}.data()`
-        // — a raw device pointer, which a buffer DSL does not expose (cookbook
-        // §7.9, T3.1's "no raw element pointers"); it needs the graph-validity
-        // reformulation (a generation/epoch key) that T8.3 owns.  Declared, not
-        // defined.
+        /// The reference's FusedPCG graph-validity key
+        /// (`{row_indices.data(), col_indices.data(), values.data()}`), kept because
+        /// it is public surface, but an **identity token** here: a buffer DSL has no
+        /// raw element pointer (cookbook §7.9) and there is no graph to key (plan
+        /// §3.3(3)).  The two container addresses it returns are stable for the
+        /// lifetime of the `Impl`; nothing may depend on their value.
         std::array<const void*, 3> matrix_data_ptrs() const;
 
 
@@ -492,6 +525,13 @@ class GlobalLinearSystem : public SimSystem
     void  compute_gradient(ComputeGradientInfo& info);
 
     lla::LinearSystemContext& ctx() noexcept { return m_impl.ctx; }
+
+    /// The assembled system / solver slot / `last_solve_iterations` live in `m_impl`.
+    ///
+    /// DEVIATION (T8.3a-2): public so the solve chain is reachable from a test (see
+    /// the file header — same reasoning as `init()`'s T5.4a deviation, and the
+    /// friend list stays the reference's).
+    Impl& impl() noexcept { return m_impl; }
 
   protected:
     void do_build() override;

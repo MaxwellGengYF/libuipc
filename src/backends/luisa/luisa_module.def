@@ -7,7 +7,7 @@
 ; auto-generated list exceeded MSVC's 65535-export ceiling -> LNK1189).
 ;
 ; Contents: the module's C API + every symbol the in-tree consumers import from it.
-; 534 entries, generated from 1 consumer(s).
+; 544 entries, generated from 1 consumer(s).
 ; ---------------------------------------------------------------------------
 EXPORTS
     ??0?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
@@ -108,6 +108,7 @@ EXPORTS
     ?compute_feasible_step@Impl@GlobalContactManager@luisa@backend@uipc@@QEAANXZ
     ?compute_gradient@GlobalLinearSystem@luisa@backend@uipc@@QEAAXAEAVComputeGradientInfo@1234@@Z
     ?compute_vertex_bounding_box@Impl@GlobalVertexManager@luisa@backend@uipc@@QEAA?AV?$AlignedBox@M$02@Eigen@@XZ
+    ?connect@BuildInfo@LocalPreconditioner@luisa@backend@uipc@@QEAAXPEAVDiagLinearSubsystem@345@@Z
     ?constitution_info@BaseInfo@FEM3DConstitution@luisa@backend@uipc@@QEBAAEBVConstitutionInfo@FiniteElementMethod@345@XZ
     ?contact_element_ids@BaseInfo@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@345@XZ
     ?contact_element_ids@BaseInfo@VertexHalfPlaneTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@345@XZ
@@ -193,6 +194,7 @@ EXPORTS
     ?do_build@InterAffineBodyConstitution@luisa@backend@uipc@@EEAAXXZ
     ?do_build@InterAffineBodyConstraint@luisa@backend@uipc@@EEAAXXZ
     ?do_build@JointDofReporter@luisa@backend@uipc@@EEAAXXZ
+    ?do_build@LocalPreconditioner@luisa@backend@uipc@@EEAAXXZ
     ?do_build@NewtonToleranceChecker@luisa@backend@uipc@@UEAAXXZ
     ?do_build@OffDiagLinearSubsystem@luisa@backend@uipc@@EEAAXXZ
     ?do_build@SimplexTrajectoryFilter@luisa@backend@uipc@@EEAAXXZ
@@ -278,6 +280,7 @@ EXPORTS
     ?do_try_recover@SimplexTrajectoryFilter@luisa@backend@uipc@@MEAA_NAEAVRecoverInfo@ISimSystem@34@@Z
     ?dof_count@DiagLinearSubsystem@luisa@backend@uipc@@QEBAHXZ
     ?dof_count@GlobalLinearSystem@luisa@backend@uipc@@QEBA_KXZ
+    ?dof_count@LocalPreconditionerAssemblyInfo@GlobalLinearSystem@luisa@backend@uipc@@QEBA_KXZ
     ?dof_offset@DiagLinearSubsystem@luisa@backend@uipc@@QEBAHXZ
     ?dot_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YANAEAVLStream@3456@AEBV?$LBufferView@N@3456@1AEAU?$LinearReductionStorage@N@123456@@Z
     ?dt@BaseInfo@Codim1DConstitution@luisa@backend@uipc@@QEBANXZ
@@ -371,8 +374,10 @@ EXPORTS
     ?indices@BaseInfo@FEM3DConstitution@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$03@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
     ?init@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?init@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
+    ?init@LocalPreconditioner@luisa@backend@uipc@@EEAAXXZ
     ?init@Runtime@luisa_device@luisa@backend@uipc@@QEAAXV?$basic_string_view@DU?$char_traits@D@std@@@std@@0@Z
     ?init_matrix@MASPreconditionerEngine@luisa@backend@uipc@@QEAAXXZ
+    ?init_message@linear_pcg_detail@luisa@backend@uipc@@YA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_K0NNN@Z
     ?init_neighbor@MASPreconditionerEngine@luisa@backend@uipc@@QEAAXHHHV?$span@$$CBI$0?0@std@@00V?$span@$$CBH$0?0@6@1@Z
     ?initialized@Runtime@luisa_device@luisa@backend@uipc@@QEBA_NXZ
     ?instance@Runtime@luisa_device@luisa@backend@uipc@@SAAEAV12345@XZ
@@ -381,6 +386,7 @@ EXPORTS
     ?is_diag@DyTopoClassifyInfo@luisa@backend@uipc@@QEBA_NXZ
     ?is_empty@DyTopoClassifyInfo@luisa@backend@uipc@@QEBA_NXZ
     ?is_valid@ISimSystem@backend@uipc@@QEBA_NXZ
+    ?iter_message@linear_pcg_detail@luisa@backend@uipc@@YA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_K00NNN@Z
     ?kappa_lower_bound@GlobalContactManager@luisa@backend@uipc@@QEBANXZ
     ?kappa_upper_bound@GlobalContactManager@luisa@backend@uipc@@QEBANXZ
     ?last_solve_iterations@GlobalLinearSystem@luisa@backend@uipc@@QEBA_KXZ
@@ -389,6 +395,7 @@ EXPORTS
     ?main_stream@luisa_device@luisa@backend@uipc@@YAAEAVStream@compute@2@XZ
     ?make_abd_dyadic_mass@luisa@backend@uipc@@YA?AUABDJacobiDyadicMass@123@NAEBV?$Matrix@N$02$00$0A@$02$00@Eigen@@AEBV?$Matrix@N$02$02$0A@$02$02@6@@Z
     ?mass_norm@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAANXZ
+    ?matrix_data_ptrs@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEBA?AV?$array@PEBX$02@std@@XZ
     ?max_iter@LineSearcher@luisa@backend@uipc@@QEBA_KXZ
     ?name@ISimSystem@backend@uipc@@QEBA?AV?$basic_string_view@DU?$char_traits@D@std@@@std@@XZ
     ?norm_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAMAEAVLStream@3456@AEBV?$LBufferView@M@3456@AEAU?$LinearReductionStorage@M@123456@@Z
@@ -452,8 +459,11 @@ EXPORTS
     ?shape_energy_hessian@luisa@backend@uipc@@YA?AV?$Matrix@N$08$08$0A@$08$08@Eigen@@AEBV?$Matrix@N$0M@$00$0A@$0M@$00@5@@Z
     ?shape_energy_hessian@luisa@backend@uipc@@YAXAEBV?$Matrix@N$0M@$00$0A@$0M@$00@Eigen@@AEAV?$Matrix@N$02$02$0A@$02$02@5@11111@Z
     ?shutdown@Runtime@luisa_device@luisa@backend@uipc@@QEAAXXZ
+    ?solve_linear_system@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?sort_index_pairs_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXAEAVLStream@3456@AEBV?$LBufferView@H@3456@11_KIAEAUSortScratch@23456@@Z
     ?sort_index_pairs_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXAEAVLStream@3456@AEBV?$LBufferView@_K@3456@1AEBV?$LBufferView@H@3456@_KIAEAUSortScratch@23456@@Z
+    ?spmv@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXNV?$DenseVectorViewT@$00NUbuffers@storage@linalg@luisa_device@luisa@backend@uipc@@$0A@@linalg@luisa_device@345@NV?$DenseVectorViewT@$0A@NUbuffers@storage@linalg@luisa_device@luisa@backend@uipc@@$0A@@78345@@Z
+    ?spmv_dot@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXV?$DenseVectorViewT@$00NUbuffers@storage@linalg@luisa_device@luisa@backend@uipc@@$0A@@linalg@luisa_device@345@V?$DenseVectorViewT@$0A@NUbuffers@storage@linalg@luisa_device@luisa@backend@uipc@@$0A@@78345@V?$LBufferView@N@8345@PEAVLStream@8345@@Z
     ?step_forward@Impl@GlobalVertexManager@luisa@backend@uipc@@QEAAXN@Z
     ?stream@AtomicCountingLBVH@luisa@backend@uipc@@AEAAAEAVLStream@luisa_device@234@XZ
     ?stream@LLinearSystemContext@linalg@luisa_device@luisa@backend@uipc@@QEAAAEAVLStream@3456@XZ

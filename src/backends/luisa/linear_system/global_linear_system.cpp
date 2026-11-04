@@ -3,6 +3,7 @@
 #include <linear_system/diag_linear_subsystem.h>
 #include <linear_system/off_diag_linear_subsystem.h>
 #include <linear_system/local_preconditioner.h>
+#include <linear_system/iterative_solver.h>
 #include <uipc/common/range.h>
 #include <uipc/common/enumerate.h>
 #include <uipc/common/log.h>
@@ -15,16 +16,28 @@
 * See the big scope note in global_linear_system.h for the exact now/defer split.
 * Everything below is the reference's
 * src/backends/cuda/linear_system/global_linear_system.cu minus:
-*   - solve(), _dump_A_b(), _dump_x()  (the debug/UDA path; they live next to
+*   - solve(), _dump_A_b(), _dump_x()  (the debug/dump path; they live next to
 *     solve()'s `need_debug_dump` branch and drag in <utils/matrix_market.h> +
-*     BackendPathTool -- T8.3),
-*   - Impl::solve_linear_system(), Impl::apply_preconditioner()'s global branch,
-*     Impl::spmv(), Impl::spmv_dot(), matrix_data_ptrs()  (T8.3: they need
-*     IterativeSolver, GlobalPreconditioner, the CUDA-graph validity key),
-*   - the `triplet_count_dev = ...` upload in `build_linear_system()` (its only
-*     consumer is the graph-stable spmv_dot).
-* All of those are declared-but-undefined in the header, each with a
-* `SCOPE NOTE (T8.3)`.
+*     BackendPathTool -- plan 11),
+*   - Impl::apply_preconditioner()'s *global* branch (plan 13),
+*   - `matrix_data_ptrs()`'s raw-pointer body (it is an identity token here:
+*     there is no graph to key, plan §3.3(3)).
+* The remaining declared-but-undefined entries are listed at the end of this file
+* under `SCOPE NOTE (T8.3 → plan 11)`.
+*
+* T8.3a-2 — THE SOLVER SUBSTRATE IS LIVE (the seam agreed with plan 11, research §4.3)
+* ------------------------------------------------------------------------------------
+* `IterativeSolver`'s utility forwards dereference `m_system->m_impl`, so defining
+* them ODR-uses these four bodies — they are the reference's, transcribed here now:
+*   * `Impl::solve_linear_system()` (global_linear_system.cu:437-447),
+*   * `Impl::spmv()`           (".cu:512-522"),
+*   * `Impl::spmv_dot()`       (".cu:524-537") — `matrix_data_ptrs()` is *not* a raw
+*     pointer triple here, see its body,
+*   * the `triplet_count_dev = (IndexT)bcoo_A.triplet_count();` upload in
+*     `build_linear_system()` (".cu:237"),
+*   * `add_solver()` (".cu:672-679"), a real `register_sim_system`.
+* `solve()` itself, the two dumps, `diag_norm`/`mass_norm` and
+* `add_preconditioner(GlobalPreconditioner*)` stay plan 11/13's.
 *
 * T8.3a-1 — THE OFF-DIAG SUBSYSTEM IS LIVE (the previous scope note is resolved)
 * -----------------------------------------------------------------------------
@@ -273,10 +286,10 @@ void GlobalLinearSystem::Impl::build_linear_system()
         Timer t{"Convert To BCOO"};
         converter.ge2sym(triplet_A);
         converter.convert(triplet_A, bcoo_A);
-        // SCOPE NOTE (T8.3): the reference uploads the nnz count here
-        //   `triplet_count_dev = (IndexT)bcoo_A.triplet_count();`
-        // for the graph-stable `spmv_dot` launch.  Its only consumer is the
-        // (deferred) spmv_dot, so the upload lands with T8.3.
+        // the reference's `triplet_count_dev = (IndexT)bcoo_A.triplet_count();`
+        // (global_linear_system.cu:237): `spmv_dot` reads the count *on the device*
+        // so the launch shape does not depend on it.
+        triplet_count_dev.copy_from(static_cast<IndexT>(bcoo_A.triplet_count()));
     }
 
     {
@@ -494,6 +507,22 @@ void GlobalLinearSystem::Impl::_assemble_preconditioner()
     }
 }
 
+void GlobalLinearSystem::Impl::solve_linear_system()
+{
+    Timer timer{"Solve Linear System"};
+
+    if(iterative_solver)
+    {
+        SolvingInfo info{this};
+        info.m_b = b.cview();
+        info.m_x = x.view();
+        iterative_solver->solve(info);
+
+        last_solve_iterations = info.m_iter_count;
+        logger::info("Iterative linear solver iteration count: {}", info.m_iter_count);
+    }
+}
+
 void GlobalLinearSystem::Impl::apply_preconditioner(lla::LDenseVectorView<Float>  z,
                                                     lla::LCDenseVectorView<Float> r,
                                                     lud::LCBufferView<IndexT>     converged,
@@ -544,6 +573,50 @@ void GlobalLinearSystem::Impl::apply_preconditioner(lla::LDenseVectorView<Float>
         // are copied, not the whole buffers).
         z_sub.buffer_view().copy_from(r_sub.buffer_view(), stream);
     }
+}
+
+void GlobalLinearSystem::Impl::spmv(Float                        a,
+                                    lla::LCDenseVectorView<Float> x,
+                                    Float                         b,
+                                    lla::LDenseVectorView<Float>  y)
+{
+    spmver.rbk_sym_spmv(a, bcoo_A.cview(), x, b, y);
+    // Just some debug options
+    //  * spmver.sym_spmv(a, bcoo_A.cview(), x, b, y); // Slightly slower
+    //  * spmver.cpu_sym_spmv(a, bcoo_A.cview(), x, b, y);  // Much slower
+}
+
+void GlobalLinearSystem::Impl::spmv_dot(lla::LCDenseVectorView<Float> x,
+                                        lla::LDenseVectorView<Float>  y,
+                                        lud::LBufferView<Float>       d_dot,
+                                        lud::LStream*                 stream)
+{
+    // The reference's `cudaStream_t stream = nullptr` means "the legacy default
+    // stream"; T3.1's primitives default to `default_blas_stream()` == the frame
+    // command list, which is what `nullptr` maps onto here.
+    auto& s = stream ? *stream : lla::default_blas_stream();
+    spmver.rbk_sym_spmv_dot(1.0,
+                            bcoo_A.cview(),
+                            x,
+                            0.0,
+                            y,
+                            d_dot,
+                            triplet_count_dev.cview(),
+                            bcoo_A.triplet_capacity(),
+                            s);
+}
+
+std::array<const void*, 3> GlobalLinearSystem::Impl::matrix_data_ptrs() const
+{
+    // DEVIATION (T8.3a-2, reported): the reference returns
+    //   {v.row_indices().data(), v.col_indices().data(), v.values().data()}
+    // — three raw device pointers, used only as the FusedPCG CUDA-graph validity
+    // key.  Neither exists here: a buffer DSL exposes no element pointer (cookbook
+    // §7.9), and there is no graph to key (plan §3.3(3)).  The returned triple is an
+    // identity token over the *containers*; nothing may depend on its value.
+    return {static_cast<const void*>(&bcoo_A),
+            static_cast<const void*>(&triplet_count_dev),
+            nullptr};
 }
 
 void GlobalLinearSystem::Impl::distribute_solution()
@@ -688,10 +761,7 @@ void GlobalLinearSystem::add_solver(IterativeSolver* solver)
 {
     check_state(SimEngineState::BuildSystems, "add_solver()");
     UIPC_ASSERT(solver != nullptr, "The solver should not be nullptr.");
-    // SCOPE NOTE (T8.3): `m_impl.iterative_solver.register_sim_system(*solver);`
-    // -- `SimSystemSlot<T>::register_sim_system` instantiates `T::is_valid()`, so
-    // it needs the (T8.3) complete `IterativeSolver` type.  The entry point is kept
-    // (the reference's public surface) and the registration lands with the solver.
+    m_impl.iterative_solver.register_sim_system(*solver);
 }
 
 void GlobalLinearSystem::add_preconditioner(LocalPreconditioner* preconditioner)
@@ -720,29 +790,24 @@ void GlobalLinearSystem::ComputeGradientInfo::buffer_view(DenseVectorView grad) 
 }
 
 // ===========================================================================
-// SCOPE NOTE (T8.3) — the solve path, deliberately left undefined here.
+// SCOPE NOTE (T8.3 → plan 11) — what is still deliberately undefined here.
 //
-// Declared in global_linear_system.h and not defined (nothing in T5.4a ODR-uses
-// them, which is exactly what keeps the interface complete without a stub):
+// Declared in global_linear_system.h and not defined (nothing ODR-uses them,
+// which is exactly what keeps the interface complete without a stub):
 //
 //   void  GlobalLinearSystem::solve();
-//   void  GlobalLinearSystem::Impl::solve_linear_system();
-//   void  GlobalLinearSystem::Impl::spmv(...);
-//   void  GlobalLinearSystem::Impl::spmv_dot(...);
-//   std::array<const void*, 3> GlobalLinearSystem::Impl::matrix_data_ptrs() const;
 //   void  GlobalLinearSystem::_dump_A_b();
 //   void  GlobalLinearSystem::_dump_x();
 //   Float GlobalLinearSystem::diag_norm();   // only called by SimEngine::do_advance
 //   Float GlobalLinearSystem::mass_norm();   // only called by SimEngine::do_advance
-//   void  GlobalLinearSystem::add_preconditioner(GlobalPreconditioner*);
+//   void  GlobalLinearSystem::add_preconditioner(GlobalPreconditioner*);  // plan 13
 //
-// T8.3 adds them together with IterativeSolver / LinearPCG (+ the CUDA-graph
-// fused variant, whose validity key is what matrix_data_ptrs() and
-// triplet_count_dev exist for), GlobalPreconditioner and the
-// SimEngine::do_init / do_advance wiring.
+// T8.3a-2 landed the solver substrate those need (`Impl::spmv`, `Impl::spmv_dot`,
+// `matrix_data_ptrs`, `Impl::solve_linear_system`, the `triplet_count_dev` upload
+// and a real `add_solver()`), together with `IterativeSolver` / `LinearPCG`.
 //
-// RESOLVED BY T8.3a-1: `add_subsystem(OffDiagLinearSubsystem*)` is now a real
+// RESOLVED BY T8.3a-1: `add_subsystem(OffDiagLinearSubsystem*)` is a real
 // registration, together with the three off-diag branches inside `Impl` (see the
-// file header).  The list above is therefore one entry shorter than before.
+// file header).
 // ===========================================================================
 }  // namespace uipc::backend::luisa
