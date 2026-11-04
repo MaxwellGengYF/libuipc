@@ -6214,6 +6214,153 @@ discipline, the iteration criterion — rules 2-5 below.
     per-frame number to compare; the per-solve counters that do not need the engine loop
     are asserted instead (`pcg_batching_counters`).
 
+### 7.41 Patterns established in T8.3a-3 (GlobalPreconditioner + the global assembly/apply branch)
+
+**Scope.** New `src/backends/luisa/linear_system/global_preconditioner.{h,cpp}` (the
+reference's class verbatim), a real `GlobalLinearSystem::add_preconditioner(
+GlobalPreconditioner*)`, the global branch of `Impl::_assemble_preconditioner()` and
+`Impl::apply_preconditioner()`, the comment sweep that retires the last
+`SCOPE NOTE (T8.3)` in that file, and one fix in shared code
+(`fem_diag_preconditioner_detail::diag_inv_row`, rule 9).  Test:
+`apps/tests/backends/luisa/luisa_global_preconditioner_test.cpp` (`[global_precond]`, 13
+cases = 11 + 2 SKIPs, 178 assertions).  Measured headline numbers: the Class-A apply gates
+are **exact** (`|z − M⁻¹r| = 0.000e+00` for both M's, and for the precedence test),
+`iters none 7 / local block-Jacobi 3 / global block-Jacobi 3` with
+`|x_global − x_local| = 0.000e+00`, and the apply path costs `syncs 0, uploads 0` inside
+an open frame list.
+
+1. **The apply precedence is "global first, *then* both" — not "global instead of the
+   local fan-out".** The plan (§3.3) says the opposite and the reference
+   (`global_linear_system.cu:466-510`) is the authority:
+   ```
+   if(global_preconditioner) { info{z=z, r=r, converged, stream}; global->apply(info); }  // whole vector
+   for(auto& p : local_preconditioners.view()) { ... p->apply(info); }                   // unconditional
+   if(!global_preconditioner) { /* z <- r for the windows with no local preconditioner */ }
+   ```
+   So a registered global preconditioner is applied to the *whole* `z`/`r` and the local
+   fan-out then overwrites its own dof windows, and `!global_preconditioner` gates **only**
+   the `z <- r` fallback.  Dropping the local loop, or reversing the order, still converges
+   — to a different trajectory — so this needs a *dedicated* pin and no existing tag can
+   catch it (`[pcg]`/`[mas_preconditioner]` are green under both perturbations, measured).
+   The pin is a fixture with a *different* M globally and a local preconditioner on one
+   window only: `z[w0] == the local result`, `z[w1] == the global result`, the two differ,
+   and window 1 must not keep its sentinel.  Assembly has the same shape
+   (`.cu:422-435`): global **first**, then the unconditional local loop, and nothing is
+   allocated in `_assemble_preconditioner` (`reserve_ratio` belongs to
+   `_update_subsystem_extent`, `.cu:305/:322`; a concrete preconditioner sizes its own
+   buffer in `do_assemble()`).
+
+2. **One optional `SimSystemSlot`, and a second registration silently overwrites.** The
+   plan asks for an assert with "the reference's message shape"; the reference has no
+   assert, `SimSystemSlot::register_sim_system()` has none either
+   (`src/backends/common/details/sim_system_slot.inl:7-13`: it only stores a system whose
+   `is_valid()` is true), and `src/backends/common/**` is read-only.  Inventing one would
+   be a new cross-backend divergence, so the test **pins reality**: two valid fixtures
+   register, the process does not abort, the slot holds the *last* one (record the
+   registration order in `do_build(BuildInfo&)`, do not guess it from build order), and
+   the surviving preconditioner still applies exactly.  The assert that *does* exist is the
+   reference's `UIPC_ASSERT(preconditioner != nullptr, "The preconditioner should not be
+   nullptr.")` — the same text as the local overload's, word for word.
+
+3. **No `check_state` on the two thunks.** `GlobalPreconditioner::assemble/apply` are
+   called from inside the solve, so the plan suggests
+   `check_state(SimEngineState::SolveGlobalLinearSystem, …)`.  The reference has nothing of
+   the kind, and it would make every standalone-`Impl` test abort: `UIPC_ASSERT`
+   `abort()`s the process (cookbook §7.22) and a test that drives
+   `impl().apply_preconditioner(...)` is in *no* engine state.  The single guard the class
+   keeps is the one in `add_preconditioner` (`SimEngineState::BuildSystems`).
+
+4. **The apply path must not synchronize, and `converged` must stay a device value.** The
+   PCG loop calls `apply_preconditioner` twice per iteration, so a host read anywhere in a
+   `do_apply` costs one `synchronize()` per call and changes `frame_stats.counters.syncs`
+   (a parity observation) as well as the profile.  Two habits make that testable:
+   `ApplyPreconditionerInfo::converged()` is an `LCBufferView<IndexT>` that the kernel reads
+   **once** for the whole dispatch (`$if(converged->read(0) == 0) { … }`), and every
+   `do_apply` only *records* into `frame_stream()`.  Measure it: open a list explicitly
+   (`frame_stream().begin()`, `reset_counters()`, `apply_preconditioner(...)`, `commit()`)
+   and assert `delta.syncs == 0 && delta.uploads == 0 && delta.direct_submits == 0`, with
+   **and without** a registered global preconditioner (measured: global `commands 1,
+   commits 1`, local `commands 2, commits 1` — one dispatch per dof window, the same
+   kernel).  Note `SimSystemSlot::operator bool()` does *not* call `lazy_init()`; it is a
+   plain null check, so `if(global_preconditioner)` is free and safe in the iteration.
+
+5. **A new test TU, not an extension.** Plan §5 phase 2/3 says "extend
+   `luisa_fem_preconditioner_test.cpp`".  That file's own gate is "104 assertions in 4 test
+   cases, unchanged"; adding cases makes "unchanged" untestable and destroys the
+   no-regression witness.  Both build systems glob `apps/tests/backends/luisa/*.cpp`, so a
+   new TU costs no build-file diff — the same reason the module side needed no
+   `CMakeLists.txt`/`xmake.lua` edit either (both glob `src/backends/luisa/**`).
+
+6. **The Class-A oracle is the *factored* routine, over the *assembled* BCOO.** Reuse
+   `fem_diag_preconditioner_detail::{diag_inv_row, diag_apply_row}` with
+   `storage::memory` views of the numbers that were actually assembled: read the matrix back
+   with `LBCOOMatrix::{copy_to_row_indices, copy_to_col_indices, copy_to_values}`, **after**
+   `frame_stream().synchronize()` (the assembly is still recorded in the open list — reading
+   first races it, cookbook §7.40 rule 3).  Then `Δ == 0` is the honest gate rather than a
+   tolerance, because host and device run the same code on the same inputs.  Two API
+   gotchas: the *container* spells the block extents `rows()`/`cols()` while the *view*
+   spells them `total_rows()`/`total_cols()`; and `storage::memory` views hand out **mutable**
+   handles (`from_handles(T* …)`), so an oracle that takes `const std::vector&` must copy
+   into a mutable vector first.
+
+7. **A synthetic global preconditioner must read the off-diagonal blocks, and the test must
+   prove it.** `blockdiag(A)` is the wrong fixture: it is what a *local* preconditioner
+   computes, so it cannot distinguish "the global branch ran" from "the local one did".
+   Two M's from the same assembled A, `M = blockdiag(A)` via `diag_inv_row(A, I, 0,
+   block_rows)` (segment offset 0 — the whole matrix, not a window) and
+   `M_ii = A_ii + Σ_{j≠i}|A_ij|` via a per-block-row gather (a `$while` over the triplet
+   table with a local counter, as in `aabb_reduce.cpp:185`), give
+   `max|z_rowsum − z_blockjacobi| = 2.917e-01` on a 14-triplet system while each matches its
+   own oracle at `0.000e+00`.  A wrong-but-SPD M (the same table rotated by one block — a
+   permutation, so the store is race-free) is the iteration-count control: `iters 5` against
+   `3`, and the solve still converges.
+
+8. **The strongest no-regression gate here is `[pcg]`, not `[mas_preconditioner]`.**
+   `[pcg]` drives `apply_preconditioner` twice per iteration with **no** global registered,
+   so it exercises the `!global_preconditioner` *true* branch on every iteration; it must
+   stay at `188 | 188 passed` / `12 | 10 passed | 2 skipped`.  Also re-check
+   `[mas_preconditioner]` 234/7 and `[fem_precond]` 104/4 (the local path is untouched —
+   the diff is additive).  Perturbation battery (each run, then reverted to an md5-identical
+   file): *delete the global branch* -> 8 new cases fail while `[mas_preconditioner]`,
+   `[fem_precond]` and `[pcg]` stay green; *move the global apply after the local loop* ->
+   exactly the precedence case fails and nothing else.
+
+9. **Transcribing a reference *guard* needs the reference's integer types, not just its
+   operators.** `diag_inv_row` (T5.4b) ported the reference's
+   `if(i >= fem_segment_count || j >= fem_segment_count) return;` faithfully *except* the
+   types: in the reference `i`, `j` are `IndexT` (signed) and `fem_segment_count` is a
+   `SizeT` (unsigned), so the usual arithmetic conversions make the comparison **unsigned**
+   and a triplet belonging to an *earlier* dof window (`i < 0`) is rejected.  Ported with
+   both sides `int32_t` the guard let it through, `i == j` then stored at a negative
+   `diag_inv` index, and the result was an out-of-bounds **device** write: silently wrong
+   `z` first, then an async `CUDA_ERROR_ILLEGAL_ADDRESS … cuda_stream.cpp:105` at the next
+   wait.  It is invisible while the preconditioned subsystem is the first one
+   (`fem_segment_offset == 0` — every pre-existing `[fem_precond]` case) and fires as soon
+   as two diag subsystems exist (ABD + FEM, or any two-window fixture).  **Rule: when a
+   reference guard mixes a signed value with an unsigned bound, write the four comparisons
+   out (`i >= 0 && j >= 0 && i < count && j < count`) instead of reproducing the
+   promotion.**  The fix is a two-line change in shared code and both `[fem_precond]` and
+   `[mas_preconditioner]` are unchanged by it.
+
+10. **New module symbols still go through the export list, and the bootstrap is the
+    linker's.** A test TU that derives from `GlobalPreconditioner` and calls
+    `AssemblyInfo::A()` / `LocalPreconditionerAssemblyInfo::dof_offset()` produced exactly
+    three `LNK2019`s (the vtable's `do_build` slot + the two inline-for-the-module
+    accessors).  The sequence is unchanged from §7.28/§7.40: append the linker's decorated
+    names, link, then let the generator rewrite the file
+    (`python scripts/luisa_module_def.py`, 543 -> 546 here) and confirm `--check` rc 0;
+    never hand-edit the committed list.
+
+11. **Two harness traps worth knowing.** (a) A typo in a test **tag** silently excludes the
+    case from the filtered run while `--list-tests` still counts it: the run reported
+    `12 | 10 passed | 2 skipped` for a file with 13 cases, and only the missing
+    `[t83g] <case>: N checks` line revealed it — always compare the filtered case count with
+    the `--list-tests` delta.  (b) `git checkout -- <file>` restores from the **index**
+    (i.e. HEAD here), so it *discards* an unfinished feature edit that was never staged —
+    for a perturbation experiment copy the file to `/tmp` first, perturb in place, then
+    copy it back and verify with `md5sum`, which is also the "reverted" evidence the review
+    checklist asks for.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

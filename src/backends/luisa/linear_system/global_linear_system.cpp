@@ -3,6 +3,7 @@
 #include <linear_system/diag_linear_subsystem.h>
 #include <linear_system/off_diag_linear_subsystem.h>
 #include <linear_system/local_preconditioner.h>
+#include <linear_system/global_preconditioner.h>
 #include <linear_system/iterative_solver.h>
 #include <uipc/common/range.h>
 #include <uipc/common/enumerate.h>
@@ -16,14 +17,30 @@
 * See the big scope note in global_linear_system.h for the exact now/defer split.
 * Everything below is the reference's
 * src/backends/cuda/linear_system/global_linear_system.cu minus:
-*   - solve(), _dump_A_b(), _dump_x()  (the debug/dump path; they live next to
-*     solve()'s `need_debug_dump` branch and drag in <utils/matrix_market.h> +
-*     BackendPathTool -- plan 11),
-*   - Impl::apply_preconditioner()'s *global* branch (plan 13),
-*   - `matrix_data_ptrs()`'s raw-pointer body (it is an identity token here:
-*     there is no graph to key, plan §3.3(3)).
+* - solve(), _dump_A_b(), _dump_x()  (the debug/dump path; they live next to
+* solve()'s `need_debug_dump` branch and drag in <utils/matrix_market.h> +
+* BackendPathTool -- plan 11),
+* - `matrix_data_ptrs()`'s raw-pointer body (it is an identity token here:
+* there is no graph to key, plan §3.3(3)).
 * The remaining declared-but-undefined entries are listed at the end of this file
 * under `SCOPE NOTE (T8.3 → plan 11)`.
+*
+* T8.3a-3 — THE GLOBAL-PRECONDITIONER BRANCH IS LIVE (the last SCOPE NOTE resolved)
+* ---------------------------------------------------------------------------------
+* `GlobalPreconditioner` exists (linear_system/global_preconditioner.{h,cpp}), so the
+* three places that were waiting for the complete type are the reference's again:
+*   * `add_preconditioner(GlobalPreconditioner*)` is a real
+*     `m_impl.global_preconditioner.register_sim_system(*preconditioner);`,
+*   * `_assemble_preconditioner()` fans out to the global preconditioner **first**
+*     (global_linear_system.cu:422-435) and then runs the local loop
+*     unconditionally,
+*   * `apply_preconditioner()` applies the global preconditioner to the **whole**
+*     z/r first, then the unconditional local fan-out, and `!global_preconditioner`
+*     gates **only** the `z <- r` fallback (.cu:466-510).
+* Nothing in the local path changed: [mas_preconditioner] and [fem_precond] are the
+* same numbers, with or without a registered global preconditioner (the slot is empty
+* in every scene of this backend — there is no shipped concrete implementation,
+* exactly like the reference).
 *
 * T8.3a-2 — THE SOLVER SUBSTRATE IS LIVE (the seam agreed with plan 11, research §4.3)
 * ------------------------------------------------------------------------------------
@@ -36,8 +53,7 @@
 *   * the `triplet_count_dev = (IndexT)bcoo_A.triplet_count();` upload in
 *     `build_linear_system()` (".cu:237"),
 *   * `add_solver()` (".cu:672-679"), a real `register_sim_system`.
-* `solve()` itself, the two dumps, `diag_norm`/`mass_norm` and
-* `add_preconditioner(GlobalPreconditioner*)` stay plan 11/13's.
+* `solve()` itself, the two dumps and `diag_norm`/`mass_norm` stay plan 11's.
 *
 * T8.3a-1 — THE OFF-DIAG SUBSYSTEM IS LIVE (the previous scope note is resolved)
 * -----------------------------------------------------------------------------
@@ -495,11 +511,17 @@ void GlobalLinearSystem::Impl::_assemble_linear_system()
 
 void GlobalLinearSystem::Impl::_assemble_preconditioner()
 {
-    // SCOPE NOTE (T8.3): the reference first fans out to the *global*
-    // preconditioner (`GlobalPreconditionerAssemblyInfo info{this};
-    // global_preconditioner->assemble(info);`).  `GlobalPreconditioner` is T8.3's
-    // type (forward-declared here, exactly as in the reference header); the slot
-    // stays declared and is empty in every scene of this backend.
+    // The reference's order (global_linear_system.cu:422-435): the *global*
+    // preconditioner is assembled FIRST, then the local fan-out runs
+    // unconditionally.  Nothing is allocated here and `reserve_ratio` is not used
+    // (`_update_subsystem_extent()` owns it, .cu:305/:322): a concrete global
+    // preconditioner sizes its own storage in `do_assemble()`.
+    if(global_preconditioner)
+    {
+        GlobalPreconditionerAssemblyInfo info{this};
+        global_preconditioner->assemble(info);
+    }
+
     for(auto&& preconditioner : local_preconditioners.view())
     {
         LocalPreconditionerAssemblyInfo info{this, preconditioner->m_subsystem->m_index};
@@ -531,14 +553,25 @@ void GlobalLinearSystem::Impl::apply_preconditioner(lla::LDenseVectorView<Float>
     auto diag_dof_counts  = diag_dof_offsets_counts.counts();
     auto diag_dof_offsets = diag_dof_offsets_counts.offsets();
 
-    // SCOPE NOTE (T8.3): the reference's *first* step is the fan-out to the
-    // *global* preconditioner:
-    //   ApplyPreconditionerInfo info{this};
-    //   info.m_z = z; info.m_r = r; info.m_converged = converged; info.m_stream = stream;
-    //   global_preconditioner->apply(info);
-    // `GlobalPreconditioner` is T8.3's type (forward-declared here, exactly as in
-    // the reference header), so it cannot be dereferenced yet; the slot stays
-    // declared and is empty in every scene of this backend.
+    // The reference's precedence (global_linear_system.cu:466-510), transcribed:
+    //  1) a registered *global* preconditioner is applied FIRST, to the whole
+    //     z/r, in place;
+    //  2) the local fan-out then runs UNCONDITIONALLY and overwrites its own dof
+    //     windows (it is *not* an alternative to the global one -- applying only
+    //     one of them yields a differently preconditioned, silently different
+    //     iteration);
+    //  3) `!global_preconditioner` gates ONLY the `z <- r` fallback below, i.e. a
+    //     registered global preconditioner is responsible for every dof it does
+    //     not leave to a local one.
+    if(global_preconditioner)
+    {
+        ApplyPreconditionerInfo info{this};
+        info.m_z         = z;
+        info.m_r         = r;
+        info.m_converged = converged;
+        info.m_stream    = stream;
+        global_preconditioner->apply(info);
+    }
 
     for(auto& preconditioner : local_preconditioners.view())
     {
@@ -553,25 +586,21 @@ void GlobalLinearSystem::Impl::apply_preconditioner(lla::LDenseVectorView<Float>
         preconditioner->apply(info);
     }
 
-    // The reference wraps the fallback in `if(!global_preconditioner)`.  The slot
-    // is *never* set in this port — its only writer is the T8.3
-    // `add_preconditioner(GlobalPreconditioner*)`, which is a no-op because the
-    // type does not exist yet (T5.1 rule 13) — so the guard is constant-true and
-    // the copy fallback always runs; spelling it out would instantiate
-    // `SimSystemSlot<GlobalPreconditioner>::operator bool()` on an incomplete type
-    // (measured C2027), exactly like `_assemble_preconditioner`'s global branch.
-    // For diag subsystems without local preconditioner, just copy r to z
-    for(auto i : no_precond_diag_subsystem_indices)
+    if(!global_preconditioner)
     {
-        auto offset = diag_dof_offsets[i];
-        auto count  = diag_dof_counts[i];
-        auto z_sub  = z.subview(offset, count);
-        auto r_sub  = r.subview(offset, count);
-        // the reference's `cuda_tool::BufferLaunch(stream).copy(z_sub.buffer_view(),
-        // r_sub.buffer_view())`: a device->device copy of the two *windowed*
-        // views (each LBufferView carries its own offset, so the subview windows
-        // are copied, not the whole buffers).
-        z_sub.buffer_view().copy_from(r_sub.buffer_view(), stream);
+        // For diag subsystems without local preconditioner, just copy r to z
+        for(auto i : no_precond_diag_subsystem_indices)
+        {
+            auto offset = diag_dof_offsets[i];
+            auto count  = diag_dof_counts[i];
+            auto z_sub  = z.subview(offset, count);
+            auto r_sub  = r.subview(offset, count);
+            // the reference's `cuda_tool::BufferLaunch(stream).copy(z_sub.buffer_view(),
+            // r_sub.buffer_view())`: a device->device copy of the two *windowed*
+            // views (each LBufferView carries its own offset, so the subview windows
+            // are copied, not the whole buffers).
+            z_sub.buffer_view().copy_from(r_sub.buffer_view(), stream);
+        }
     }
 }
 
@@ -774,9 +803,15 @@ void GlobalLinearSystem::add_preconditioner(LocalPreconditioner* preconditioner)
 void GlobalLinearSystem::add_preconditioner(GlobalPreconditioner* preconditioner)
 {
     check_state(SimEngineState::BuildSystems, "add_preconditioner()");
-    UIPC_ASSERT(preconditioner != nullptr, "The global preconditioner should not be nullptr.");
-    // SCOPE NOTE (T8.3): see `add_solver` / `add_subsystem(OffDiagLinearSubsystem*)`
-    // -- the registration needs the complete `GlobalPreconditioner` type.
+    // The reference's message (global_linear_system.cu:678-683) is the same text as
+    // the local overload's; the port matches it word for word.
+    UIPC_ASSERT(preconditioner != nullptr, "The preconditioner should not be nullptr.");
+    // One optional slot, not a collection: the reference allows at most one global
+    // preconditioner, and a second registration silently overwrites the first
+    // (`SimSystemSlot::register_sim_system()`, src/backends/common/details/
+    // sim_system_slot.inl:7-13).  Deliberately no assert here -- see the file-header
+    // note in global_preconditioner.cpp (research §7 R3).
+    m_impl.global_preconditioner.register_sim_system(*preconditioner);
 }
 
 void GlobalLinearSystem::ComputeGradientInfo::flags(ComponentFlags flags) noexcept
@@ -800,7 +835,6 @@ void GlobalLinearSystem::ComputeGradientInfo::buffer_view(DenseVectorView grad) 
 //   void  GlobalLinearSystem::_dump_x();
 //   Float GlobalLinearSystem::diag_norm();   // only called by SimEngine::do_advance
 //   Float GlobalLinearSystem::mass_norm();   // only called by SimEngine::do_advance
-//   void  GlobalLinearSystem::add_preconditioner(GlobalPreconditioner*);  // plan 13
 //
 // T8.3a-2 landed the solver substrate those need (`Impl::spmv`, `Impl::spmv_dot`,
 // `matrix_data_ptrs`, `Impl::solve_linear_system`, the `triplet_count_dev` upload
@@ -809,5 +843,10 @@ void GlobalLinearSystem::ComputeGradientInfo::buffer_view(DenseVectorView grad) 
 // RESOLVED BY T8.3a-1: `add_subsystem(OffDiagLinearSubsystem*)` is a real
 // registration, together with the three off-diag branches inside `Impl` (see the
 // file header).
+//
+// RESOLVED BY T8.3a-3: `add_preconditioner(GlobalPreconditioner*)` is a real
+// registration, and `_assemble_preconditioner()` / `apply_preconditioner()` have the
+// reference's global branch.  Nothing in this file is now "declared but undefined"
+// because of plan 13; the five above are plan 11's (the engine wiring + the dumps).
 // ===========================================================================
 }  // namespace uipc::backend::luisa

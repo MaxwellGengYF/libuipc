@@ -16,13 +16,13 @@
  * `_assemble_preconditioner` -> `solve_linear_system`).
  *
  * `solve()` needs `IterativeSolver` + `LinearPCG` (+ `LinearFusedPCG`/CUDA
- * graphs), `GlobalPreconditioner` and `CurrentFrameDiffDofReporter` — none of
- * which exist in this backend yet.  They are T8.3's task.  The port therefore
- * keeps the *whole public surface* and the *whole assembly/layout half*, and
- * leaves the solve path declared but **undefined**, each one marked
- * `SCOPE NOTE (T8.3)` below, so nothing is silently dropped (T5.1's rule 13:
- * never invent a placeholder type — an undefined member is fine as long as
- * nothing ODR-uses it).
+ * graphs) and `CurrentFrameDiffDofReporter` — none of which exist in this backend
+ * yet.  `GlobalPreconditioner` was on that list too and landed in T8.3a-3.  The
+ * missing solver-side types are T8.3's task.  The port therefore keeps the *whole
+ * public surface* and the *whole assembly/layout half*, and leaves the solve path
+ * declared but **undefined**, each one marked `SCOPE NOTE (T8.3)` below, so nothing
+ * is silently dropped (T5.1's rule 13: never invent a placeholder type — an
+ * undefined member is fine as long as nothing ODR-uses it).
  *
  * `OffDiagLinearSubsystem` WAS on that list until T8.3a-1: with
  * linear_system/off_diag_linear_subsystem.h complete, `Impl::init()`'s off-diag
@@ -58,15 +58,33 @@
  * each, and land here (not in plan 11): `spmv`, `spmv_dot`, `matrix_data_ptrs`,
  * `solve_linear_system`, plus the `triplet_count_dev` upload in
  * `build_linear_system()` and a real `add_solver()` registration.  Plan 11 still
- * owns `solve()`, `_dump_A_b()` / `_dump_x()`, `diag_norm()` / `mass_norm()`,
- * `add_preconditioner(GlobalPreconditioner*)`, the Matrix-Market port and the
- * engine wiring.
+ * owns `solve()`, `_dump_A_b()` / `_dump_x()`, `diag_norm()` / `mass_norm()`, the
+ * Matrix-Market port and the engine wiring; T8.3a-3 added
+ * `add_preconditioner(GlobalPreconditioner*)` and the global branch of
+ * `_assemble_preconditioner()` / `apply_preconditioner()` (paragraph below).
  *
  * `matrix_data_ptrs()` is deliberately an *identity token* here: the reference's
  * body returns three raw device pointers as the FusedPCG graph-validity key, and
  * neither exists on LuisaCompute (a buffer DSL exposes no element pointer, and
  * there is no graph to key — plan §3.3(3)).  It returns the addresses of the
  * `Impl`'s own container handles and nothing may depend on the value.
+ *
+ * T8.3a-3 — THE GLOBAL-PRECONDITIONER BRANCH IS LIVE (plan 13)
+ * ------------------------------------------------------------
+ * linear_system/global_preconditioner.{h,cpp} is the reference's class verbatim
+ * (`BuildInfo`, the three pure `do_*`, `do_build() final override` →
+ * `require<GlobalLinearSystem>()` → `do_build(info)` → `add_preconditioner(this)`,
+ * and the two private thunks with no `check_state`), so the three places that were
+ * waiting for the complete type are the reference's again: a real
+ * `add_preconditioner(GlobalPreconditioner*)` registration, the global fan-out
+ * **before** the local one in `_assemble_preconditioner()`, and in
+ * `apply_preconditioner()` the global apply over the **whole** z/r first, then the
+ * unconditional local fan-out, with `!global_preconditioner` gating **only** the
+ * `z <- r` fallback.  One optional `SimSystemSlot`, not a collection: a second
+ * registration silently overwrites the first (the reference has no assert either).
+ * There is no shipped concrete global preconditioner (there is none in the
+ * reference either) and no config key for one; a scene selects one by *registering*
+ * it.
  *
  * DEFERRED TO T8.3 plan 11 (declared here, not defined — `SCOPE NOTE (T8.3)`)
  * * `do_build()` — only defined as an empty body, because it is a pure-virtual
@@ -90,7 +108,7 @@
  * fan-out plus the no-local-preconditioner `z <- r` copy fallback.  It was under
  * this file's SCOPE NOTE (T8.3) because T5.4a had no `LocalPreconditioner`
  * implementation to call and no `LocalPreconditioner` static apply helper; the
- * *global* preconditioner branch inside it stays deferred (that type is T8.3's).
+ * *global* preconditioner branch inside it landed in T8.3a-3 (paragraph above).
  *
  * Container mapping onto T3.1/T3.3/T3.4 (cookbook §7.9/§7.11/§7.12)
  * ----------------------------------------------------------------
@@ -118,8 +136,11 @@
  * extent -> assemble -> convert -> `_assemble_preconditioner()` chain) and
  * `apply_preconditioner()` on such an instance, once a `FEMDiagPreconditioner` is
  * registered in it;
- * solver-only: the `solve()` chain (plan 11), the *global*-preconditioner branch of
- * `apply_preconditioner` (plan 13), the debug dump and the CUDA-graph validity key.
+ * solver-only: the `solve()` chain (plan 11), the debug dump and the CUDA-graph
+ * validity key.  Since T8.3a-3 the *global*-preconditioner branch of
+ * `apply_preconditioner` is reachable too: register a `GlobalPreconditioner` in the
+ * scene and drive `impl().apply_preconditioner(...)` (no engine state is required,
+ * which is why the thunks carry no `check_state`).
  *
  * DEVIATION (T5.4a, reported): `init()` is declared **public** here.  The
  * reference keeps it private + `friend class SimEngine`, because only
@@ -453,7 +474,10 @@ class GlobalLinearSystem : public SimSystem
         SimSystemSlotCollection<OffDiagLinearSubsystem> off_diag_subsystems;
         SimSystemSlotCollection<LocalPreconditioner>    local_preconditioners;
 
-        SimSystemSlot<IterativeSolver>      iterative_solver;
+        SimSystemSlot<IterativeSolver> iterative_solver;
+        // One optional slot, not a collection: the reference allows at most one
+        // global preconditioner, and `register_sim_system()` overwrites silently
+        // (src/backends/common/details/sim_system_slot.inl:7-13).  T8.3a-3.
         SimSystemSlot<GlobalPreconditioner> global_preconditioner;
 
         // Linear System
@@ -475,9 +499,10 @@ class GlobalLinearSystem : public SimSystem
         bool  empty_system          = true;
         SizeT last_solve_iterations = 0;
 
-        // SCOPE NOTE (T8.3): the reference's *first* step is the fan-out to the
-        // *global* preconditioner (plan 13).  The local fan-out below and the
-        // `z <- r` copy fallback are T5.4b's and are what `LinearPCG` uses.
+        // The reference's precedence (global_linear_system.cu:466-510): the *global*
+        // preconditioner is applied first, over the whole z/r; the local fan-out then
+        // runs unconditionally and overwrites its own dof windows; and
+        // `!global_preconditioner` gates only the `z <- r` fallback.
         // `cudaStream_t` parameters map onto the port's `lud::LStream*`.
         void apply_preconditioner(lla::LDenseVectorView<Float>  z,
                                   lla::LCDenseVectorView<Float> r,

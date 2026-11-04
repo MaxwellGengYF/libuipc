@@ -7,7 +7,7 @@
 ; auto-generated list exceeded MSVC's 65535-export ceiling -> LNK1189).
 ;
 ; Contents: the module's C API + every symbol the in-tree consumers import from it.
-; 544 entries, generated from 1 consumer(s).
+; 547 entries, generated from 1 consumer(s).
 ; ---------------------------------------------------------------------------
 EXPORTS
     ??0?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
@@ -30,6 +30,7 @@ EXPORTS
     ??1LLinearSystemContext@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
     ??1LStream@luisa_device@luisa@backend@uipc@@QEAA@XZ
     ??A?$OffsetCountCollection@H@luisa@backend@uipc@@QEBA?AV?$tuple@HH@std@@_K@Z
+    ?A@AssemblyInfo@GlobalLinearSystem@luisa@backend@uipc@@QEBA?AV?$TripletMatrixViewT@$00N$02$02Ubuffers@storage@linalg@luisa_device@luisa@backend@uipc@@@linalg@luisa_device@345@XZ
     ?Dm_invs@BaseInfo@FEM3DConstitution@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LMat@N$02$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
     ?EEs@FilterActiveInfo@SimplexTrajectoryFilter@luisa@backend@uipc@@QEAAXV?$LBufferView@U?$LVec@H$03@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@@Z
     ?EEs@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$03@math@luisa_device@luisa@backend@uipc@@@luisa_device@234@XZ
@@ -191,6 +192,7 @@ EXPORTS
     ?do_build@FiniteElementConstitution@luisa@backend@uipc@@EEAAXXZ
     ?do_build@FiniteElementExternalForceReporter@luisa@backend@uipc@@EEAAXXZ
     ?do_build@FiniteElementExtraConstitution@luisa@backend@uipc@@EEAAXXZ
+    ?do_build@GlobalPreconditioner@luisa@backend@uipc@@EEAAXXZ
     ?do_build@InterAffineBodyConstitution@luisa@backend@uipc@@EEAAXXZ
     ?do_build@InterAffineBodyConstraint@luisa@backend@uipc@@EEAAXXZ
     ?do_build@JointDofReporter@luisa@backend@uipc@@EEAAXXZ
@@ -282,6 +284,7 @@ EXPORTS
     ?dof_count@GlobalLinearSystem@luisa@backend@uipc@@QEBA_KXZ
     ?dof_count@LocalPreconditionerAssemblyInfo@GlobalLinearSystem@luisa@backend@uipc@@QEBA_KXZ
     ?dof_offset@DiagLinearSubsystem@luisa@backend@uipc@@QEBAHXZ
+    ?dof_offset@LocalPreconditionerAssemblyInfo@GlobalLinearSystem@luisa@backend@uipc@@QEBA_KXZ
     ?dot_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YANAEAVLStream@3456@AEBV?$LBufferView@N@3456@1AEAU?$LinearReductionStorage@N@123456@@Z
     ?dt@BaseInfo@Codim1DConstitution@luisa@backend@uipc@@QEBANXZ
     ?dt@BaseInfo@Codim2DConstitution@luisa@backend@uipc@@QEBANXZ

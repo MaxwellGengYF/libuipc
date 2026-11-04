@@ -50,16 +50,29 @@ using DiagInvHostMemoryView = lla::LDenseVectorHostMemoryView<LMatrix3x3>;
 template <typename I, typename M, typename P>
 struct DiagInvRow
 {
-    I index{};        // the reference's `i` (the *local* block index)
-    M value{};        // eigen::inverse(H3x3)
-    P in_window{};    // !(i >= fem_segment_count || j >= fem_segment_count)
+    I index{}; // the reference's `i` (the *local* block index)
+    M value{}; // eigen::inverse(H3x3)
+    P in_window{}; // 0 <= i, j && i, j < fem_segment_count (see diag_inv_row)
     P is_diagonal{};  // i == j
 };
 
 /// `FEMDiagPreconditioner_do_assemble_kernel`'s row body (see the file header).
+///
+/// T8.3a-3 fix: the reference's guard is `if(i >= fem_segment_count || j >=
+/// fem_segment_count) return;` where `i`/`j` are `IndexT` (signed) but
+/// `fem_segment_count` is a `SizeT` (unsigned), so the comparison *promotes `i` to
+/// unsigned* and a triplet from a window that starts after this one (i.e. a
+/// negative `i`) is rejected.  Ported with a signed comparison the guard let those
+/// through, and `i == j` then stored at a negative `diag_inv` index — an
+/// out-of-bounds *device* write.  It cannot fire while the preconditioned subsystem
+/// is the first one (`fem_segment_offset == 0`, every existing [fem_precond] case),
+/// but it does as soon as two diag subsystems exist (e.g. ABD + FEM, or the two
+/// windows of luisa_global_preconditioner_test.cpp), where it is an async
+/// `CUDA_ERROR_ILLEGAL_ADDRESS`.  Written out as the four explicit comparisons the
+/// promotion in the reference amounts to.
 template <typename TripletView, typename I, typename OffsetT>
-[[nodiscard]] inline auto diag_inv_row(TripletView     triplet,
-                                       const I&        triplet_index,
+[[nodiscard]] inline auto diag_inv_row(TripletView triplet,
+                                       const I& triplet_index,
                                        const OffsetT&  fem_segment_offset,
                                        const OffsetT&  fem_segment_count) noexcept
 {
@@ -67,16 +80,15 @@ template <typename TripletView, typename I, typename OffsetT>
     auto i = t.row_index - fem_segment_offset;
     auto j = t.col_index - fem_segment_offset;
 
+    // the reference's unsigned promotion: `i >= 0 && i < count` (see above)
+    auto in_window = scalar_detail::pred_and(
+        i >= 0, j >= 0, i < fem_segment_count, j < fem_segment_count);
+
     using I_ = std::remove_cvref_t<decltype(i)>;
     using M_ = std::remove_cvref_t<decltype(lps::inverse(t.value))>;
-    using P_ = std::remove_cvref_t<decltype(scalar_detail::pred_and(
-        i < fem_segment_count, j < fem_segment_count))>;
+    using P_ = std::remove_cvref_t<decltype(in_window)>;
 
-    return DiagInvRow<I_, M_, P_>{
-        i,
-        lps::inverse(t.value),
-        scalar_detail::pred_and(i < fem_segment_count, j < fem_segment_count),
-        i == j};
+    return DiagInvRow<I_, M_, P_>{i, lps::inverse(t.value), in_window, i == j};
 }
 
 /// Read a 3x3 block out of a view: the `storage::memory` flavour already hands out
