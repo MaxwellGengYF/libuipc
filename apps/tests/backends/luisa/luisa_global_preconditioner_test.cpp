@@ -1133,7 +1133,9 @@ void with_world(const RunOptions& options, Fn&& fn)
     REQUIRE(T83gProbe::chain1 != nullptr);
 
     auto* gls = T83gProbe::gls;
-    gls->init();
+    // T8.3b: `SimEngine::init_scene()` calls `GlobalLinearSystem::init()`, so the
+    // layout is already done; calling it again would append duplicate entries to
+    // `no_precond_diag_subsystem_indices` (the `z <- r` fallback set).
 
     fn(*gls, gls->impl());
 }
@@ -1798,8 +1800,10 @@ TEST_CASE("gpc_from_cuda_A", "[luisa][global_precond]")
     SKIP(
         "no CUDA ground truth: --backend_cuda=y fails at configure time "
         "(src/backends/cuda/components.lua:86: unknown interface: raise()), so there is no "
-        "CUDA run to dump A.mtx/b.mtx, and this backend has no _dump_A_b / matrix_market "
-        "writer yet (plan 11). The Class-A gate is covered in-process instead: "
+        "CUDA run to dump A.mtx/b.mtx. The dump path itself exists since T8.3b "
+        "(GlobalLinearSystem::_dump_A_b -> utils/matrix_market.h, exercised by "
+        "[luisa][mtx] and [luisa][solve]), so only the cross-backend comparison is "
+        "missing. The Class-A gate is covered in-process instead: "
         "gpc_apply_classA_blockjacobi compares z with the factored "
         "fem_diag_preconditioner_detail::{diag_inv_row, diag_apply_row} over the "
         "*assembled* BCOO, Δ == 0.");

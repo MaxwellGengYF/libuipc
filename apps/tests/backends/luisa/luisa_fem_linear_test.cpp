@@ -1517,9 +1517,10 @@ TEST_CASE("fem_linear_layout", "[luisa][fem_linear]")
         // the subsystem's identity (issue #271's uid rule)
         CHECK(T54Probe::femsub->uid() == 1ull);
 
-        // the port's `init()` is public on purpose (see the header's deviation
-        // note): it is the dof-layout entry `SimEngine::do_init` calls (T8.4)
-        T54Probe::gls->init();
+        // T8.3b: `SimEngine::init_scene()` calls `GlobalLinearSystem::init()` (the
+        // reference's position, sim_engine_do_init.cu:130-132), so the dof layout is
+        // already done here; a second manual call would also re-run every reporter's
+        // `do_init`.
         CHECK(T54Probe::gls->dof_count() == 24u);
         CHECK(T54Probe::femsub->dof_offset() == 0);
         CHECK(T54Probe::femsub->dof_count() == 24);
@@ -1544,7 +1545,7 @@ TEST_CASE("fem_linear_layout", "[luisa][fem_linear]")
         CHECK(dofs[1].second == 12);
 
         // the mock reporter is enabled here (its marker attribute is present):
-        // its init() ran exactly once through this scene's `gls->init()`
+        // its init() ran exactly once, through the engine's init_scene() (T8.3b)
         CHECK(T54LinearReporter::enabled);
         CHECK(T54LinearReporter::init_count == 1);
 
@@ -1634,7 +1635,7 @@ TEST_CASE("fem_linear_reporters", "[luisa][fem_linear]")
     CHECK(T54Probe::gls->last_solve_iterations() == 0u);
 
     // --- the layout (one body) + the reporter chain -------------------------
-    T54Probe::gls->init();
+    // (the engine's init_scene() already ran `GlobalLinearSystem::init()` -- T8.3b)
     CHECK(T54Probe::gls->dof_count() == 24u);
     CHECK(T54Probe::femsub->dof_offset() == 0);
     CHECK(T54Probe::femsub->dof_count() == 24);

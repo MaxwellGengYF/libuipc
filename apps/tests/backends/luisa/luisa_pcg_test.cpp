@@ -845,7 +845,8 @@ void with_world(const RunOptions& options, Fn&& fn)
     REQUIRE(T82PcgProbe::chain != nullptr);
 
     auto* gls = T82PcgProbe::gls;
-    gls->init();
+    // T8.3b: `SimEngine::init_scene()` calls `GlobalLinearSystem::init()` (the
+    // reference's position), so the dof layout is already done here.
 
     fn(*gls, gls->impl());
 }
@@ -1566,9 +1567,10 @@ TEST_CASE("pcg_from_mtx", "[luisa][pcg]")
     SKIP(
         "cuda backend unavailable: --backend_cuda=y fails at configure time "
         "(src/backends/cuda/components.lua:86: unknown interface: raise()), so there is "
-        "no CUDA ground-truth A.mtx/b.mtx; and this backend has no _dump_A_b / "
-        "matrix_market writer yet (plan 11 phase 2/4). The Class-B residual-curve gate "
-        "is covered in-process by pcg_converges_vs_host against a host transcription of "
+        "no CUDA ground-truth A.mtx/b.mtx. The dump path itself exists since T8.3b "
+        "(GlobalLinearSystem::_dump_A_b/_dump_x -> utils/matrix_market.h, exercised by "
+        "[luisa][mtx] and [luisa][solve]). The Class-B residual-curve gate is covered "
+        "in-process by pcg_converges_vs_host against a host transcription of "
         "linear_pcg.cu:234-320.");
 }
 

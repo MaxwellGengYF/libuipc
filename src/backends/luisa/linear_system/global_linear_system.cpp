@@ -9,7 +9,14 @@
 #include <uipc/common/enumerate.h>
 #include <uipc/common/log.h>
 #include <uipc/common/timer.h>
+// T8.3b: the debug dump path — the reference's `engine().frame()` /
+// `engine().newton_iter()` (needs the complete `SimEngine`) and the
+// `BackendPathTool` workspace layout, plus the host-side Matrix Market writer.
+#include <sim_engine.h>
+#include <backends/common/backend_path_tool.h>
+#include <utils/matrix_market.h>
 #include <algorithm>
+#include <vector>
 
 /*************************************************************************************************
 * T5.4a — GlobalLinearSystem, the assembly/layout half.
@@ -22,8 +29,9 @@
 * BackendPathTool -- plan 11),
 * - `matrix_data_ptrs()`'s raw-pointer body (it is an identity token here:
 * there is no graph to key, plan §3.3(3)).
-* The remaining declared-but-undefined entries are listed at the end of this file
-* under `SCOPE NOTE (T8.3 → plan 11)`.
+* T8.3b landed the first of those three (plus `do_build()`'s config read and the two
+* norm wrappers), so this file is the reference's again, statement for statement, with
+* the two documented deviations listed at the end of the file.
 *
 * T8.3a-3 — THE GLOBAL-PRECONDITIONER BRANCH IS LIVE (the last SCOPE NOTE resolved)
 * ---------------------------------------------------------------------------------
@@ -96,13 +104,122 @@ void GlobalLinearSystem::init()
 
 void GlobalLinearSystem::do_build()
 {
-    // SCOPE NOTE (T8.3): the reference's whole body is
-    //   auto attr = world().scene().config().find<IndexT>("extras/debug/dump_linear_system");
-    //   m_impl.need_debug_dump = attr ? attr->view()[0] : false;
-    // i.e. the *debug dump* switch, whose only consumer is solve()'s
-    // `_dump_A_b()`/`_dump_x()` pair.  `do_build()` must still exist (it is a
-    // pure-virtual override and the system has to be constructible), so it is a
-    // no-op here and the config read lands with the dump path in T8.3.
+    // The reference's whole body (global_linear_system.cu:30-37): the *debug dump*
+    // switch.  Its only consumer is solve()'s `_dump_A_b()`/`_dump_x()` pair, which
+    // T8.3b lands together with it.
+    auto dump_linear_system_attr =
+        world().scene().config().find<IndexT>("extras/debug/dump_linear_system");
+
+    m_impl.need_debug_dump =
+        dump_linear_system_attr ? dump_linear_system_attr->view()[0] != 0 : false;
+
+    // DEVIATION (T8.3b, reported): `Impl::debug_dump_path` stays dead, exactly as in
+    // the reference (`global_linear_system.h:354-355`; only `need_debug_dump` is ever
+    // read, `.cu:35/82/87`).  The path is re-derived from `BackendPathTool` inside
+    // the two dumps, which is what the reference does too.
+}
+
+void GlobalLinearSystem::_dump_A_b()
+{
+    // The reference's path derivation (.cu:39-56), not a hand-built one:
+    //   <workspace>/debug/<source file relative to src/backends>/
+    // which resolves to <workspace>/debug/luisa/linear_system/global_linear_system.cpp/
+    // (`BackendPathTool::workspace()`, src/backends/common/backend_path_tool.cpp:16-35).
+    auto path_tool     = backend::BackendPathTool{std::string{workspace()}};
+    auto output_folder = path_tool.workspace(UIPC_RELATIVE_SOURCE_FILE, "debug");
+
+    // The download the reference's writer does internally
+    // (`CTripletMatrixView::values().copy_to`): `copy_to_triplets` also synchronises
+    // the stream, so this is safe inside an open frame command list.
+    std::vector<lla::MatrixTriplet<Float, 3, 3>> host_triplets(
+        m_impl.bcoo_A.triplet_count());
+    m_impl.bcoo_A.copy_to_triplets(host_triplets);
+
+    auto output_path_A = fmt::format("{}A.{}.{}.mtx",
+                                     output_folder.string(),
+                                     engine().frame(),
+                                     engine().newton_iter());
+    export_matrix_market(output_path_A,
+                         std::span<const lla::MatrixTriplet<Float, 3, 3>>{host_triplets},
+                         m_impl.bcoo_A.rows(),
+                         m_impl.bcoo_A.cols());
+    logger::info("Dumped global linear system matrix A to {}", output_path_A);
+
+    std::vector<Float> host_b(m_impl.b.size());
+    m_impl.b.copy_to(host_b);
+
+    auto output_path_b = fmt::format("{}b.{}.{}.mtx",
+                                     output_folder.string(),
+                                     engine().frame(),
+                                     engine().newton_iter());
+    export_vector_market(output_path_b, std::span<const Float>{host_b});
+    logger::info("Dumped global linear system vector b to {}", output_path_b);
+}
+
+void GlobalLinearSystem::_dump_x()
+{
+    auto path_tool     = backend::BackendPathTool{std::string{workspace()}};
+    auto output_folder = path_tool.workspace(UIPC_RELATIVE_SOURCE_FILE, "debug");
+
+    std::vector<Float> host_x(m_impl.x.size());
+    m_impl.x.copy_to(host_x);
+
+    // the reference logs nothing here (.cu:58-67)
+    export_vector_market(fmt::format("{}x.{}.{}.mtx",
+                                     output_folder.string(),
+                                     engine().frame(),
+                                     engine().newton_iter()),
+                         std::span<const Float>{host_x});
+}
+
+void GlobalLinearSystem::solve()
+{
+    // The reference's seven statements in the reference order
+    // (global_linear_system.cu:70-91).  Two order facts are load-bearing: `A`/`b` are
+    // dumped *before* the solve (they are the system the solver actually saw), and `x`
+    // is dumped *before* `distribute_solution()` (so `x.mtx` is the raw solution).
+    m_impl.last_solve_iterations = 0;
+    m_impl.build_linear_system();
+
+    if(m_impl.empty_system) [[unlikely]]
+        return;
+
+    // The reference's `logger::info("GlobalLinearSystem has {} DoFs, Unique Triplet
+    // Count: {}", ...)` lives *here* (.cu:78-80).  DEVIATION (T8.3b, reported): this
+    // port already emits that exact text from `Impl::build_linear_system()`, so
+    // logging it here as well would print it twice per solve.
+    UIPC_ASSERT(static_cast<bool>(m_impl.iterative_solver),
+                "GlobalLinearSystem::solve(): no IterativeSolver is registered, so the "
+                "assembled system would be silently left unsolved. A scene selects one "
+                "with linear_system/solver (LinearPCG accepts both 'linear_pcg' and the "
+                "default 'fused_pcg').");
+
+    if(m_impl.need_debug_dump) [[unlikely]]
+        _dump_A_b();
+
+    m_impl.solve_linear_system();
+
+    if(m_impl.need_debug_dump) [[unlikely]]
+        _dump_x();
+
+    m_impl.distribute_solution();
+}
+
+Float GlobalLinearSystem::diag_norm()
+{
+    // The reference calls `build_linear_system()` first (.cu:93-97): the extents do not
+    // change between the engine's pre-Newton call and the Newton loop, so the rebuild
+    // is cheap.  Only `advance_al.cu:76` calls this (`mu_scale_mode == "diag_norm"`).
+    m_impl.build_linear_system();
+    return m_impl.diag_norm();
+}
+
+Float GlobalLinearSystem::mass_norm()
+{
+    // .cu:99-103.  `mass_norm()` has no caller anywhere in the reference either; it is
+    // implemented for interface completeness and wired nowhere.
+    m_impl.build_linear_system();
+    return m_impl.mass_norm();
 }
 
 void GlobalLinearSystem::Impl::init()
@@ -825,28 +942,23 @@ void GlobalLinearSystem::ComputeGradientInfo::buffer_view(DenseVectorView grad) 
 }
 
 // ===========================================================================
-// SCOPE NOTE (T8.3 → plan 11) — what is still deliberately undefined here.
+// T8.3b — THE SOLVE CHAIN IS COMPLETE (the tail SCOPE NOTE (T8.3) is resolved).
 //
-// Declared in global_linear_system.h and not defined (nothing ODR-uses them,
-// which is exactly what keeps the interface complete without a stub):
+// The five symbols that were declared-but-undefined here are the reference's now:
 //
-//   void  GlobalLinearSystem::solve();
-//   void  GlobalLinearSystem::_dump_A_b();
-//   void  GlobalLinearSystem::_dump_x();
-//   Float GlobalLinearSystem::diag_norm();   // only called by SimEngine::do_advance
-//   Float GlobalLinearSystem::mass_norm();   // only called by SimEngine::do_advance
+//   void  GlobalLinearSystem::solve();          // .cu:70-91
+//   void  GlobalLinearSystem::_dump_A_b();      // .cu:39-56
+//   void  GlobalLinearSystem::_dump_x();        // .cu:58-67
+//   Float GlobalLinearSystem::diag_norm();      // .cu:93-97 (AL mu_scale_mode)
+//   Float GlobalLinearSystem::mass_norm();      // .cu:99-103 (no caller anywhere)
 //
-// T8.3a-2 landed the solver substrate those need (`Impl::spmv`, `Impl::spmv_dot`,
-// `matrix_data_ptrs`, `Impl::solve_linear_system`, the `triplet_count_dev` upload
-// and a real `add_solver()`), together with `IterativeSolver` / `LinearPCG`.
+// together with the `do_build()` config read (`extras/debug/dump_linear_system`) and
+// utils/matrix_market.h.  Nothing in this file is declared-but-undefined any more.
 //
-// RESOLVED BY T8.3a-1: `add_subsystem(OffDiagLinearSubsystem*)` is a real
-// registration, together with the three off-diag branches inside `Impl` (see the
-// file header).
-//
-// RESOLVED BY T8.3a-3: `add_preconditioner(GlobalPreconditioner*)` is a real
-// registration, and `_assemble_preconditioner()` / `apply_preconditioner()` have the
-// reference's global branch.  Nothing in this file is now "declared but undefined"
-// because of plan 13; the five above are plan 11's (the engine wiring + the dumps).
+// Engine side (the same task, src/backends/luisa/sim_engine.cpp): `init_scene()` now
+// calls `init()` between the line searcher and the time-integrator manager — the
+// reference's position (`sim_engine_do_init.cu:130-132`) — so a real scene reaches
+// `dof_count() != 0` without a test calling `init()` by hand.  `advance()` still does
+// not call `solve()`: that is plan 10's Newton loop, blocked by S0.6.
 // ===========================================================================
 }  // namespace uipc::backend::luisa

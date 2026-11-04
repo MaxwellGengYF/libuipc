@@ -16,13 +16,14 @@
  * `_assemble_preconditioner` -> `solve_linear_system`).
  *
  * `solve()` needs `IterativeSolver` + `LinearPCG` (+ `LinearFusedPCG`/CUDA
- * graphs) and `CurrentFrameDiffDofReporter` — none of which exist in this backend
- * yet.  `GlobalPreconditioner` was on that list too and landed in T8.3a-3.  The
- * missing solver-side types are T8.3's task.  The port therefore keeps the *whole
- * public surface* and the *whole assembly/layout half*, and leaves the solve path
- * declared but **undefined**, each one marked `SCOPE NOTE (T8.3)` below, so nothing
- * is silently dropped (T5.1's rule 13: never invent a placeholder type — an
- * undefined member is fine as long as nothing ODR-uses it).
+ * graphs) — none of which existed in this backend at T5.4a.  `GlobalPreconditioner`
+ * was on that list too and landed in T8.3a-3, the solver substrate in T8.3a-2, and
+ * `solve()` itself plus the debug dump and the engine's `init()` call in T8.3b, so
+ * the list is empty now.  The port originally kept the *whole public surface* and the
+ * *whole assembly/layout half* while leaving the solve path declared but
+ * **undefined**, each one marked `SCOPE NOTE (T8.3)`, so nothing was silently dropped
+ * (T5.1's rule 13: never invent a placeholder type — an undefined member is fine as
+ * long as nothing ODR-uses it).
  *
  * `OffDiagLinearSubsystem` WAS on that list until T8.3a-1: with
  * linear_system/off_diag_linear_subsystem.h complete, `Impl::init()`'s off-diag
@@ -86,7 +87,8 @@
  * reference either) and no config key for one; a scene selects one by *registering*
  * it.
  *
- * DEFERRED TO T8.3 plan 11 (declared here, not defined — `SCOPE NOTE (T8.3)`)
+ * WAS DEFERRED TO T8.3 plan 11 (the list below is history — every item landed in
+ * T8.3b, see the next paragraph)
  * * `do_build()` — only defined as an empty body, because it is a pure-virtual
  *   override (a system must be constructible) and the reference's whole body is
  *   the *debug dump* config (`extras/debug/dump_linear_system`), which is
@@ -96,6 +98,20 @@
  *   `BackendPathTool` workspace plumbing, i.e. the debug path) — the references
  *   to them are inside `solve()`, which is itself deferred;
  * * `need_debug_dump` / `debug_dump_path`.
+ *
+ * RESOLVED BY T8.3b (plan 11) — THE SOLVE CHAIN IS COMPLETE
+ * ---------------------------------------------------------
+ * The last five declared-but-undefined symbols and the `do_build()` no-op body are the
+ * reference's again: `do_build()` (the `extras/debug/dump_linear_system` switch),
+ * `solve()` (the seven statements of `.cu:70-91`), `_dump_A_b()` / `_dump_x()` (the
+ * `BackendPathTool` dump into `<workspace>/debug/luisa/linear_system/
+ * global_linear_system.cpp/`) and the two norm wrappers `diag_norm()` / `mass_norm()`
+ * (`build_linear_system()` then the `Impl::` max).  `utils/matrix_market.h` — the
+ * host-side writer/reader — lands with them.  What is still *not* wired is the engine
+ * side: `SimEngine::init_scene()` now calls `init()` (T8.3b, between the line searcher
+ * and the time-integrator manager, the reference's position), but `SimEngine::advance()`
+ * does **not** call `solve()` — that is plan 10's Newton loop, blocked by S0.6.
+ * `mass_norm()` is wired nowhere (the reference has no caller either).
  *
  * RESOLVED BY T8.3a-2: `Impl::spmv()`, `Impl::spmv_dot()`, `matrix_data_ptrs()`,
  * `Impl::solve_linear_system()`, the `triplet_count_dev` upload in
@@ -533,10 +549,11 @@ class GlobalLinearSystem : public SimSystem
         Float diag_norm();
         Float mass_norm();
 
-        // SCOPE NOTE (T8.3): the debug dump configuration, read by the reference's
-        // `do_build()` and consumed by `solve()`.
-        bool        need_debug_dump = false;
-        std::string debug_dump_path;
+          // T8.3b: the debug dump configuration, read by the reference's
+          // `do_build()` and consumed by `solve()`.  `debug_dump_path` stays dead,
+          // exactly as in the reference (only `need_debug_dump` is ever read).
+          bool need_debug_dump = false;
+          std::string debug_dump_path;
     };
 
     /// The number of dofs the layout assigned (`Impl::init()` may have run).
@@ -548,6 +565,28 @@ class GlobalLinearSystem : public SimSystem
     SizeT dof_count() const;
     SizeT last_solve_iterations() const noexcept;
     void  compute_gradient(ComputeGradientInfo& info);
+
+    /// The whole solve chain: `last_solve_iterations = 0` -> `build_linear_system()`
+    /// -> [empty early return] -> [`_dump_A_b()`] -> `solve_linear_system()` ->
+    /// [`_dump_x()`] -> `distribute_solution()` (the reference's order,
+    /// `src/backends/cuda/linear_system/global_linear_system.cu:70-91`).
+    ///
+    /// DEVIATION (T8.3b): public, for the same reason as `init()` and `impl()` (see
+    /// the file header).  The reference keeps it private + `friend class SimEngine`,
+    /// because only `SimEngine::advance()`'s Newton loop may call it — and that call
+    /// is plan 10's, still blocked by S0.6 (multi-frame `world.advance()` deadlocks
+    /// after frame 1), so with the reference's access level nothing could exercise
+    /// the chain or its debug dump.  Nothing else in the friend list moved.
+    void solve();
+
+    /// DEVIATION (T8.3b): public, for the same test-reachability reason as `init()`,
+    /// `impl()` and `solve()` — the reference keeps both private because their only caller
+    /// is `SimEngine::do_advance` (AL's `mu_scale_mode == "diag_norm"` path) and this
+    /// port's engine has no `advance()` linear-solve step yet (plan 10).  Each one calls
+    /// `build_linear_system()` first, exactly like the reference.  `mass_norm()` has no
+    /// caller anywhere in the reference either; it is interface completeness.
+    Float diag_norm();
+    Float mass_norm();
 
     lla::LinearSystemContext& ctx() noexcept { return m_impl.ctx; }
 
@@ -577,20 +616,11 @@ class GlobalLinearSystem : public SimSystem
     void add_preconditioner(LocalPreconditioner* preconditioner);
     void add_preconditioner(GlobalPreconditioner* preconditioner);
 
-    // SCOPE NOTE (T8.3): `solve()` (the only caller of the whole assembly
-    // pipeline in the reference) and the two norm entries `SimEngine::do_advance`
-    // calls.  They are declared-but-undefined; nothing in T5.4a ODR-uses them.
-    // The assembly they trigger *is* ported (see `Impl`), and a test reaches it
-    // through `init()` + `compute_gradient()`, or through a test-local `Impl`.
-    void solve();
-
-    // only be called by SimEngine::do_advance()
-    Float diag_norm();
-    Float mass_norm();
-
     Impl m_impl;
 
-    // local debug dump functions (T8.3, with the debug path of `solve()`)
+    // T8.3b: the reference's debug dump (`solve()` is their only caller).  The
+    // directory comes from `BackendPathTool` and the names are
+    // `A.<frame>.<newton_iter>.mtx` / `b.…` / `x.…`.
     void _dump_A_b();
     void _dump_x();
 };

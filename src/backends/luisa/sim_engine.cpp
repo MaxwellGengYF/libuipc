@@ -22,6 +22,9 @@
 // T4.3
 #include <dytopo_effect_system/global_dytopo_effect_manager.h>
 #include <line_search/line_searcher.h>
+// T8.3b: the global linear system (the reference's `require<>` + the init() between
+// the line searcher and the time-integrator manager).
+#include <linear_system/global_linear_system.h>
 // T5.1
 #include <finite_element/finite_element_method.h>
 // T6.1a: the engine drives the ABD dynamics too (the reference's
@@ -271,11 +274,18 @@ void SimEngine::build_engine_systems()
     // Only the systems T4.1/T4.2 ported are resolved here; the rest are the
     // subject of Phase 5/6/8 and are simply absent from the graph (the reference
     // guards every optional one with `if(ptr)`, so the behaviour is identical).
+    // T8.3b resolved GlobalLinearSystem (the last missing `require<>` of the basic
+    // pipeline); GlobalActiveSetManager and GlobalDiffSimManager are still Phase 8.
     m_global_vertex_manager = &require<GlobalVertexManager>();
     m_global_body_manager   = &require<GlobalBodyManager>();
     m_time_integrator_manager = &require<TimeIntegratorManager>();
 
     m_line_searcher = &require<LineSearcher>();
+    // T8.3b: the reference `require<>`s the GlobalLinearSystem right after the line
+    // searcher (sim_engine_do_init.cu:37).  It is registered unconditionally (the
+    // default `SimSystemCreator<GlobalLinearSystem>` has no scene predicate, in the
+    // reference either), so `require<>` never throws.
+    m_global_linear_system = &require<GlobalLinearSystem>();
     // T6.4a: the reference `require<>`s the NewtonToleranceManager too: it is the
     // registry every tolerance checker registers with (`MaxTranslationChecker` in
     // every scene, `ABDToleranceChecker` in an ABD scene), and it is registered
@@ -373,7 +383,7 @@ void SimEngine::init_scene()
     }
     // 3.1 Forwards (reference order): dytopo effect manager -> contact manager
     // -> animator -> external force -> active set (Phase 8) ->
-    // line searcher -> linear system (Phase 8) -> time integrator -> ...
+    // line searcher -> linear system (T8.3b) -> time integrator -> ...
     if(m_global_dytopo_effect_manager)
         m_global_dytopo_effect_manager->init();
     // T7.2a: the contact manager's init() builds the contact/subscene mask tabulars
@@ -386,8 +396,18 @@ void SimEngine::init_scene()
     {
         m_global_external_force_manager->init();
     }
-    // (GlobalActiveSetManager -> Phase 8; GlobalLinearSystem -> Phase 8)
+    // (GlobalActiveSetManager -> Phase 8)
     m_line_searcher->init();
+    // T8.3b: the reference's position exactly (sim_engine_do_init.cu:130-132): after
+    // the line searcher, before the time-integrator manager.  This is the layout pass
+    // (`Impl::init()`: diag/off-diag uid sort -> dof offsets/counts -> the
+    // no-local-preconditioner set -> each local preconditioner's init()), i.e. what
+    // makes `dof_count()` meaningful for a real scene.  Guarded like the reference's
+    // `if(m_global_linear_system)`.
+    if(m_global_linear_system)
+    {
+        m_global_linear_system->init();
+    }
     if(m_time_integrator_manager)
     {
         m_time_integrator_manager->init();

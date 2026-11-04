@@ -990,12 +990,11 @@ TEST_CASE("offdiag_layout", "[luisa][offdiag]")
 
     {
         auto& c = scope.counter;
-        // `do_init` ran through the engine? No: the engine does not call
-        // `GlobalLinearSystem::init()` yet (T8.4), so the gates are still closed
-        // and the extents below come from the *test-local* `Impl`.  The engine
-        // level is driven explicitly here, which is also what proves the two
-        // families coexist in one `Impl`.
-        T83Probe::gls->init();
+        // T8.3b: the engine *does* call `GlobalLinearSystem::init()` now
+        // (`SimEngine::init_scene()`, the reference's position), so the engine-level
+        // layout is already done here and the extents below are read from it.  The
+        // test-local `Impl` elsewhere in this file still drives the same subsystems
+        // independently, which is what proves the two families coexist in one `Impl`.
         T83_CHECK(c, T83Probe::gls->dof_count() == kDenseDim);
         // the diag offsets are the uid-ascending scan: DiagA (0x..44) first
         T83_CHECK(c, T83Probe::diag_a->dof_offset() == 0);

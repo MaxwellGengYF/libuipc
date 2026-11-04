@@ -7,7 +7,7 @@
 ; auto-generated list exceeded MSVC's 65535-export ceiling -> LNK1189).
 ;
 ; Contents: the module's C API + every symbol the in-tree consumers import from it.
-; 547 entries, generated from 1 consumer(s).
+; 549 entries, generated from 1 consumer(s).
 ; ---------------------------------------------------------------------------
 EXPORTS
     ??0?$LMatrixConverter@N$00@linalg@luisa_device@luisa@backend@uipc@@QEAA@XZ
@@ -157,6 +157,7 @@ EXPORTS
     ?device@luisa_device@luisa@backend@uipc@@YAAEAVDevice@compute@2@XZ
     ?device_reduce_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXW4ReduceKind@123456@AEAVLStream@3456@AEBV?$LBufferView@H@3456@2_KAEAUScanScratch@23456@@Z
     ?device_reduce_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXW4ReduceKind@123456@AEAVLStream@3456@AEBV?$LBufferView@N@3456@2_KAEAUScanScratch@23456@@Z
+    ?diag_norm@GlobalLinearSystem@luisa@backend@uipc@@QEAANXZ
     ?diag_norm@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAANXZ
     ?dim@FiniteElementConstitution@luisa@backend@uipc@@QEBAHXZ
     ?dimensions@BaseInfo@SimplexTrajectoryFilter@luisa@backend@uipc@@QEBA?AV?$LBufferView@H@luisa_device@345@XZ
@@ -375,7 +376,6 @@ EXPORTS
     ?indices@BaseInfo@Codim1DConstitution@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$01@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
     ?indices@BaseInfo@Codim2DConstitution@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$02@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
     ?indices@BaseInfo@FEM3DConstitution@luisa@backend@uipc@@QEBA?AV?$LBufferView@U?$LVec@H$03@math@luisa_device@luisa@backend@uipc@@@luisa_device@345@XZ
-    ?init@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?init@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?init@LocalPreconditioner@luisa@backend@uipc@@EEAAXXZ
     ?init@Runtime@luisa_device@luisa@backend@uipc@@QEAAXV?$basic_string_view@DU?$char_traits@D@std@@@std@@0@Z
@@ -397,6 +397,7 @@ EXPORTS
     ?main_stream@Runtime@luisa_device@luisa@backend@uipc@@QEAAAEAVStream@compute@3@XZ
     ?main_stream@luisa_device@luisa@backend@uipc@@YAAEAVStream@compute@2@XZ
     ?make_abd_dyadic_mass@luisa@backend@uipc@@YA?AUABDJacobiDyadicMass@123@NAEBV?$Matrix@N$02$00$0A@$02$00@Eigen@@AEBV?$Matrix@N$02$02$0A@$02$02@6@@Z
+    ?mass_norm@GlobalLinearSystem@luisa@backend@uipc@@QEAANXZ
     ?mass_norm@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAANXZ
     ?matrix_data_ptrs@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEBA?AV?$array@PEBX$02@std@@XZ
     ?max_iter@LineSearcher@luisa@backend@uipc@@QEBA_KXZ
@@ -462,6 +463,7 @@ EXPORTS
     ?shape_energy_hessian@luisa@backend@uipc@@YA?AV?$Matrix@N$08$08$0A@$08$08@Eigen@@AEBV?$Matrix@N$0M@$00$0A@$0M@$00@5@@Z
     ?shape_energy_hessian@luisa@backend@uipc@@YAXAEBV?$Matrix@N$0M@$00$0A@$0M@$00@Eigen@@AEAV?$Matrix@N$02$02$0A@$02$02@5@11111@Z
     ?shutdown@Runtime@luisa_device@luisa@backend@uipc@@QEAAXXZ
+    ?solve@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?solve_linear_system@Impl@GlobalLinearSystem@luisa@backend@uipc@@QEAAXXZ
     ?sort_index_pairs_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXAEAVLStream@3456@AEBV?$LBufferView@H@3456@11_KIAEAUSortScratch@23456@@Z
     ?sort_index_pairs_impl@detail@linalg@luisa_device@luisa@backend@uipc@@YAXAEAVLStream@3456@AEBV?$LBufferView@_K@3456@1AEBV?$LBufferView@H@3456@_KIAEAUSortScratch@23456@@Z

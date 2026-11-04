@@ -6361,6 +6361,133 @@ an open frame list.
     copy it back and verify with `md5sum`, which is also the "reverted" evidence the review
     checklist asks for.
 
+### 7.42 Patterns established in T8.3b (the solve chain on LC: `solve()`, the Matrix-Market dump, the norms, the engine's `init()`)
+
+**Scope.** New `src/backends/luisa/utils/matrix_market.h` (host-side writer/reader);
+`GlobalLinearSystem::{do_build, solve, _dump_A_b, _dump_x, diag_norm, mass_norm}` (the last
+five were declared-but-undefined since T5.4a); the engine wiring
+(`SimEngine::build_engine_systems()`'s `require<GlobalLinearSystem>()` +
+`init_scene()`'s `init()` between the line searcher and the time-integrator manager); two
+test TUs (`[luisa][mtx]` 4 cases / 138 assertions, `[luisa][solve]` 7 cases = 6 + 1 SKIP /
+112 assertions); `luisa_module.def` 547 -> 550 entries. No build-file edit (both systems
+glob).
+
+1. **`solve()` is the reference's seven statements, and two of the order facts are
+   load-bearing.** `last_solve_iterations = 0` -> `build_linear_system()` -> `if(empty_system)
+   return` -> [`_dump_A_b()`] -> `solve_linear_system()` -> [`_dump_x()`] ->
+   `distribute_solution()` (`global_linear_system.cu:70-91`). `A`/`b` are dumped **before**
+   the solve (they are the system the solver saw) and `x` **before** the distribution (so
+   `x.mtx` is the raw solution). Everything else in the chain (`Impl::spmv`,
+   `solve_linear_system`, `distribute_solution`, the preconditioner fan-out) had landed in
+   T8.3a-2/-3, so `solve()` itself is nine lines.
+2. **The RHS must be produced by the assembly, not injected by the test.** The
+   `_assemble_linear_system()` trap (§7.19) is that it zero-fills `b` and re-scatters it on
+   every rebuild — and `solve()` *starts* with a rebuild, so a test that uploads `b` before
+   calling `solve()` sees it wiped. The fixture therefore writes its gradients through
+   `DiagInfo::gradients()` (a window of `b`, `global_linear_system.cpp:620`), exactly like a
+   real FEM/ABD subsystem; `solve()` then produces a non-zero RHS with no test-side
+   injection. The same property is what makes a second `solve()` idempotent.
+3. **The dump path is derived, never hand-built, and it is *not*
+   `<workspace>/<backend>/linear_system/debug/`.** `BackendPathTool{workspace}.workspace(
+   UIPC_RELATIVE_SOURCE_FILE, "debug")` strips `UIPC_BACKEND_DIR` and prefixes `debug/`, so
+   the real path is `<workspace>/debug/luisa/linear_system/global_linear_system.cpp/` and
+   the files are `A.<frame>.<newton_iter>.mtx`, `b.…`, `x.…` (measured: frame 0, newton_iter
+   0 -> `A.0.0.mtx`). Three consequences: (a) the directory is per *source file*, so the
+   dump lands in a directory named after a `.cpp`; (b) `Path / ""` gives the trailing
+   separator the reference's `"{}A.{}.{}.mtx"` format relies on; (c) the parity runner looks
+   for `<workspace>/A.mtx` (`apps/tests/parity/main.cpp`) and therefore reports "absent" for
+   **both** backends — that is plan 03's gap, not a reason to write to the workspace root.
+4. **The writer takes host spans.** `export_matrix_market(path, span<const TripletT>,
+   block_rows, block_cols, one_based)`; the call site does the download
+   (`bcoo_A.copy_to_triplets(host)`, `b.copy_to(host)`, both of which synchronise the
+   stream). The reference types the same function on `cuda_tool::CTripletMatrixView`, which
+   does not exist here, and `LBCOOMatrix`'s flat `values()` is column-major *within* a block
+   (§7.9), so a verbatim pointer copy would transpose every block; `MatrixTriplet`'s
+   `value(r, c)` is the reference's `block(bi, bj)`. Keeping the download out of the header
+   also keeps `sim_engine.h`/`LStream` out of it, so the format is testable without a GPU.
+   The block dimension comes from `TripletT::ValueT::rows` (`LMat`'s static extent) — a
+   second template argument `int BD` cannot be deduced from a
+   `span<const MatrixTriplet<T,3,3>>` argument (measured C2672).
+5. **FINDING: the banner is `%MatrixMarket`, with ONE `%`.** The reference writes it with
+   `fmt::fprintf(fp, "%%MatrixMarket …")`, and printf formatting collapses `%%` to `%`. Both
+   readers skip any line whose first character is `%`, so this round-trips — but the file is
+   **not** spec-valid Matrix Market and a third-party reader (Eigen `loadMarket`, SciPy
+   `mmread`) rejects it. The port reproduces it byte for byte because cross-backend file
+   equality is the gate; changing it is a cross-backend decision. The `[luisa][mtx]` format
+   case pins the measured text (and the `%.17g` precision, by exporting `1/3` and requiring
+   `0.33333333333333331`).
+6. **`import_matrix_market` groups through a `std::map`, which is the reference's
+   `(block_i, block_j)` order.** `std::map<std::pair<int,int>, LMat>`'s default comparator
+   *is* the reference's custom `less`, so the imported container comes back canonically
+   sorted — the same invariant `MatrixConverter`'s output has (and `rbk_sym_spmv` relies on
+   for its row grouping). A test that re-imports a dumped `A` and solves with it is therefore
+   not perturbing the operator: measured `Δ == 0` on all 9 values per block and
+   `|x(imported) − x(assembled)| / scale = 5.9e-15`.
+7. **`x = A⁻¹b` needs `tol_rate` driven below the default, or the gate is theatre.** The
+   stopping rule is `|rz| ≤ tol·|rz0|` with `rz = rᵀz = ‖r‖²`, i.e. `‖r‖/‖b‖ ≈ sqrt(tol)`;
+   at the default `1e-3` that is `3e-2`, and the *solution* error is `cond(A)·3e-2` — six
+   orders above the plan's `1e-10`. With `tol_rate = 1e-16` the loop runs to its round-off
+   floor (measured: 8 iterations, `‖b − Ax‖/‖b‖ = 2.4e-14`) and the Eigen `LDLT` comparison
+   is meaningful (`|x − x_ref|∞/|x_ref|∞ = 6.6e-15`).
+8. **The dense oracle must symmetrise, and transposed.** The assembled BCOO is the
+   `ge2sym` *upper* packing (`row <= col`, §7.39): the diagonal blocks are stored whole, the
+   strict upper blocks are mirrored **and transposed** (`A(j,i) = blockᵀ`), i.e.
+   `A_eff = U + Uᵀ − D`. A dense reconstruction that copies blocks verbatim is wrong for any
+   non-symmetric block and silently changes the answer.
+9. **The two norm wrappers rebuild first, and the `max` needs two subsystems to be
+   visible.** `diag_norm()`/`mass_norm()` are `build_linear_system(); return Impl::…;`
+   (`.cu:93-103`); `Impl::diag_norm()` is a `max` over the diag subsystems. A scene in this
+   binary registers *every* test file's marker-gated diag subsystem (7 in `[luisa][solve]`,
+   only one owning dofs), which makes the max discriminating for free: the fixture's chain
+   reports 24/2 and a 0-dof probe reports 7.5/3.25, and the measured wrappers return
+   `diag 24`, `mass 3.25` — so "first wins" and "last wins" both fail. Assert the assemble
+   counter *increments* per wrapper call to pin `build_linear_system()` inside them.
+10. **`diag_norm()`/`mass_norm()` join `init()`, `impl()` and `solve()` as public test
+    reachability deviations.** The reference keeps all four private + `friend class
+    SimEngine`; this port's engine has no `advance()` linear-solve step yet (plan 10,
+    BLOCKED-BY-S0.6), so with the reference's access levels nothing could exercise them. The
+    friend list itself is unchanged.
+11. **The engine `init()` wiring is one `require<>` + one `init()` call, and it is what makes
+    `dof_count()` real.** `require<GlobalLinearSystem>()` sits right after the line searcher
+    (`sim_engine_do_init.cu:37`) in `build_engine_systems()` (state `BuildSystems`), and
+    `init_scene()` calls it at `.cu:130-132` — **between** `m_line_searcher->init()` and
+    `m_time_integrator_manager->init()`, not at the end of the 3.1 forwards. A scene now
+    reaches `dof_count() != 0` with no test-side `init()`, and the layout's `dof_count()`
+    equals the engine's `OffsetCountCollection::total_count()`. `advance()` still does not
+    call `solve()` (plan 10); no `solve()` was added anywhere in the engine.
+    **Consequence for pre-existing tests:** five TUs used to call `gls->init()` by hand
+    (the T5.4a deviation's workaround), and `Impl::init()` is *not* idempotent — it appends
+    to `no_precond_diag_subsystem_indices` and re-runs every subsystem's `do_init`.  With the
+    engine calling it, the manual calls had to go
+    (`luisa_{abd_linear,fem_linear,pcg,global_preconditioner,offdiag_linear}_test.cpp`); the two
+    places that measured an absolute `do_init` count now measure a *delta* around their own
+    test-local `Impl::init()`.  Every recorded case/assertion count is unchanged by this.
+12. **A 0-dof `DiagLinearSubsystem` is legal and useful.** `DiagExtentInfo::extent(0, 0)`
+    passes the `dof_count % 3 == 0` assert, `OffsetCountCollection::scan()` hands it a
+    0-length window, its `assemble`/`apply_preconditioner` window is empty, and it still
+    participates in `diag_norm()`/`mass_norm()` and in
+    `no_precond_diag_subsystem_indices` — which is exactly how rule 9's second subsystem is
+    built and how a dof-less scene reaches the `empty_system` early return.
+13. **`empty_system` returns after the counter reset and before the dump.** Measured: a
+    marker-less scene logs the reference's warning, `last_solve_iterations` is reset to 0
+    (from a deliberately poisoned 12345), `b`/`x` stay size 0, no `.mtx` is written even with
+    `extras/debug/dump_linear_system = 1`, and `do_assemble` is never called — twice in a row
+    without harm.
+14. **The export-list bootstrap is again the linker's** (§7.28/§7.40/§7.41 rule 10): a test
+    that calls `solve()`/`diag_norm()`/`mass_norm()` produced exactly three `LNK2019`s; the
+    three decorated names were appended, the link succeeded, and then
+    `python scripts/luisa_module_def.py` rewrote the file from the linked consumer
+    (547 -> 549 entries = 548 symbols, `--check` rc 0).  The regeneration also *dropped*
+    `GlobalLinearSystem::init`: it was exported only because five tests imported it, and they
+    no longer do (rule 11).  Running the generator *before* a successful link silently
+    truncates the list to the C API ("0 consumer(s)") — always link first.
+15. **What is still blocked.** Plan 11's phase 5 (the `solve()` call inside the Newton loop,
+    `advance_ipc.cu:366-373`) and everything that depends on it:
+    `solve_from_cuda_mtx` (no CUDA ground truth either), `solve_dof_layout`,
+    `solve_triplet_count`, `solve_iterations` (per-iteration sequences) and the frame-level
+    Class-C band. `solve()` is idempotent per build and `last_solve_iterations` is valid
+    afterwards, which is the whole call contract plan 11 owes plan 10.
+
 ## Appendix — Verified LC API cheat-sheet (from T0.1)
 
 ```cpp

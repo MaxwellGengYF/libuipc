@@ -2038,6 +2038,10 @@ TEST_CASE("abd_linear_chain", "[luisa][abd_linear]")
 
     gg::GlobalLinearSystem::Impl impl;
     impl.diag_subsystems.register_sim_system(*T61bProbe::abd_linear);
+    // T8.3b: `world.init(scene)` already ran the engine's `GlobalLinearSystem::init()`
+    // (the reference's position), which also fans out to the reporter's `do_init`;
+    // measure the delta of the *local* `Impl`'s fan-out instead of an absolute count.
+    const int reporter_init_before = T61bLinearReporter::init_count;
     impl.init();
     {
         auto& c = scope.counter;
@@ -2046,7 +2050,7 @@ TEST_CASE("abd_linear_chain", "[luisa][abd_linear]")
         T61B_CHECK(c, impl.subsystem_infos[0].is_diag);
         // the subsystem's `init()` ran the reporter fan-out (index assignment +
         // `do_init`), which is where the reporter's gate is set
-        T61B_CHECK(c, T61bLinearReporter::init_count == 1);
+        T61B_CHECK(c, T61bLinearReporter::init_count == reporter_init_before + 1);
         T61B_CHECK(c, T61bLinearReporter::enabled);
     }
     REQUIRE(impl._update_subsystem_extent());
@@ -2338,9 +2342,11 @@ TEST_CASE("abd_linear_layout", "[luisa][abd_linear]")
     auto& c = scope.counter;
 
     T61B_CHECK(c, T61bProbe::abd_linear->uid() == 0ull);
-    // the port's `GlobalLinearSystem::init()` is public (the T5.4a deviation), and
-    // it is what runs the dof layout of the *real* subsystem
-    T61bProbe::gls->init();
+    // T8.3b: `SimEngine::init_scene()` calls `GlobalLinearSystem::init()` (the
+    // reference's position, between the line searcher and the time-integrator
+    // manager), so the dof layout of the *real* subsystem is already done here;
+    // a second call would re-run every subsystem's `do_init` and append
+    // duplicate entries to `no_precond_diag_subsystem_indices`.
     T61B_CHECK(c, T61bProbe::gls->dof_count() == 24u);
     T61B_CHECK(c, T61bProbe::abd_linear->dof_offset() == 0);
     T61B_CHECK(c, T61bProbe::abd_linear->dof_count() == 24);
@@ -2816,7 +2822,7 @@ TEST_CASE("abd_linear_scene", "[luisa][abd_linear]")
     T61B_CHECK(c, T61bProbe::global_animator == nullptr);
     T61B_CHECK(c, T61bProbe::inter_manager == nullptr);  // no InterAffineBody type
 
-    T61bProbe::gls->init();
+    // (the engine's init_scene() ran the layout -- see the case above)
     T61B_CHECK(c, T61bProbe::gls->dof_count() == kBodyCount * 12u);
     T61B_CHECK(c, T61bProbe::abd_linear->dof_count()
                       == static_cast<IndexT>(kBodyCount * 12));

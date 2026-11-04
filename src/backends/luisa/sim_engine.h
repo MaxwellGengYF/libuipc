@@ -47,6 +47,10 @@ class NewtonToleranceManager;
 // reference resolves both with `find<>` in the same position of build()).
 class GlobalTrajectoryFilter;
 class GlobalContactManager;
+// T8.3b: the global linear system is engine-aware in the reference too — `build()`
+// `require<>`s it and `init_scene()` calls its init() between the line searcher and
+// the time-integrator manager (sim_engine_do_init.cu:37, :130-132).
+class GlobalLinearSystem;
 
 class SimEngine final : public backend::SimEngine
 {
@@ -150,6 +154,10 @@ class SimEngine final : public backend::SimEngine
     // which is Phase 8 / T8.4 -- see GlobalTrajectoryFilter's header.
     GlobalContactManager*    m_global_contact_manager    = nullptr;
     GlobalTrajectoryFilter*  m_global_trajectory_filter  = nullptr;
+    // T8.3b: `require<>`d (like the line searcher and the tolerance manager) — it is
+    // registered unconditionally, so this never throws.  `init()` runs in
+    // init_scene()'s 3.1 forwards; `solve()` is plan 10's Newton-loop call.
+    GlobalLinearSystem* m_global_linear_system = nullptr;
 
     PipelineType m_pipeline_type = PipelineType::Basic;
 
