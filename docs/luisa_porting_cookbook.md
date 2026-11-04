@@ -5701,58 +5701,163 @@ T8.5 keeps only `diff_sim/*`, `line_search/*`, `newton_tolerance/*` and the engi
  out-of-band vertex; the port's `PHs` capacity/retry kept the count honest at 2, which the first
  spelling of the oracle got wrong).
 
-### 7.36 Findings from T8.1b (the IPC contact models) -- batch IN PROGRESS, work stashed
+### 7.36 Findings from T8.1b (the IPC contact models) — DONE (four stash bugs, two Class-A goldens)
 
 T8.1b ported the IPC contact models (`simplex_{normal,frictional}_contact.{h,cpp}`,
 `vertex_half_plane_{normal,frictional}_contact.{h,cpp}`, the four `contact_models/ipc_*` files,
 the `ipc_*_contact_function.h`/`codim_*` device-math headers, the transcribed generated
-`sym/*.inl` and the concrete exporters) and then hit a wall that belongs in this cookbook even
-though the batch is not finished.  The evidence, the transformer script and the exact remaining
-work are in `scratch/t81b_state.md`; the work itself is in `git stash` (`stash@{0}`,
-`T8.1b WIP (IPC contact models)`), and HEAD/working tree are back at the green T8.1a commit.
+`sym/*.inl` and the ten concrete exporters).  The batch's work was stashed with 6 of its 8
+`[contact_model]` cases red; this batch applied the stash (`git stash apply`, never a re-port:
+12068 lines already compiled with 0 warnings), fixed **three** real defects (the dropped per-type
+slice offset, the same dropped offset in the two vertex–half-plane reporters, and a swapped
+`select` pair in `friction_hessian`), corrected eight test oracles/helpers, and added the two
+Class-A goldens the plan asked for.  The rules below are the reusable ones.
 
- 1. **LC does not merely dislike a kernel with two big `make_spd` chains -- it deadlocks on a
-    *batch* of them, and that is a different rule.**  The reference's assemble pass keeps all
-    four contact types in one launch (four `make_spd` chains: 12x12 PT, 12x12 EE, 9x9 PE,
-    6x6 PP); that kernel never returns from `luisa::compute::Device::compile` (measured twice:
-    > 900 s and > 15 min, with the process *blocked* at ~50 s of CPU -- a deadlock, not a slow
-    compile).  Splitting it into four per-type kernels (one chain each) still deadlocked; the
-    bisection that pinned it was: **the PT kernel alone runs, PT+EE in one batch deadlocks**.
-    The cure is host-only and exact: a `frame_stream().synchronize()` between the per-type
-    dispatches, so each kernel is committed -- and therefore compiled -- on its own.  Measured
-    after that: the formerly-hanging case finishes in 2-3 s.
- 2. **Splitting a fused kernel mechanically needs two things a naive block extraction loses.**
-    The fused body's leading `using namespace ...;` lines live *outside* the type guards, so
-    each re-emitted kernel needs them prepended; and the extracted block's single terminating
-    `;` (the one that closes the whole `$if`/`$else` *expression statement*) must be re-emitted
-    too -- without it MSVC reports `expected '}'` at the end of every kernel whose block ends in
-    `}` (and only the last one, whose block already ended in `};`, compiles).  A brace counter
-    used for the extraction must strip `//` comments, because these files carry braces inside
-    doc comments.  `scratch/split_assemble.py` does all of this and asserts the fused kernel's
-    parameter list against a per-file signature table before it writes anything.
- 3. **A nested central difference is not an oracle for a second derivative.**  The port's first
-    attempt pinned the barrier's second derivative against a doubly-nested central difference:
-    measured **0.85 relative error**, because the third derivative blows up towards the active
-    band's edges and the roundoff is amplified by 1/h1^2.  The fix is an analytic second
-    derivative derived *in the test* (verified independently against 60-digit arithmetic at
-    1e-26) compared at 1e-12; the value-level FD stays only as a coarse 1e-2 sanity net.
- 4. **Never compare a device result with `==`** (restated from 7.35 rule 6): LC's codegen
-    contracts multiply-adds, so `device == host` fails on the last ulp while printing two
-    identical spellings.  Use a tight relative comparison and say why.
- 5. **`ipc_simplex_frictional_contact_function.h` is dead code in the reference itself**: its
-    two includes (`contact_models/ipc_contact_function.h`, `sym/ipc_friction.inl`) exist nowhere
-    in the tree, and its bodies call the four-argument `dKappaBarrierdD` while the live codim one
-    takes a fifth `xi`.  Transcribe it as data, include it in no TU, and pin the status.
- 6. **The contact models claim no uid.**  `grep -n get_uid src/backends/cuda/contact_system/` is
-    empty (so T8.1b's premise that they would carry one was wrong); the only uid in the contact
-    path is the T4.2 `HalfPlaneVertexReporterUID = 2`.  Measured extent arithmetic is exact:
-    `IPCSimplexNormalContact: Grad3 13, Hess3x3 29` = 4+4+3+2 doublets / 10+10+6+3 triplets, 0
-    for the other three models.
- 7. **Still owed by T8.1b** (resume from `git stash pop`): the ~20 assertion failures in 6 of the
-    8 `[contact_model]` cases (all of which now *run*, max 3 s; `t81b_simplex_normal_pairs` also
-    aborts after its failed energy checks, so start there), the full battery (`~[contact_model]`
-    must equal 764653 + the `[contact_core]` delta, i.e. **764971/257**), the two perturbations
-    on two axes, and the progress-doc/plan rows for T8.1b.
+ 1. **A 4-way split of a fused assemble kernel must carry the *per-type slice offset*, or all
+    four types write from slot 0 and the last writer wins.**  The reference keeps all four
+    contact types in one launch; this port splits it (rule 3) and each per-type kernel rebuilds
+    its device view from the *whole* reporter buffer.  `get_index()` adds the view's offset
+    (`luisa_device/linear/views.h`, the `handles (the launch arguments)` block), so a kernel that
+    builds its view with the offset-less `from_handles(...)` (offset hard-coded 0) writes every
+    type's blocks into the first type's slots.  The contract, and it is one line per device view:
+    `LDoubletVectorDeviceView::from_handles_full(indices, values, total_segments,
+    doublet_index_offset, doublet_count, total_doublet_count, subvector_offset, subvector_extent)`
+    and `LTripletMatrixDeviceView::from_handles_full(rows, cols, values, total_rows, total_cols,
+    triplet_index_offset, triplet_count, total_triplet_count, submatrix_offset_x,
+    submatrix_offset_y, submatrix_extent_x, submatrix_extent_y)`, fed from the reporter subview's
+    `*_index_offset()`/`total_*_count()` plus the global segment count.  Measured symptom before
+    the fix: the PT slice was entirely overwritten by EE/PE/PP values (`slices.gp.indices` came
+    back `{4, 8, 2, 7, …}` — PP's, PE's and EE's slots).  The pin is *structural*, not numeric
+    (a numeric oracle can be accidentally right for a single pair per type): assert the slice
+    arithmetic — doublet offsets `0/4/8/11` with counts `4/4/3/2` and triplet offsets
+    `0/10/20/26` with counts `10/10/6/3`, i.e. the 13/29 the model's
+    `do_report_gradient_hessian_extent` asks for (`t81b_simplex_normal_pairs`, 18 assertions).
+      **The same rule applies to the *reporter* split, not just the type split.**  The research file
+      judged the two vertex–half-plane models "unaffected (a single type, offset 0)" — true of the
+      type split (one primitive type per model) but **not** of the reporter split: both VHP models
+      report the same PH pair set, so the second reporter's window inside the shared
+      gradient/Hessian buffers starts at a non-zero `doublet_index_offset()` and the offset-less
+      `from_handles` made the frictional twin overwrite the normal model's slots (measured: the
+      whole buffer held 6 doublets for 3 pairs, `g.values.size() == 18`).  So *every* per-reporter
+      kernel needs `from_handles_full`, whatever the number of types.
+ 2. **A view's `indices()`/`values()`/`row_indices()` are launch handles of the *whole* buffer,
+    never the reporter's window.**  Reading them whole reads every other type's and every other
+    reporter's slots: measured `slices.hp.rows.size() == 29` where 10 was expected and
+    `read_gradients` 13 where 4 were.  A test that then indexes `H(3r+a, 3c+b)` with vertex ids
+    up to 8 into a `Matrix12x12` writes out of bounds on the *stack* — measured
+    `0xC0000409` (STATUS_STACK_BUFFER_OVERRUN) at scope exit, i.e. an abort that hides the real
+    numbers.  Slice by `doublet_index_offset()`/`doublet_count()` (values: `* N`, `N = 3`) and
+    `triplet_index_offset()`/`triplet_count()` (values: `* 9`).  Fix this *before* judging any
+    value oracle: an un-sliced readback made a correct model look broken.
+ 3. **The "batch deadlock" is (mostly) a ~10-minute NVRTC compile, and the parent process is
+    *supposed* to look frozen while it happens.**  A per-type assemble kernel holds one
+    `make_spd` chain (12x12/9x9/6x6); its generated CUDA source compiles to a **3.3 MB PTX** and
+    NVRTC needs **~12 min** for it *cold* (`kernel_31bb1b9c7136ce79.ptx`, written 02:07 for a
+    dispatch recorded at 01:55; 9x9 `make_spd` cost T5.2a **795 s**, cookbook §7.17).
+    Measured per type on a cold cache (`[contact_model]`, one scene, four kernels): PT 3.30 MB PTX
+    ~ 11 min, EE 3.31 MB ~ 12 min, PE 1.44 MB ~ 2 min, PP 0.47 MB ~ 1 min — the two 12x12 chains own
+    almost all of it, and a full cold `[contact_model]` (8 big kernels) is ~ 50 min.  The work is
+    done by a separate `luisa_nvrtc.exe` child process, so the *test* process shows a frozen CPU
+    counter and 0 % GPU while the child burns a core — which is exactly the "deadlock" the T6.4a
+    and T6.3b3 notes describe.  Both readings are compatible with the data; what matters
+    operationally is: (a) keep the four-way split with a host `frame_stream().synchronize()`
+    after each per-type dispatch, so the compiles are serial and bounded and one kernel's cost is
+    attributable; (b) budget ~10 min per *distinct* big kernel on a cold LC shader cache
+    (`<exe dir>/.cache`, keyed by the kernel's source, so a test-only rebuild is free and a model
+    edit is not); (c) never conclude "hang" from a frozen parent — measure `luisa_nvrtc.exe`'s CPU
+    and the `.cache` mtime before killing anything.
+ 4. **Delete the fused kernel the split left behind.**  The 4-way split copied the fused body and
+    left `do_assemble_kernel<GradientOnly>` un-instantiated: ~740 dead lines per model file that
+    still carry sixteen un-fixed `from_handles` factories (rule 1) and that reinstates the single
+    >10-minute compile the moment someone calls it again.  A refactor that "simplifies" the four
+    kernels back into one would look like a cleanup and would silently reintroduce both problems.
+ 5. **The split transformer is gone; the split is hand-maintained, and the generators are now
+    *tracked*.**  The stash's `scratch/split_assemble.py` no longer exists, so the split is
+    maintained by hand — the offset fix above was applied with a one-shot script that asserts its
+    own replacement counts (never a `sed` sweep) and the result is reviewed as a diff.  The two
+    `.inl` generators moved out of the gitignored `scratch/` into the tree:
+    `python scripts/gen_contact_models.py --check --selfcheck` → rc 0 (9 functions /
+    74 statements in `sym/codim_ipc_contact.inl`, 5 functions / 29 statements in
+    `sym/vertex_half_plane_distance.inl`), with its T5.2 transcriber dependency
+    `scripts/gen_fem_cons_a.py`.  A generated body that no tracked checker can re-derive is the
+    §7.17 rule-34 trap; a `scratch/`-only generator *is* that trap (trap 13 of the research file).
+ 6. **Two reference contact bodies are host-compilable, and they are the Class-A gate.**
+    Everything in `contact_models/` is `__device__ inline` and pulls `<type_define.h>`/`cuda_tool`
+    — except the two `sym/*.inl` files, which are plain `template <typename T>` + Eigen/`std::pow`.
+    Neutralise the two CUDA markers (`#define __host__` / `#define __device__`, guarded by
+    `#if !defined`) and they compile in an ordinary TU, so `uipc_parity_reference` can evaluate
+    *the reference itself* on the host: `codim_barrier` (KappaBarrier + both D-derivatives → 72
+    cases × 3 outputs) and `vhp_distance` (D, dDdx, ddDddx, TR, dTRdx → 27 cases × 21 outputs).
+    The ported twins' host instantiation (`T = double`) reproduces them **exactly** — measured
+    `host |delta| = 0.000e+00` on 216 + 567 slots, no tolerance, no NaN slots — which pins the law
+    of all four normal models (the codim variants) and of the vertex–half-plane pair without a
+    GPU.  Everything else in the plan's §6.1 table stays `not_implemented` in the generator
+    registry *with its reason*; the remaining rows are pinned instead by the ported twin's host
+    instantiation plus an independently re-derived closed form (`t81b_barrier_law`,
+    `t81b_sym_expressions`), never by a fake CUDA comparison.
+ 7. **Four of the six red cases were test-oracle errors, not port defects.**  Each one is worth
+    recognising again: (a) `barrier(...) == 0.0` at the band's upper edge `D = (dHat + xi)^2` — in
+    double the band test is a cancellation (`D - xi^2 - (dHat^2 + 2 dHat xi)`, ~1e-18), so the
+    barrier is `2.97e-62`, not `0.0`: use `close(..., 0.0, 1e-30)`; (b) `PT/EE/PE/PP_thickness`
+    return the **sum** of two per-element thicknesses, not the mean — the reference's own
+    `// return (a + b) / 2.0;` is commented out next to `return add(a, b)` (`utils/codim_thickness.h`),
+    so four identical 0.01 thicknesses give **0.02**; (c) `device == host` on a transcribed body
+    (rule 4 of §7.35 at work: LC contracts multiply-adds, so `-0.02000000000000002` vs `-0.02`);
+    (d) the half-plane pair list's vertex ids are **global** ids — they start at the reporter's
+    `vertex_offset()`, so the expectation is `off + i`, not `i`.
+ 8. **The export list needs the documented bootstrap, and today's numbers.**  Adding the ten
+    exporters + the 8-case test made the *link* fail with **29 unresolved externals** (LNK1120:
+    the four `*_energies`/`*_gradients`/`*_hessians` accessors of `Simplex{Normal,Frictional}`
+    Contact and the half-plane twins).  The generator reads the import tables of *linked* PE
+    files, so it cannot see a symbol that does not link: append the linker's own decorated names
+    to `luisa_module.def`, relink, then `python scripts/luisa_module_def.py` rewrites the file
+    from the real import tables (measured **548 → 577** = +29, `--check` rc 0, and the rewrite is
+    byte-identical to the bootstrap union — a hand-merge would not have been).
+ 9. **Test battery (per tag; the whole suite is still blocked by S0.6).**  `[contact_model]` 8/8,
+    `[contact_core]` 318/9 (the T8.1a suite, +4 assertions that now pin the live models:
+    `contact_reporters.size()`, the per-type fan-out and the 11 exporter primitive types),
+    `[parity_golden_ipc]` 2/2 with `Δ == 0.0`, and the recorded sibling battery unchanged
+    (`[abd_base]` 2143/7, `[abd_linear]` 495/7, `[fem_linear]` 323/4, `[mas_preconditioner]` 234/7,
+    `[spmv]` 712188/9, `[matrix]` 6155/7, `[pcg]` 188/188, `[global_precond]` 178/178,
+    `[offdiag]` 104/104, `[mtx]` 138/4, `[solve]` 112/7 (1 skip), `[t43]` 238/4).
+    Never run the bare whole suite here: `shell_init_advance_retrieve` aborts inside the first
+    `advance()` (S0.6), so only per-tag summaries are meaningful.
+10. **A `select` chain over the reference's `if / else if / else` must keep the operand order,
+    and a swapped pair is not cosmetic.**  `friction_hessian` in
+    `contact_models/codim_ipc_contact_function.h` spells the reference's three-way branch as
+    `select_mat22(select_mat22(H_lt, H_eq0, sq_norm == 0.0), H_ge, sq_norm >= epsvh2)`, because
+    `select_scalar(f, t, p)` is `p ? t : f`.  The first spelling had the two selects **swapped**
+    (`select_mat22(H_lt, select_mat22(H_eq0, H_ge, sq_norm == 0.0), sq_norm >= epsvh2)`), which
+    returns `H_lt` for `sq_norm == 0` — and `H_lt` divides by `sqrt(sq_norm)`, so the *whole*
+    friction Hessian was NaN for a pair with no tangential motion (measured `nan = 144` on the
+    assembled 12x12 block).  Two lessons: the eager "evaluate every branch, then select" idiom is
+    only safe if the *discarded* branch's `inf`/`NaN` can never be selected (here it was), and every
+    not-taken branch deserves one test point — what caught it was evaluating the *same* body on the
+    host with the same inputs, which turned a GPU-side NaN into a two-line repro.
+11. **Two test-only bugs of the "invisible" kind.**  (a) `expand_hessian_12` expanded an
+    upper-triangle triplet set with `H = H + H.transpose()` — Eigen's textbook **aliasing** trap (the
+    transpose is a lazy view of the destination), which silently produced a *non-symmetric* matrix
+    (measured: 132 of 144 entries disagreed with their mirror) and made every Hessian assertion
+    depend on the assignment order; `H = (H + H.transpose()).eval()` is the fix.  (b) The
+    half-plane case indexed `h.rows[3 * i]` in a 3-triplet slice — one triplet per (vertex, plane)
+    pair, so `k = i` — and the out-of-bounds `vector` read returned *garbage ids* (measured `376`,
+    `441038244`) instead of failing loudly.  Same failure mode as the earlier readback bug: a test
+    that reads past a slice hides the model's real numbers.
+12. **The finished suite still bites: two perturbations on two axes, each reverted
+    byte-identically at `sha256 ffccc330153a68d5`.**  P1 **host plumbing**: the EE launch passes `0u`
+    instead of its slice offset → 11 failures with `slices.gp.indices == {4,5,6,7}` (EE's data in
+    PT's window).  P2 **device kernel**: the PP assemble kernel runs with `kt2 * 2` → 3 failures,
+    exactly the PP gradient/Hessian checks (plus the finite-difference net).
+13. **What stays blocked by S0.6, explicitly.**  Class B (the assembled `A`/`b` contribution vs
+    CUDA, the per-primitive pair counts in a real solve and the per-reporter energy split at
+    `line_search/report_energy=1`) and Class C (`1_abd_contact_pt`, `2_abd_contact_ee`,
+    `3_abd_contact_pe`, `4_abd_contact_pp`, `10_abd_ground_contact`) all need an `advance()` that
+    currently aborts, and the CUDA reference backend cannot even be configured in this
+    environment (`--backend_cuda=y` fails at configure time, `components.lua:86 unknown interface:
+    raise()`).  The wiring half *is* pinnable today and is pinned: the exporter read-back sees 11
+    primitive types, `get_contact_{energy,gradient,hessian}()` stop early-returning, the reporters
+    fan out per type, the extents are 13/29, and `compute_dytopo_effect()` sees the models'
+    non-zero contributions.
 
 
 ### 7.37 Findings from the xmake build path (T10.1) — making the LuisaCompute backend build and run under xmake

@@ -59,6 +59,12 @@
 #include <frame_stream.h>
 #include <contact_system/global_contact_manager.h>
 #include <contact_system/contact_reporter.h>
+// T8.1b: the four real IPC contact models this case now counts (their headers, not the
+// models' private `IPC*` subclasses, which live in the module's .cpp files).
+#include <contact_system/simplex_normal_contact.h>
+#include <contact_system/simplex_frictional_contact.h>
+#include <contact_system/vertex_half_plane_normal_contact.h>
+#include <contact_system/vertex_half_plane_frictional_contact.h>
 #include <contact_system/contact_exporter.h>
 #include <contact_system/contact_exporter_manager.h>
 #include <contact_system/contact_system_feature.h>
@@ -1623,11 +1629,39 @@ TEST_CASE("t81a_reporting_pipeline", "[contact_core]")
     REQUIRE(dyt != nullptr);
     REQUIRE(em != nullptr);
 
-    // ---- (a) the contact reporter is registered and indexed ------------------
-    auto reporters = cm->impl().contact_reporters.view();
-    REQUIRE(reporters.size() == 1);
-    CHECK(dynamic_cast<ContactCoreProbeReporter*>(reporters[0]) != nullptr);
-    // (the reporter is also registered with the dytopo-effect manager -- provable
+    // ---- (a) the contact reporters are registered and indexed ----------------
+    // T8.1b switched the four *real* IPC contact models on, and they are valid in every
+    // `contact/constitution == ipc` scene (the two vertex/half-plane ones need no half-plane
+    // *geometry*: their `HalfPlane` / `HalfPlaneVertexReporter` slots resolve, and the filter
+    // they read is the always-valid `EasyVertexHalfPlaneTrajectoryFilter`), so this scene has
+    // them **plus** the probe.  The counts below are per *type* (order-independent), which is
+    // a stronger statement than the single positional check T8.1a could make.
+    auto  reporters           = cm->impl().contact_reporters.view();
+    SizeT n_probe             = 0;
+    SizeT n_simplex_normal    = 0;
+    SizeT n_simplex_friction  = 0;
+    SizeT n_vhp_normal        = 0;
+    SizeT n_vhp_friction      = 0;
+    for(auto* r : reporters)
+    {
+        if(dynamic_cast<ContactCoreProbeReporter*>(r))
+            ++n_probe;
+        else if(dynamic_cast<gg::SimplexNormalContact*>(r))
+            ++n_simplex_normal;
+        else if(dynamic_cast<gg::SimplexFrictionalContact*>(r))
+            ++n_simplex_friction;
+        else if(dynamic_cast<gg::VertexHalfPlaneNormalContact*>(r))
+            ++n_vhp_normal;
+        else if(dynamic_cast<gg::VertexHalfPlaneFrictionalContact*>(r))
+            ++n_vhp_friction;
+    }
+    REQUIRE(reporters.size() == 5);
+    CHECK(n_probe == 1);
+    CHECK(n_simplex_normal == 1);
+    CHECK(n_simplex_friction == 1);
+    CHECK(n_vhp_normal == 1);
+    CHECK(n_vhp_friction == 1);
+    // (each reporter is also registered with the dytopo-effect manager -- provable
     //  by construction: only a registered reporter is reached by `_assemble` below)
 
     // ---- (b) extent -> assemble through the dytopo manager -------------------
@@ -1665,8 +1699,9 @@ TEST_CASE("t81a_reporting_pipeline", "[contact_core]")
     auto feature = engine.features().find<core::ContactSystemFeature>();
     REQUIRE(feature != nullptr);
     auto types = feature->contact_primitive_types();
-    REQUIRE(types.size() == 1);
-    CHECK(types[0] == prim);
+    // T8.1b: the four real IPC models register their ten primitive types alongside the probe
+    REQUIRE(types.size() == 11);
+    CHECK(std::find(types.begin(), types.end(), prim) != types.end());
 
     {
         geometry::Geometry geo;
@@ -1880,8 +1915,9 @@ TEST_CASE("t81a_determinism_and_empty", "[contact_core]")
         auto* cm  = ContactCoreProbe::contact_manager;
         auto* gtf = ContactCoreProbe::trajectory_filter;
         REQUIRE(cm != nullptr);
-        // the probe reporter was invalidated by its marker gate
-        CHECK(cm->impl().contact_reporters.view().empty());
+        // the probe reporter was invalidated by its marker gate; T8.1b's four real IPC
+        // contact models stay (see case (a) -- they do not need the probe's marker)
+        CHECK(cm->impl().contact_reporters.view().size() == 4);
         CHECK(cm->impl().adaptive_contact_parameter_reporter == false);
         // the probe filter was invalidated by its marker gate (the scene's default
         // `collision_detection/method` keeps exactly one *other* simplex filter valid)

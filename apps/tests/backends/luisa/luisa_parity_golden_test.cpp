@@ -29,6 +29,8 @@
 #include "luisa_test_runtime.h"
 
 #include <luisa_device/math/distance/distance.h>
+#include <contact_system/contact_models/codim_ipc_contact_function.h>
+#include <contact_system/contact_models/ipc_vertex_half_plane_contact_function.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -245,4 +247,169 @@ TEST_CASE("parity_golden_distance", "[parity_golden]")
         worst_case,
         worst_slot);
     CHECK(exact_mismatches == 0u);
+}
+
+// ===========================================================================
+//  T8.1b (plan 15) — the two contact `sym/*.inl` goldens
+//
+//  `uipc_parity_reference` now also evaluates *the reference* contact bodies on the host
+//  (`apps/tests/parity/reference/main.cpp`):
+//    * `sym/codim_ipc_contact.inl`      — the SymEigen log^2 barrier law, value + d/dD +
+//                                          d^2/dD^2, which is the law of all four normal
+//                                          contact models and of the codim variants;
+//    * `sym/vertex_half_plane_distance.inl` — D, dDdx, ddDddx, TR, dTRdx, i.e. the whole
+//                                          vertex-half-plane distance layer.
+//  These are the *only* two reference files in the contact path that are host-compilable
+//  (research 15 §5.2): everything else is `__device__ inline` and pulls
+//  <type_define.h>/cuda_tool, which is why the remaining §4.1 rows stay `not_implemented`.
+//  Both are plain `template <typename T>`, so the ported twin's host instantiation
+//  (`T = double`) is compared **exactly** (Class A) — no device, no tolerance.
+// ===========================================================================
+namespace sym_codim = uipc::backend::luisa::sym::codim_ipc_contact;
+namespace sym_ph    = uipc::backend::luisa::sym::ipc_vertex_half_contact;
+
+namespace
+{
+/// The golden's per-case layouts (must match the generator's).
+constexpr std::size_t kBarrierIn  = 4;  // kappa, D, dHat, xi
+constexpr std::size_t kBarrierOut = 3;  // B, dB/dD, d^2B/dD^2
+constexpr std::size_t kVhpIn      = 18;  // x, P, N, x_prev, e1, e2
+constexpr std::size_t kVhpOut     = 1 + 3 + 9 + 2 + 6;
+
+std::string golden_path_for(std::string_view file)
+{
+    return (fs::path{UIPC_TEST_PROGRAM_PATH}.parent_path() / "parity_golden" / std::string{file})
+        .string();
+}
+
+/// Evaluates one case of the ported *host* instantiation and writes the generator's layout.
+using CaseEvaluator = void (*)(const double* in, double* out);
+
+/// The Class-A driver: SKIP when the golden is absent, then require bit-exact equality on
+/// every element (a `NaN`-vs-`NaN` pair counts as equal, as in `parity_golden_distance`).
+void require_exact(std::string_view label,
+                   std::string_view file,
+                   std::size_t      n_input,
+                   std::size_t      n_output,
+                   CaseEvaluator    evaluate)
+{
+    const std::string path = golden_path_for(file);
+    if(!fs::exists(path))
+    {
+        SKIP("reference golden not generated: " + path
+             + " (run uipc_parity_reference.exe first)");
+    }
+
+    Golden      golden;
+    std::string error;
+    INFO("golden: " + path + ": " + error);
+    REQUIRE(read_golden(path, golden, error));
+    REQUIRE(golden.name == std::string{label});
+    REQUIRE(golden.n_input == n_input);
+    REQUIRE(golden.n_output == n_output);
+
+    std::vector<double> output(n_output, 0.0);
+    std::size_t         exact_mismatches = 0;
+    std::size_t         nan_slots        = 0;
+    double              worst_abs        = 0.0;
+    std::size_t         worst_case       = 0;
+    std::size_t         worst_slot       = 0;
+    for(std::size_t c = 0; c < golden.case_count(); ++c)
+    {
+        evaluate(golden.input.data() + c * n_input, output.data());
+        const double* expected = golden.output.data() + c * n_output;
+        for(std::size_t k = 0; k < n_output; ++k)
+        {
+            const double got = output[k];
+            if(std::isnan(got) && std::isnan(expected[k]))
+            {
+                ++nan_slots;
+                continue;
+            }
+            if(!(got == expected[k]))
+            {
+                ++exact_mismatches;
+                const double delta = std::abs(got - expected[k]);
+                if(delta >= worst_abs)
+                {
+                    worst_abs  = delta;
+                    worst_case = c;
+                    worst_slot = k;
+                }
+            }
+        }
+    }
+    std::printf(" [parity_golden_ipc] %s: %zu cases x %zu outputs, host |delta| = %.3e "
+                "(%zu mismatches, %zu NaN slots; worst case %zu slot %zu)\n",
+                std::string{label}.c_str(),
+                golden.case_count(),
+                golden.n_output,
+                worst_abs,
+                exact_mismatches,
+                nan_slots,
+                worst_case,
+                worst_slot);
+    CHECK(exact_mismatches == 0u);
+}
+
+void evaluate_barrier(const double* in, double* out)
+{
+    const double kappa = in[0], D = in[1], dHat = in[2], xi = in[3];
+    double       B = 0.0, d1 = 0.0, d2 = 0.0;
+    sym_codim::KappaBarrier(B, kappa, D, dHat, xi);
+    sym_codim::dKappaBarrierdD(d1, kappa, D, dHat, xi);
+    sym_codim::ddKappaBarrierddD(d2, kappa, D, dHat, xi);
+    out[0] = B;
+    out[1] = d1;
+    out[2] = d2;
+}
+
+void evaluate_vhp(const double* in, double* out)
+{
+    LVec<double, 3> v[6];
+    for(int k = 0; k < 6; ++k)
+        for(int a = 0; a < 3; ++a)
+            v[k](a) = in[3 * k + a];
+    const auto& x  = v[0];
+    const auto& P  = v[1];
+    const auto& N  = v[2];
+    const auto& xp = v[3];
+    const auto& e1 = v[4];
+    const auto& e2 = v[5];
+
+    double D = 0.0;
+    sym_ph::HalfPlaneD(D, x, P, N);
+    LVec<double, 3> g;
+    sym_ph::dHalfPlaneDdx(g, x, P, N);
+    LMat<double, 3, 3> H;
+    sym_ph::ddHalfPlaneDddx(H, x, P, N);
+    LVec<double, 2> tr;
+    sym_ph::TR(tr, x, xp, e1, e2);
+    LMat<double, 2, 3> J;
+    sym_ph::dTRdx(J, x, xp, e1, e2);
+
+    std::size_t k = 0;
+    out[k++] = D;
+    for(int i = 0; i < 3; ++i)
+        out[k++] = g(i);
+    for(int col = 0; col < 3; ++col)  // column-major, as the generator writes it
+        for(int row = 0; row < 3; ++row)
+            out[k++] = H(row, col);
+    out[k++] = tr(0);
+    out[k++] = tr(1);
+    for(int row = 0; row < 2; ++row)
+        for(int col = 0; col < 3; ++col)
+            out[k++] = J(row, col);
+}
+}  // namespace
+
+TEST_CASE("parity_golden_codim_barrier", "[parity_golden_ipc]")
+{
+    require_exact("codim_barrier", "codim_barrier.bin", kBarrierIn, kBarrierOut,
+                  evaluate_barrier);
+}
+
+TEST_CASE("parity_golden_vhp_distance", "[parity_golden_ipc]")
+{
+    require_exact("vhp_distance", "vhp_distance.bin", kVhpIn, kVhpOut, evaluate_vhp);
 }
